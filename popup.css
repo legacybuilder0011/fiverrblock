@@ -159,6 +159,13 @@ footer {
   line-height: 1.4;
 }
 
+.hint {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 4px 0 10px;
+  line-height: 1.4;
+}
+
 /* Toggle switch */
 .switch {
   position: relative;

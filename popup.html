@@ -20,6 +20,45 @@
     </section>
 
     <section class="group">
+      <h2>Hide real IP / ISP / ASN (proxy)</h2>
+      <p class="hint">
+        Your IP / ISP / ASN / country come from the TCP connection, NOT
+        JavaScript. Route Chrome through a proxy to change them.
+      </p>
+      <label class="row">
+        <span>Route all traffic through proxy</span>
+        <label class="switch"
+          ><input type="checkbox" id="useProxy" /><span class="slider"></span
+        ></label>
+      </label>
+      <div class="grid2">
+        <label class="field">
+          <span>Type</span>
+          <select id="proxyScheme">
+            <option value="socks5">SOCKS5</option>
+            <option value="socks4">SOCKS4</option>
+            <option value="http">HTTP</option>
+            <option value="https">HTTPS</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Port</span>
+          <input type="number" id="proxyPort" min="1" max="65535" />
+        </label>
+      </div>
+      <label class="field">
+        <span>Host</span>
+        <input
+          type="text"
+          id="proxyHost"
+          placeholder="e.g. 127.0.0.1 or proxy.example.com"
+        />
+      </label>
+      <button id="testProxy" class="btn">Test — show current egress IP</button>
+      <p id="proxyResult" class="hint"></p>
+    </section>
+
+    <section class="group">
       <h2>Cookies &amp; Storage</h2>
       <label class="row">
         <span>Block all cookies</span>

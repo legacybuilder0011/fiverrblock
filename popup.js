@@ -2,6 +2,7 @@
 
 const FIELDS = [
   "enabled",
+  "useProxy",
   "blockCookies",
   "blockStorage",
   "spoofGeo",
@@ -56,6 +57,11 @@ function populate(config) {
     $("screenWidth").value = config.screen.width ?? "";
     $("screenHeight").value = config.screen.height ?? "";
   }
+  if (config.proxy) {
+    $("proxyScheme").value = config.proxy.scheme || "socks5";
+    $("proxyHost").value = config.proxy.host || "";
+    $("proxyPort").value = config.proxy.port || 1080;
+  }
   updateStatus(config.enabled);
 }
 
@@ -103,6 +109,12 @@ function collect() {
     pixelDepth: 24
   };
   config.languages = [config.language || "en-US", "en"];
+  config.proxy = {
+    scheme: $("proxyScheme").value,
+    host: $("proxyHost").value.trim(),
+    port: Number($("proxyPort").value) || 1080,
+    bypassList: ["localhost", "127.0.0.1", "<local>"]
+  };
   return config;
 }
 
@@ -148,5 +160,31 @@ document.addEventListener("DOMContentLoaded", async () => {
       btn.textContent = "Cookies purged";
       setTimeout(() => (btn.textContent = old), 1500);
     });
+  });
+
+  // Proxy toggle applies instantly
+  $("useProxy").addEventListener("change", () => save(false));
+
+  // Test proxy egress IP
+  $("testProxy").addEventListener("click", () => {
+    // Save first so the proxy is applied, then test.
+    chrome.runtime.sendMessage(
+      { type: "SET_CONFIG", config: collect() },
+      () => {
+        const out = $("proxyResult");
+        out.textContent = "Testing…";
+        chrome.runtime.sendMessage({ type: "TEST_PROXY" }, (res) => {
+          if (!res?.ok) {
+            out.textContent = "Test failed.";
+            return;
+          }
+          if (res.result.ok) {
+            out.textContent = "Egress IP: " + res.result.ip;
+          } else {
+            out.textContent = "Error: " + res.result.error;
+          }
+        });
+      }
+    );
   });
 });

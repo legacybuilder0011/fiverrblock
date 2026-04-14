@@ -13,7 +13,8 @@
     "tabs",
     "webNavigation",
     "activeTab",
-    "privacy"
+    "privacy",
+    "proxy"
   ],
   "host_permissions": [
     "<all_urls>"

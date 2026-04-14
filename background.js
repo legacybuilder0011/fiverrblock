@@ -4,6 +4,14 @@
 const DEFAULT_CONFIG = {
   enabled: true,
   blockCookies: true,
+  // Proxy - the ONLY way to change IP / ISP / ASN / country reported by sites.
+  useProxy: false,
+  proxy: {
+    scheme: "socks5",    // "http" | "https" | "socks4" | "socks5"
+    host: "",
+    port: 1080,
+    bypassList: ["localhost", "127.0.0.1", "<local>"]
+  },
   spoofGeo: true,
   geo: {
     latitude: 40.7128,
@@ -61,10 +69,24 @@ chrome.runtime.onInstalled.addListener(async () => {
     await chrome.storage.local.set({ config: DEFAULT_CONFIG });
   }
   await applyNetworkPrivacySettings();
+  await applyProxySettings();
+  await applyBadgeDefaults();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await applyNetworkPrivacySettings();
+  await applyProxySettings();
+  await applyBadgeDefaults();
+});
+
+// Refresh badge whenever a tab navigates so each tab shows shield status.
+chrome.tabs.onUpdated.addListener(async (tabId, info) => {
+  if (info.status === "loading" || info.url) {
+    await updateBadge(tabId);
+  }
+});
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  await updateBadge(tabId);
 });
 
 // ---------- Messaging with content scripts & popup ----------
@@ -79,9 +101,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const next = { ...current, ...msg.config };
         await chrome.storage.local.set({ config: next });
         await applyNetworkPrivacySettings();
+        await applyProxySettings();
+        await applyBadgeDefaults();
         await purgeCookiesIfEnabled();
         broadcastConfig(next);
         sendResponse({ ok: true, config: next });
+      } else if (msg?.type === "TEST_PROXY") {
+        const result = await testProxy();
+        sendResponse({ ok: true, result });
       } else if (msg?.type === "PURGE_COOKIES") {
         await purgeAllCookies();
         sendResponse({ ok: true });
@@ -197,4 +224,79 @@ async function applyNetworkPrivacySettings() {
   } catch (err) {
     console.warn("DNR toggle failed:", err);
   }
+}
+
+// ---------- Proxy (chrome.proxy) - changes real IP / ISP / ASN ----------
+async function applyProxySettings() {
+  const config = await getConfig();
+  try {
+    if (!config.enabled || !config.useProxy || !config.proxy?.host) {
+      await chrome.proxy.settings.clear({ scope: "regular" });
+      return;
+    }
+    const { scheme, host, port, bypassList } = config.proxy;
+    const cfg = {
+      mode: "fixed_servers",
+      rules: {
+        singleProxy: {
+          scheme: scheme || "socks5",
+          host,
+          port: Number(port) || (scheme === "socks5" ? 1080 : 8080)
+        },
+        bypassList: Array.isArray(bypassList)
+          ? bypassList
+          : ["localhost", "127.0.0.1", "<local>"]
+      }
+    };
+    await chrome.proxy.settings.set({ value: cfg, scope: "regular" });
+  } catch (err) {
+    console.warn("Proxy config failed:", err);
+  }
+}
+
+async function testProxy() {
+  // Fetch a lightweight echo endpoint to confirm traffic goes through the proxy.
+  try {
+    const r = await fetch("https://api.ipify.org?format=json", {
+      cache: "no-store"
+    });
+    if (!r.ok) return { ok: false, error: "HTTP " + r.status };
+    const j = await r.json();
+    return { ok: true, ip: j.ip };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ---------- Per-tab badge ----------
+async function applyBadgeDefaults() {
+  try {
+    await chrome.action.setBadgeBackgroundColor({ color: "#16a34a" });
+    if (chrome.action.setBadgeTextColor) {
+      await chrome.action.setBadgeTextColor({ color: "#ffffff" });
+    }
+  } catch (_) {}
+  chrome.tabs.query({}, (tabs) => {
+    for (const t of tabs) if (t.id) updateBadge(t.id);
+  });
+}
+
+async function updateBadge(tabId) {
+  try {
+    const config = await getConfig();
+    let text = "";
+    let color = "#6b7280";
+    if (!config.enabled) {
+      text = "OFF";
+      color = "#6b7280";
+    } else if (config.useProxy && config.proxy?.host) {
+      text = "VPN";
+      color = "#2563eb";
+    } else {
+      text = "ON";
+      color = "#16a34a";
+    }
+    await chrome.action.setBadgeText({ text, tabId });
+    await chrome.action.setBadgeBackgroundColor({ color, tabId });
+  } catch (_) {}
 }
