@@ -253,12 +253,118 @@ function renderSiteStrip(config, active) {
   }
 }
 
+// ----- Live activity -----
+const CATEGORY_LABELS = {
+  cookiesBlocked: "Cookies",
+  canvasAccess: "Canvas",
+  webglAccess: "WebGL",
+  audioAccess: "Audio",
+  geoAccess: "Geo",
+  batteryAccess: "Battery",
+  pluginsAccess: "Plugins",
+  fontsAccess: "Fonts",
+  screenAccess: "Screen",
+  uaAccess: "User-Agent",
+  hardwareAccess: "Hardware",
+  timezoneAccess: "Timezone",
+  storageAccess: "Storage"
+};
+
+function relTime(ts) {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return s + "s ago";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + "h ago";
+  return Math.floor(h / 24) + "d ago";
+}
+
+function renderActivity(host, act) {
+  const hostEl = $("activityHost");
+  hostEl.textContent = host || "all sites";
+
+  const bucket = host ? act.site : act.global;
+  const counters = bucket?.counters || {};
+  const total = Object.values(counters).reduce((a, b) => a + (b || 0), 0);
+
+  const empty = $("activityEmpty");
+  const grid = $("counterGrid");
+  const feed = $("eventFeed");
+
+  if (!total) {
+    empty.hidden = false;
+  } else {
+    empty.hidden = true;
+  }
+
+  // Counter tiles
+  grid.innerHTML = "";
+  for (const [key, label] of Object.entries(CATEGORY_LABELS)) {
+    const n = counters[key] || 0;
+    const tile = document.createElement("div");
+    tile.className = "counter" + (n > 0 ? " active" : "");
+    tile.innerHTML =
+      '<span class="label">' +
+      escapeHtml(label) +
+      '</span><span class="count">' +
+      n +
+      "</span>";
+    grid.appendChild(tile);
+  }
+
+  // Recent events feed
+  feed.innerHTML = "";
+  const events = (bucket?.recent || []).slice(0, 15);
+  if (!events.length) {
+    const li = document.createElement("li");
+    li.className = "event-empty";
+    li.textContent = "Waiting for activity…";
+    feed.appendChild(li);
+    return;
+  }
+  for (const e of events) {
+    const li = document.createElement("li");
+    const label = CATEGORY_LABELS[e.type] || e.type;
+    li.innerHTML =
+      '<span class="ev-kind">' +
+      escapeHtml(label) +
+      '</span><span class="ev-detail">' +
+      escapeHtml(e.detail || "") +
+      '</span><span class="ev-time">' +
+      escapeHtml(relTime(e.t)) +
+      "</span>";
+    feed.appendChild(li);
+  }
+}
+
+function refreshActivity(host) {
+  chrome.runtime.sendMessage({ type: "GET_ACTIVITY", host }, (res) => {
+    if (chrome.runtime.lastError) return;
+    if (!res?.ok) return;
+    renderActivity(host, res.activity);
+  });
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   const config = await loadConfig();
   populate(config);
 
   const active = await getActiveTabHost();
   renderSiteStrip(config, active);
+
+  // Initial render + 1s poll while the popup is open.
+  refreshActivity(active.host);
+  const activityTimer = setInterval(() => refreshActivity(active.host), 1000);
+  window.addEventListener("unload", () => clearInterval(activityTimer));
+
+  $("clearActivity").addEventListener("click", () => {
+    chrome.runtime.sendMessage(
+      { type: "CLEAR_ACTIVITY", host: active.host },
+      () => refreshActivity(active.host)
+    );
+  });
 
   $("toggleSite").addEventListener("click", async () => {
     const cur = await loadConfig();

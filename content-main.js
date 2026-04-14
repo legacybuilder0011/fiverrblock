@@ -80,6 +80,23 @@
     if (host && list.includes(host)) return;
   } catch (_) {}
 
+  // ------------- Activity emitter (throttled, per-type) -------------
+  const EVENT_KEY = "__privacy_shield_event__";
+  const lastEmit = Object.create(null);
+  const emit = (type, detail) => {
+    try {
+      const now = Date.now();
+      // Throttle same-type events to at most once per second.
+      if (now - (lastEmit[type] || 0) < 1000) return;
+      lastEmit[type] = now;
+      window.dispatchEvent(
+        new CustomEvent(EVENT_KEY, {
+          detail: { type, detail: detail || "" }
+        })
+      );
+    } catch (_) {}
+  };
+
   // ------------- Tiny helpers -------------
   const defineRO = (obj, prop, value) => {
     try {
@@ -108,16 +125,30 @@
 
   // ------------- Navigator spoofing (UA, platform, languages) -------------
   if (config.spoofUA) {
-    defineRO(Navigator.prototype, "userAgent", config.userAgent);
-    defineRO(Navigator.prototype, "appVersion", () =>
-      config.userAgent.replace(/^Mozilla\//, "")
-    );
-    defineRO(Navigator.prototype, "platform", config.platform);
+    const uaGet = () => {
+      emit("uaAccess", "userAgent");
+      return config.userAgent;
+    };
+    defineRO(Navigator.prototype, "userAgent", uaGet);
+    defineRO(Navigator.prototype, "appVersion", () => {
+      emit("uaAccess", "appVersion");
+      return config.userAgent.replace(/^Mozilla\//, "");
+    });
+    defineRO(Navigator.prototype, "platform", () => {
+      emit("uaAccess", "platform");
+      return config.platform;
+    });
     defineRO(Navigator.prototype, "vendor", "Google Inc.");
     defineRO(Navigator.prototype, "oscpu", undefined);
     defineRO(Navigator.prototype, "productSub", "20030107");
-    defineRO(Navigator.prototype, "language", config.language);
-    defineRO(Navigator.prototype, "languages", () => Object.freeze(config.languages.slice()));
+    defineRO(Navigator.prototype, "language", () => {
+      emit("uaAccess", "language");
+      return config.language;
+    });
+    defineRO(Navigator.prototype, "languages", () => {
+      emit("uaAccess", "languages");
+      return Object.freeze(config.languages.slice());
+    });
 
     // User-Agent Client Hints (sec-ch-ua family)
     if (navigator.userAgentData) {
@@ -160,10 +191,14 @@
 
   // ------------- Hardware (CPU cores, device memory, connection, etc.) -------------
   if (config.blockHardware) {
-    defineRO(Navigator.prototype, "hardwareConcurrency", () =>
-      config.hardwareConcurrency
-    );
-    defineRO(Navigator.prototype, "deviceMemory", () => config.deviceMemory);
+    defineRO(Navigator.prototype, "hardwareConcurrency", () => {
+      emit("hardwareAccess", "hardwareConcurrency");
+      return config.hardwareConcurrency;
+    });
+    defineRO(Navigator.prototype, "deviceMemory", () => {
+      emit("hardwareAccess", "deviceMemory");
+      return config.deviceMemory;
+    });
     defineRO(Navigator.prototype, "maxTouchPoints", 0);
 
     // NetworkInformation API (connection type / downlink can fingerprint)
@@ -201,6 +236,7 @@
     };
     try {
       Navigator.prototype.getBattery = function () {
+        emit("batteryAccess", "getBattery");
         return Promise.resolve(fakeBattery);
       };
     } catch (_) {}
@@ -223,8 +259,14 @@
       refresh() {},
       [Symbol.iterator]: function* () {}
     });
-    defineRO(Navigator.prototype, "plugins", emptyPlugins);
-    defineRO(Navigator.prototype, "mimeTypes", emptyPlugins);
+    defineRO(Navigator.prototype, "plugins", () => {
+      emit("pluginsAccess", "navigator.plugins");
+      return emptyPlugins;
+    });
+    defineRO(Navigator.prototype, "mimeTypes", () => {
+      emit("pluginsAccess", "navigator.mimeTypes");
+      return emptyPlugins;
+    });
     defineRO(Navigator.prototype, "pdfViewerEnabled", false);
   }
 
@@ -232,7 +274,10 @@
   if (config.blockFonts) {
     try {
       if (document.fonts) {
-        document.fonts.check = () => false;
+        document.fonts.check = () => {
+          emit("fontsAccess", "document.fonts.check");
+          return false;
+        };
         document.fonts.ready = Promise.resolve(document.fonts);
         document.fonts.forEach = () => {};
         document.fonts.values = function* () {};
@@ -249,12 +294,16 @@
   // ------------- Screen spoofing -------------
   if (config.blockScreen) {
     const s = config.screen;
-    defineRO(Screen.prototype, "width", () => s.width);
-    defineRO(Screen.prototype, "height", () => s.height);
-    defineRO(Screen.prototype, "availWidth", () => s.availWidth);
-    defineRO(Screen.prototype, "availHeight", () => s.availHeight);
-    defineRO(Screen.prototype, "colorDepth", () => s.colorDepth);
-    defineRO(Screen.prototype, "pixelDepth", () => s.pixelDepth);
+    const screenGet = (key) => () => {
+      emit("screenAccess", "screen." + key);
+      return s[key];
+    };
+    defineRO(Screen.prototype, "width", screenGet("width"));
+    defineRO(Screen.prototype, "height", screenGet("height"));
+    defineRO(Screen.prototype, "availWidth", screenGet("availWidth"));
+    defineRO(Screen.prototype, "availHeight", screenGet("availHeight"));
+    defineRO(Screen.prototype, "colorDepth", screenGet("colorDepth"));
+    defineRO(Screen.prototype, "pixelDepth", screenGet("pixelDepth"));
     defineRO(Screen.prototype, "availLeft", 0);
     defineRO(Screen.prototype, "availTop", 0);
     try {
@@ -282,6 +331,7 @@
       OriginalDTF.prototype.resolvedOptions = function () {
         const r = OriginalResolved.call(this);
         r.timeZone = fakeTZ;
+        emit("timezoneAccess", "Intl.DateTimeFormat.resolvedOptions");
         return r;
       };
     } catch (_) {}
@@ -289,6 +339,7 @@
     // Date.prototype.getTimezoneOffset
     try {
       Date.prototype.getTimezoneOffset = function () {
+        emit("timezoneAccess", "Date.getTimezoneOffset");
         return offsetMin;
       };
     } catch (_) {}
@@ -333,6 +384,7 @@
         error,
         _opts
       ) {
+        emit("geoAccess", "getCurrentPosition");
         try {
           if (typeof success === "function") success(buildPosition());
         } catch (_) {
@@ -342,6 +394,7 @@
       };
       let watchCount = 0;
       navigator.geolocation.watchPosition = function (success, _error, _opts) {
+        emit("geoAccess", "watchPosition");
         const id = ++watchCount;
         setTimeout(() => {
           try {
@@ -375,6 +428,7 @@
 
     wrap(HTMLCanvasElement.prototype, "toDataURL", (orig) =>
       function (...args) {
+        emit("canvasAccess", "toDataURL");
         try {
           const ctx = this.getContext("2d");
           if (ctx) noiseCanvas(ctx, this);
@@ -385,6 +439,7 @@
 
     wrap(HTMLCanvasElement.prototype, "toBlob", (orig) =>
       function (cb, ...rest) {
+        emit("canvasAccess", "toBlob");
         try {
           const ctx = this.getContext("2d");
           if (ctx) noiseCanvas(ctx, this);
@@ -395,6 +450,7 @@
 
     wrap(CanvasRenderingContext2D.prototype, "getImageData", (orig) =>
       function (...args) {
+        emit("canvasAccess", "getImageData");
         const imgData = orig.apply(this, args);
         try {
           const data = imgData.data;
@@ -427,30 +483,52 @@
       wrap(proto, "getParameter", (orig) =>
         function (p) {
           // 37445 = UNMASKED_VENDOR_WEBGL, 37446 = UNMASKED_RENDERER_WEBGL
-          if (p === 37445) return "Google Inc. (Intel)";
-          if (p === 37446)
+          if (p === 37445) {
+            emit("webglAccess", "UNMASKED_VENDOR_WEBGL");
+            return "Google Inc. (Intel)";
+          }
+          if (p === 37446) {
+            emit("webglAccess", "UNMASKED_RENDERER_WEBGL");
             return "ANGLE (Intel, Intel(R) UHD Graphics, OpenGL 4.1)";
-          if (p === 7936) return "WebKit"; // VENDOR
-          if (p === 7937) return "WebKit WebGL"; // RENDERER
-          if (p === 7938) return "WebGL 1.0"; // VERSION
-          if (p === 35724) return "WebGL GLSL ES 1.0"; // SHADING_LANGUAGE_VERSION
+          }
+          if (p === 7936) {
+            emit("webglAccess", "VENDOR");
+            return "WebKit";
+          }
+          if (p === 7937) {
+            emit("webglAccess", "RENDERER");
+            return "WebKit WebGL";
+          }
+          if (p === 7938) {
+            emit("webglAccess", "VERSION");
+            return "WebGL 1.0";
+          }
+          if (p === 35724) {
+            emit("webglAccess", "SHADING_LANGUAGE_VERSION");
+            return "WebGL GLSL ES 1.0";
+          }
           return orig.call(this, p);
         }
       );
       wrap(proto, "getExtension", (orig) =>
         function (name) {
-          if (name === "WEBGL_debug_renderer_info") return null;
+          if (name === "WEBGL_debug_renderer_info") {
+            emit("webglAccess", "debug_renderer_info");
+            return null;
+          }
           return orig.call(this, name);
         }
       );
       wrap(proto, "getSupportedExtensions", (orig) =>
         function () {
+          emit("webglAccess", "getSupportedExtensions");
           const ext = orig.call(this) || [];
           return ext.filter((e) => e !== "WEBGL_debug_renderer_info");
         }
       );
       wrap(proto, "readPixels", (orig) =>
         function (...args) {
+          emit("webglAccess", "readPixels");
           const r = orig.apply(this, args);
           try {
             const buf = args[6];
@@ -482,12 +560,14 @@
     if (typeof AnalyserNode !== "undefined") {
       wrap(AnalyserNode.prototype, "getFloatFrequencyData", (orig) =>
         function (arr) {
+          emit("audioAccess", "getFloatFrequencyData");
           orig.call(this, arr);
           noiseArr(arr);
         }
       );
       wrap(AnalyserNode.prototype, "getByteFrequencyData", (orig) =>
         function (arr) {
+          emit("audioAccess", "getByteFrequencyData");
           orig.call(this, arr);
           for (let i = 0; i < arr.length; i++) {
             if (Math.random() < 0.01) arr[i] = (arr[i] ^ 1) & 0xff;
@@ -496,6 +576,7 @@
       );
       wrap(AnalyserNode.prototype, "getFloatTimeDomainData", (orig) =>
         function (arr) {
+          emit("audioAccess", "getFloatTimeDomainData");
           orig.call(this, arr);
           noiseArr(arr);
         }
@@ -504,6 +585,7 @@
     if (typeof AudioBuffer !== "undefined") {
       wrap(AudioBuffer.prototype, "getChannelData", (orig) =>
         function (...args) {
+          emit("audioAccess", "getChannelData");
           const data = orig.apply(this, args);
           try {
             for (let i = 0; i < data.length; i += 500) {
@@ -515,6 +597,7 @@
       );
       wrap(AudioBuffer.prototype, "copyFromChannel", (orig) =>
         function (dest, ...rest) {
+          emit("audioAccess", "copyFromChannel");
           orig.call(this, dest, ...rest);
           try {
             for (let i = 0; i < dest.length; i += 500) {
@@ -545,10 +628,15 @@
 
   // ------------- Storage neuter (optional) -------------
   if (config.blockStorage) {
-    const kill = (storage) => {
+    const kill = (storage, label) => {
       try {
-        storage.setItem = () => {};
-        storage.getItem = () => null;
+        storage.setItem = (k) => {
+          emit("storageAccess", label + ".setItem" + (k ? ":" + k : ""));
+        };
+        storage.getItem = (k) => {
+          emit("storageAccess", label + ".getItem" + (k ? ":" + k : ""));
+          return null;
+        };
         storage.removeItem = () => {};
         storage.clear = () => {};
         storage.key = () => null;
@@ -559,14 +647,15 @@
       } catch (_) {}
     };
     try {
-      kill(window.localStorage);
+      kill(window.localStorage, "localStorage");
     } catch (_) {}
     try {
-      kill(window.sessionStorage);
+      kill(window.sessionStorage, "sessionStorage");
     } catch (_) {}
     try {
       if (window.indexedDB) {
         window.indexedDB.open = function () {
+          emit("storageAccess", "indexedDB.open");
           const req = {};
           setTimeout(() => {
             if (typeof req.onerror === "function")
@@ -578,8 +667,10 @@
     } catch (_) {}
     try {
       if (window.caches) {
-        window.caches.open = () =>
-          Promise.reject(new Error("caches disabled"));
+        window.caches.open = () => {
+          emit("storageAccess", "caches.open");
+          return Promise.reject(new Error("caches disabled"));
+        };
         window.caches.keys = () => Promise.resolve([]);
         window.caches.match = () => Promise.resolve(undefined);
         window.caches.has = () => Promise.resolve(false);
@@ -598,9 +689,16 @@
       if (desc && desc.configurable) {
         Object.defineProperty(Document.prototype, "cookie", {
           get() {
+            emit("cookiesBlocked", "document.cookie read");
             return "";
           },
-          set(_v) {
+          set(v) {
+            try {
+              const name = String(v || "").split("=")[0].trim();
+              emit("cookiesBlocked", name ? "set:" + name : "document.cookie write");
+            } catch (_) {
+              emit("cookiesBlocked", "document.cookie write");
+            }
             /* swallow writes */
           },
           configurable: true

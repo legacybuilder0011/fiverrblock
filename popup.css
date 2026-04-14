@@ -288,6 +288,114 @@ footer {
   color: #e0e6ef;
 }
 
+/* Live activity panel */
+.group.activity h2 {
+  margin: 0;
+  text-transform: none;
+  letter-spacing: 0.3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.group.activity h2 #activityHost {
+  color: var(--text);
+  font-weight: 700;
+}
+.activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.counter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+}
+.counter-grid:empty { display: none; }
+.counter {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  text-align: left;
+  min-width: 0;
+}
+.counter .label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.counter .count {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  display: block;
+  margin-top: 2px;
+}
+.counter.active {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(74, 222, 128, 0.12), transparent);
+}
+.counter.active .count { color: var(--accent); }
+
+.feed-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  margin: 14px 0 6px;
+}
+.event-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.event-feed li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.event-feed li:last-child { border-bottom: none; }
+.event-feed li .ev-kind {
+  color: var(--accent);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.event-feed li .ev-detail {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.event-feed li .ev-time {
+  color: var(--muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.event-feed li.event-empty {
+  color: var(--muted);
+  justify-content: center;
+  font-style: italic;
+}
+
 /* Toggle switch */
 .switch {
   position: relative;

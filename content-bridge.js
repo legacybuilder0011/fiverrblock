@@ -6,6 +6,7 @@
   "use strict";
 
   const SYNC_KEY = "__privacy_shield_config__";
+  const EVENT_KEY = "__privacy_shield_event__";
 
   function deliver(config) {
     // Stash on document attribute in case the MAIN world script starts later.
@@ -28,5 +29,35 @@
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg?.type === "CONFIG_UPDATE" && msg.config) deliver(msg.config);
+  });
+
+  // ----- Activity forwarding -----
+  // The MAIN-world script dispatches CustomEvents for every override hit.
+  // We buffer them and flush in batches so we don't spam sendMessage.
+  let buffer = [];
+  let flushTimer = null;
+
+  function flush() {
+    flushTimer = null;
+    if (!buffer.length) return;
+    const events = buffer;
+    buffer = [];
+    try {
+      chrome.runtime.sendMessage({ type: "RECORD_ACTIVITY", events }, () => {
+        if (chrome.runtime.lastError) {
+          /* SW may be asleep; drop silently */
+        }
+      });
+    } catch (_) {}
+  }
+
+  window.addEventListener(EVENT_KEY, (ev) => {
+    try {
+      const d = ev.detail || {};
+      if (!d.type) return;
+      buffer.push({ type: String(d.type), detail: String(d.detail || "") });
+      if (buffer.length > 100) buffer.length = 100;
+      if (!flushTimer) flushTimer = setTimeout(flush, 400);
+    } catch (_) {}
   });
 })();

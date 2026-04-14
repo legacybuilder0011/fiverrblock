@@ -1,5 +1,90 @@
 // background.js - Privacy Shield Service Worker
-// Handles cookie purging, network privacy toggles, and config distribution.
+// Handles cookie purging, privacy toggles, live activity log, and config.
+
+// ---------- Live activity log ----------
+// Per-host counters + a rolling ring buffer of recent events. Kept in
+// service-worker memory; the popup polls via GET_ACTIVITY. We also mirror
+// into chrome.storage.session so the popup can render immediately even
+// after the service worker has been idled out.
+const ACTIVITY_RECENT_MAX = 60;
+const ACTIVITY_EMPTY = () => ({
+  counters: {
+    cookiesBlocked: 0,
+    canvasAccess: 0,
+    webglAccess: 0,
+    audioAccess: 0,
+    geoAccess: 0,
+    batteryAccess: 0,
+    pluginsAccess: 0,
+    fontsAccess: 0,
+    screenAccess: 0,
+    uaAccess: 0,
+    hardwareAccess: 0,
+    timezoneAccess: 0,
+    storageAccess: 0,
+    headersStripped: 0,
+    trackersBlocked: 0
+  },
+  recent: []
+});
+
+let activity = { byHost: {}, global: ACTIVITY_EMPTY() };
+
+// Restore from session storage on SW wakeup (best effort).
+chrome.storage.session.get("activity").then((r) => {
+  if (r && r.activity) {
+    activity = r.activity;
+  }
+});
+
+let persistPending = false;
+function persistActivitySoon() {
+  if (persistPending) return;
+  persistPending = true;
+  setTimeout(() => {
+    persistPending = false;
+    try {
+      chrome.storage.session.set({ activity });
+    } catch (_) {}
+  }, 500);
+}
+
+function recordActivity(host, type, detail) {
+  host = (host || "").toLowerCase().replace(/^www\./, "") || "_global";
+  const bucket =
+    activity.byHost[host] || (activity.byHost[host] = ACTIVITY_EMPTY());
+  if (bucket.counters[type] !== undefined) bucket.counters[type]++;
+  if (activity.global.counters[type] !== undefined)
+    activity.global.counters[type]++;
+  const evt = { t: Date.now(), host, type, detail: detail || "" };
+  bucket.recent.unshift(evt);
+  if (bucket.recent.length > ACTIVITY_RECENT_MAX)
+    bucket.recent.length = ACTIVITY_RECENT_MAX;
+  activity.global.recent.unshift(evt);
+  if (activity.global.recent.length > ACTIVITY_RECENT_MAX)
+    activity.global.recent.length = ACTIVITY_RECENT_MAX;
+  persistActivitySoon();
+}
+
+function getActivityFor(host) {
+  host = (host || "").toLowerCase().replace(/^www\./, "");
+  const site = host ? activity.byHost[host] : null;
+  return {
+    host,
+    site: site || ACTIVITY_EMPTY(),
+    global: activity.global
+  };
+}
+
+function clearActivity(host) {
+  if (host) {
+    host = host.toLowerCase().replace(/^www\./, "");
+    delete activity.byHost[host];
+  } else {
+    activity = { byHost: {}, global: ACTIVITY_EMPTY() };
+  }
+  persistActivitySoon();
+}
 
 const DEFAULT_CONFIG = {
   enabled: true,
@@ -123,6 +208,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await purgeCookiesIfEnabled();
         broadcastConfig(next);
         sendResponse({ ok: true, config: next });
+      } else if (msg?.type === "RECORD_ACTIVITY") {
+        // Called from the ISOLATED content script. Use the sender's tab
+        // origin as the authoritative host to prevent any page forging.
+        let host = "";
+        try {
+          const u = new URL(sender?.url || sender?.tab?.url || "");
+          host = u.hostname;
+        } catch (_) {}
+        if (Array.isArray(msg.events)) {
+          for (const e of msg.events) recordActivity(host, e.type, e.detail);
+        } else if (msg.eventType) {
+          recordActivity(host, msg.eventType, msg.detail);
+        }
+        sendResponse({ ok: true });
+      } else if (msg?.type === "GET_ACTIVITY") {
+        sendResponse({ ok: true, activity: getActivityFor(msg.host) });
+      } else if (msg?.type === "CLEAR_ACTIVITY") {
+        clearActivity(msg.host);
+        sendResponse({ ok: true });
       } else if (msg?.type === "PAUSE_SITE") {
         const result = await pauseSite(msg.hostname);
         sendResponse(result);
@@ -191,6 +295,7 @@ chrome.cookies.onChanged.addListener(async (changeInfo) => {
       name: c.name,
       storeId: c.storeId
     });
+    recordActivity(host, "cookiesBlocked", c.name);
   } catch (_) {
     /* ignore */
   }
