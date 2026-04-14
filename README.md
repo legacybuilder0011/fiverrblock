@@ -50,21 +50,49 @@ TCP/IP packets your OS sends. **JavaScript can't touch those packets**, so
 no browser extension can change them on its own.
 
 To change them, route Chrome's traffic through a proxy. This extension has
-a built-in **proxy client** (using `chrome.proxy`) in the popup:
+a built-in **proxy client** (`chrome.proxy`) that is safety-tested before
+it actually takes effect:
 
-1. Tick **"Route all traffic through proxy"**.
-2. Pick the scheme (`SOCKS5` is recommended — it handles DNS inside the
-   tunnel, so your ISP can't see which hostnames you visit).
-3. Enter the proxy host and port.
-4. Click **"Test — show current egress IP"** to confirm traffic is flowing
-   through the proxy (shows your new public IP via `api.ipify.org`).
+### Step by step — hide your IP with Tor (free, easiest)
 
-Once a proxy is active, sites will see the proxy's IP, ISP, and country —
-not yours. The toolbar badge switches to **"VPN"** to show this state.
+1. Download and install **Tor Browser** from <https://www.torproject.org>.
+2. **Launch Tor Browser** and let it connect to the Tor network. Leave
+   the window open. Tor Browser runs a local SOCKS5 proxy on
+   `127.0.0.1:9150`.
+3. Click the Privacy Shield icon → **"Hide real IP / ISP / ASN (proxy)"**.
+4. Pick the **"Tor Browser (127.0.0.1:9150)"** preset.
+5. Click **"Connect & test"**.
+6. If your proxy is reachable you will see
+   *"Proxy connected. Sites will see IP: …"* — that IP is what every site
+   will see from now on. The toolbar badge becomes **VPN**.
+7. If you see *"Proxy unreachable"* it means Tor Browser isn't running yet.
+   **The extension automatically reverts to a direct connection** so you
+   never get stuck with "No internet". Start Tor Browser and try again.
 
-You need to supply your own proxy (a paid VPN/proxy service, a home server,
-or Tor's SOCKS5 port `127.0.0.1:9050`). No proxies are bundled with the
-extension.
+### Alternative proxy sources
+
+- **Paid VPN with SOCKS5**:
+  - Mullvad (while the Mullvad app is connected via WireGuard): SOCKS5
+    `10.64.0.1:1080`.
+  - ProtonVPN / IVPN / AirVPN: check your provider's dashboard for a
+    SOCKS5 host and port, and (if required) username/password.
+- **Your own SSH tunnel**: run `ssh -D 1080 -N user@yourserver` on your
+  machine and point the extension to SOCKS5 `127.0.0.1:1080`.
+- **Standalone Tor daemon** (without Tor Browser): the daemon listens on
+  SOCKS5 `127.0.0.1:9050` once started.
+
+No proxy is bundled with the extension — you bring your own trusted one.
+
+### Recovering from "No internet" / `ERR_PROXY_CONNECTION_FAILED`
+
+That error means Chrome is still pointed at a proxy that isn't answering.
+Two one-click fixes:
+
+1. **Open the Privacy Shield popup** (it loads from an extension URL, not
+   through the proxy, so it always works) and click **"Disconnect"**.
+2. Or toggle the master switch at the top of the popup off.
+
+After either action, Chrome immediately goes back to a direct connection.
 
 ## What this still can NOT change
 

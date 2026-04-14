@@ -22,15 +22,28 @@
     <section class="group">
       <h2>Hide real IP / ISP / ASN (proxy)</h2>
       <p class="hint">
-        Your IP / ISP / ASN / country come from the TCP connection, NOT
-        JavaScript. Route Chrome through a proxy to change them.
+        Your IP / ISP / ASN / country come from the TCP connection, not
+        JavaScript. Route Chrome through a proxy to change them. The proxy
+        is tested BEFORE it is applied, so a bad entry will not lock you
+        out of the internet.
       </p>
-      <label class="row">
-        <span>Route all traffic through proxy</span>
-        <label class="switch"
-          ><input type="checkbox" id="useProxy" /><span class="slider"></span
-        ></label>
+
+      <div class="proxy-status" id="proxyStatusCard">
+        <span id="proxyState" class="chip gray">Disconnected</span>
+        <span id="proxyStateDetail" class="hint inline"></span>
+      </div>
+
+      <label class="field">
+        <span>Quick preset</span>
+        <select id="proxyPreset">
+          <option value="">Custom</option>
+          <option value="socks5,127.0.0.1,9150">Tor Browser (127.0.0.1:9150)</option>
+          <option value="socks5,127.0.0.1,9050">Tor daemon (127.0.0.1:9050)</option>
+          <option value="socks5,127.0.0.1,1080">Local SSH tunnel -D 1080</option>
+          <option value="socks5,10.64.0.1,1080">Mullvad SOCKS5 (10.64.0.1:1080)</option>
+        </select>
       </label>
+
       <div class="grid2">
         <label class="field">
           <span>Type</span>
@@ -54,8 +67,65 @@
           placeholder="e.g. 127.0.0.1 or proxy.example.com"
         />
       </label>
-      <button id="testProxy" class="btn">Test — show current egress IP</button>
+
+      <div class="grid2">
+        <button id="connectProxy" class="btn primary">Connect &amp; test</button>
+        <button id="disconnectProxy" class="btn danger" disabled>
+          Disconnect
+        </button>
+      </div>
       <p id="proxyResult" class="hint"></p>
+
+      <!-- dummy checkbox that tracks server-side useProxy; keeps popup.js
+           FIELDS array happy without an extra user toggle -->
+      <input type="checkbox" id="useProxy" hidden />
+
+      <details class="guide">
+        <summary>First-time setup guide — how do I get a proxy?</summary>
+        <ol>
+          <li>
+            <b>Use Tor Browser (free, easiest)</b>
+            <ul>
+              <li>Download from <code>torproject.org</code> and run it.</li>
+              <li>While Tor Browser is open pick the "Tor Browser" preset
+                above, or set SOCKS5 <code>127.0.0.1:9150</code>.</li>
+              <li>Click <b>Connect &amp; test</b>.</li>
+            </ul>
+          </li>
+          <li>
+            <b>Use a paid VPN with a SOCKS5 endpoint</b>
+            <ul>
+              <li>Mullvad: <code>10.64.0.1:1080</code> while the Mullvad
+                app is connected (WireGuard).</li>
+              <li>ProtonVPN, IVPN, AirVPN: check the provider's dashboard
+                for the SOCKS5 host / port.</li>
+            </ul>
+          </li>
+          <li>
+            <b>Run your own SSH tunnel</b>
+            <ul>
+              <li>Command: <code>ssh -D 1080 -N user@yourserver</code></li>
+              <li>Then set SOCKS5 <code>127.0.0.1:1080</code>.</li>
+            </ul>
+          </li>
+          <li>
+            <b>If it says "Proxy unreachable"</b>
+            <ul>
+              <li>The proxy software is not actually running (most common
+                cause). Launch Tor Browser / your VPN, then retry.</li>
+              <li>Wrong port — Tor Browser is 9150, Tor daemon is 9050.</li>
+              <li>You are stuck with "No internet"? Click
+                <b>Disconnect</b> or turn the master switch off. The
+                extension also auto-disconnects on failed tests.</li>
+            </ul>
+          </li>
+        </ol>
+        <p class="hint">
+          This extension does NOT ship a built-in proxy because bundling a
+          free proxy would just be lying about where your traffic goes.
+          Bring your own trusted one.
+        </p>
+      </details>
     </section>
 
     <section class="group">

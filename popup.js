@@ -2,7 +2,6 @@
 
 const FIELDS = [
   "enabled",
-  "useProxy",
   "blockCookies",
   "blockStorage",
   "spoofGeo",
@@ -62,7 +61,41 @@ function populate(config) {
     $("proxyHost").value = config.proxy.host || "";
     $("proxyPort").value = config.proxy.port || 1080;
   }
+  $("useProxy").checked = Boolean(config.useProxy);
   updateStatus(config.enabled);
+  updateProxyState(config);
+}
+
+function updateProxyState(config) {
+  const chip = $("proxyState");
+  const detail = $("proxyStateDetail");
+  const connectBtn = $("connectProxy");
+  const disconnectBtn = $("disconnectProxy");
+  chip.classList.remove("green", "blue", "gray", "red", "amber");
+  if (!config.enabled) {
+    chip.textContent = "Shield off";
+    chip.classList.add("gray");
+    detail.textContent = "";
+    disconnectBtn.disabled = true;
+    connectBtn.disabled = true;
+  } else if (config.useProxy && config.proxy?.host) {
+    chip.textContent = "Connected";
+    chip.classList.add("blue");
+    detail.textContent =
+      (config.proxy.scheme || "socks5") +
+      "://" +
+      config.proxy.host +
+      ":" +
+      config.proxy.port;
+    disconnectBtn.disabled = false;
+    connectBtn.disabled = false;
+  } else {
+    chip.textContent = "Direct connection";
+    chip.classList.add("gray");
+    detail.textContent = "";
+    disconnectBtn.disabled = true;
+    connectBtn.disabled = false;
+  }
 }
 
 function updateStatus(enabled) {
@@ -109,6 +142,8 @@ function collect() {
     pixelDepth: 24
   };
   config.languages = [config.language || "en-US", "en"];
+  // Proxy edits go through CONNECT_PROXY, not SET_CONFIG, but send the
+  // latest host/port/scheme so the background keeps the draft in storage.
   config.proxy = {
     scheme: $("proxyScheme").value,
     host: $("proxyHost").value.trim(),
@@ -116,6 +151,15 @@ function collect() {
     bypassList: ["localhost", "127.0.0.1", "<local>"]
   };
   return config;
+}
+
+function currentProxyFromUI() {
+  return {
+    scheme: $("proxyScheme").value,
+    host: $("proxyHost").value.trim(),
+    port: Number($("proxyPort").value) || 1080,
+    bypassList: ["localhost", "127.0.0.1", "<local>"]
+  };
 }
 
 function save(reload) {
@@ -162,29 +206,59 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   });
 
-  // Proxy toggle applies instantly
-  $("useProxy").addEventListener("change", () => save(false));
+  // Proxy preset filler
+  $("proxyPreset").addEventListener("change", (e) => {
+    const v = e.target.value;
+    if (!v) return;
+    const [scheme, host, port] = v.split(",");
+    $("proxyScheme").value = scheme;
+    $("proxyHost").value = host;
+    $("proxyPort").value = port;
+  });
 
-  // Test proxy egress IP
-  $("testProxy").addEventListener("click", () => {
-    // Save first so the proxy is applied, then test.
+  // Connect & test — preflights before applying so the user never
+  // loses internet because of a dead proxy.
+  $("connectProxy").addEventListener("click", () => {
+    const out = $("proxyResult");
+    const chip = $("proxyState");
+    chip.classList.remove("green", "blue", "gray", "red", "amber");
+    chip.classList.add("amber");
+    chip.textContent = "Connecting…";
+    out.textContent = "Testing proxy before routing traffic…";
+    $("connectProxy").disabled = true;
     chrome.runtime.sendMessage(
-      { type: "SET_CONFIG", config: collect() },
-      () => {
-        const out = $("proxyResult");
-        out.textContent = "Testing…";
-        chrome.runtime.sendMessage({ type: "TEST_PROXY" }, (res) => {
-          if (!res?.ok) {
-            out.textContent = "Test failed.";
-            return;
-          }
-          if (res.result.ok) {
-            out.textContent = "Egress IP: " + res.result.ip;
-          } else {
-            out.textContent = "Error: " + res.result.error;
-          }
-        });
+      { type: "CONNECT_PROXY", proxy: currentProxyFromUI() },
+      async (res) => {
+        const config = await loadConfig();
+        updateProxyState(config);
+        if (!res?.ok) {
+          out.innerHTML =
+            "<b>" +
+            escapeHtml(res?.error || "Unknown error") +
+            "</b><br>" +
+            escapeHtml(res?.hint || "");
+        } else {
+          out.textContent =
+            "Proxy connected. Sites will see IP: " + res.ip;
+        }
       }
     );
   });
+
+  // Disconnect button — always works even if current pages are broken.
+  $("disconnectProxy").addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "DISCONNECT_PROXY" }, async () => {
+      const config = await loadConfig();
+      updateProxyState(config);
+      $("proxyResult").textContent =
+        "Proxy disconnected. Chrome is back to direct connection.";
+    });
+  });
 });
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}

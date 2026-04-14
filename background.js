@@ -99,6 +99,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (msg?.type === "SET_CONFIG") {
         const current = await getConfig();
         const next = { ...current, ...msg.config };
+        // Never let SET_CONFIG silently bring the proxy up. The proxy flow is
+        // managed explicitly by CONNECT_PROXY / DISCONNECT_PROXY so we can
+        // preflight it and avoid locking the user out of the internet.
+        next.useProxy = current.useProxy;
+        next.proxy = current.proxy && msg.config?.proxy
+          ? { ...current.proxy, ...msg.config.proxy }
+          : current.proxy;
         await chrome.storage.local.set({ config: next });
         await applyNetworkPrivacySettings();
         await applyProxySettings();
@@ -106,6 +113,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await purgeCookiesIfEnabled();
         broadcastConfig(next);
         sendResponse({ ok: true, config: next });
+      } else if (msg?.type === "CONNECT_PROXY") {
+        const result = await connectProxy(msg.proxy || {});
+        sendResponse(result);
+      } else if (msg?.type === "DISCONNECT_PROXY") {
+        const result = await disconnectProxy();
+        sendResponse(result);
       } else if (msg?.type === "TEST_PROXY") {
         const result = await testProxy();
         sendResponse({ ok: true, result });
@@ -256,16 +269,93 @@ async function applyProxySettings() {
 
 async function testProxy() {
   // Fetch a lightweight echo endpoint to confirm traffic goes through the proxy.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
     const r = await fetch("https://api.ipify.org?format=json", {
-      cache: "no-store"
+      cache: "no-store",
+      signal: ctrl.signal
     });
+    clearTimeout(timer);
     if (!r.ok) return { ok: false, error: "HTTP " + r.status };
     const j = await r.json();
     return { ok: true, ip: j.ip };
   } catch (e) {
-    return { ok: false, error: String(e) };
+    clearTimeout(timer);
+    return { ok: false, error: humanizeProxyError(e) };
   }
+}
+
+function humanizeProxyError(err) {
+  const s = String(err || "");
+  if (s.includes("Failed to fetch") || s.includes("abort")) {
+    return "Proxy unreachable. Nothing is listening at that host:port, or the proxy timed out. Is Tor / your VPN actually running?";
+  }
+  return s;
+}
+
+// Try to bring the proxy up. Applies it, runs a preflight fetch, and if the
+// preflight fails, clears the proxy so the user does not lose internet.
+async function connectProxy(newProxy) {
+  const current = await getConfig();
+  const proxy = { ...current.proxy, ...newProxy };
+  if (!proxy.host || !proxy.port) {
+    return { ok: false, error: "Missing proxy host or port." };
+  }
+
+  const trial = {
+    mode: "fixed_servers",
+    rules: {
+      singleProxy: {
+        scheme: proxy.scheme || "socks5",
+        host: proxy.host,
+        port: Number(proxy.port) || 1080
+      },
+      bypassList: proxy.bypassList || ["localhost", "127.0.0.1", "<local>"]
+    }
+  };
+
+  try {
+    await chrome.proxy.settings.set({ value: trial, scope: "regular" });
+  } catch (err) {
+    return { ok: false, error: "chrome.proxy rejected config: " + err };
+  }
+
+  const result = await testProxy();
+  if (!result.ok) {
+    // Roll back so the user is not stuck with a dead proxy.
+    try {
+      await chrome.proxy.settings.clear({ scope: "regular" });
+    } catch (_) {}
+    const next = { ...current, useProxy: false, proxy };
+    await chrome.storage.local.set({ config: next });
+    await applyBadgeDefaults();
+    return {
+      ok: false,
+      error: result.error,
+      hint:
+        "Chrome is back to direct connection. Start your proxy (e.g. launch Tor Browser, open your VPN's SOCKS port, or run ssh -D 1080) then try again."
+    };
+  }
+
+  // Preflight passed - persist and commit.
+  const next = { ...current, useProxy: true, proxy };
+  await chrome.storage.local.set({ config: next });
+  await applyBadgeDefaults();
+  broadcastConfig(next);
+  return { ok: true, ip: result.ip };
+}
+
+async function disconnectProxy() {
+  try {
+    await chrome.proxy.settings.clear({ scope: "regular" });
+  } catch (_) {}
+  const current = await getConfig();
+  const next = { ...current, useProxy: false };
+  await chrome.storage.local.set({ config: next });
+  await applyBadgeDefaults();
+  broadcastConfig(next);
+  return { ok: true };
 }
 
 // ---------- Per-tab badge ----------
