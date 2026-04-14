@@ -49,7 +49,10 @@ const DEFAULT_CONFIG = {
     availHeight: 1040,
     colorDepth: 24,
     pixelDepth: 24
-  }
+  },
+  // Per-site pause list. Any origin here is skipped by the content scripts
+  // AND by the DNR header / tracker rules (via dynamic allow rules).
+  siteAllowList: []
 };
 
 // ---------- Config bootstrap ----------
@@ -63,19 +66,26 @@ async function getConfig() {
   return { ...DEFAULT_CONFIG, ...stored.config };
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   const stored = await chrome.storage.local.get("config");
   if (!stored.config) {
     await chrome.storage.local.set({ config: DEFAULT_CONFIG });
   }
   await applyNetworkPrivacySettings();
   await applyProxySettings();
+  await applySiteAllowRules();
   await applyBadgeDefaults();
+  // Open a welcome tour on first install so users know what the shield does
+  // and how to pause it per site.
+  if (details.reason === "install") {
+    chrome.tabs.create({ url: chrome.runtime.getURL("welcome.html") });
+  }
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await applyNetworkPrivacySettings();
   await applyProxySettings();
+  await applySiteAllowRules();
   await applyBadgeDefaults();
 });
 
@@ -113,6 +123,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await purgeCookiesIfEnabled();
         broadcastConfig(next);
         sendResponse({ ok: true, config: next });
+      } else if (msg?.type === "PAUSE_SITE") {
+        const result = await pauseSite(msg.hostname);
+        sendResponse(result);
+      } else if (msg?.type === "RESUME_SITE") {
+        const result = await resumeSite(msg.hostname);
+        sendResponse(result);
       } else if (msg?.type === "CONNECT_PROXY") {
         const result = await connectProxy(msg.proxy || {});
         sendResponse(result);
@@ -344,6 +360,69 @@ async function connectProxy(newProxy) {
   await applyBadgeDefaults();
   broadcastConfig(next);
   return { ok: true, ip: result.ip };
+}
+
+// ---------- Per-site pause / resume ----------
+function normalizeHost(h) {
+  if (!h) return "";
+  return String(h).trim().toLowerCase().replace(/^www\./, "");
+}
+
+async function pauseSite(hostname) {
+  const host = normalizeHost(hostname);
+  if (!host) return { ok: false, error: "No hostname" };
+  const current = await getConfig();
+  const set = new Set(current.siteAllowList || []);
+  set.add(host);
+  const next = { ...current, siteAllowList: Array.from(set) };
+  await chrome.storage.local.set({ config: next });
+  await applySiteAllowRules();
+  broadcastConfig(next);
+  return { ok: true, allowList: next.siteAllowList };
+}
+
+async function resumeSite(hostname) {
+  const host = normalizeHost(hostname);
+  if (!host) return { ok: false, error: "No hostname" };
+  const current = await getConfig();
+  const next = {
+    ...current,
+    siteAllowList: (current.siteAllowList || []).filter((h) => h !== host)
+  };
+  await chrome.storage.local.set({ config: next });
+  await applySiteAllowRules();
+  broadcastConfig(next);
+  return { ok: true, allowList: next.siteAllowList };
+}
+
+// Installs "allow" DNR rules for every paused site so the static header /
+// tracker-blocking rules are bypassed there.
+async function applySiteAllowRules() {
+  const config = await getConfig();
+  const hosts = Array.from(new Set(config.siteAllowList || [])).filter(Boolean);
+
+  // Clear previously installed dynamic rules in our range (1000+).
+  try {
+    const existing = await chrome.declarativeNetRequest.getDynamicRules();
+    const removeIds = existing
+      .filter((r) => r.id >= 1000 && r.id < 2000)
+      .map((r) => r.id);
+    const addRules = hosts.map((host, i) => ({
+      id: 1000 + i,
+      priority: 1000,
+      action: { type: "allowAllRequests" },
+      condition: {
+        requestDomains: [host],
+        resourceTypes: ["main_frame", "sub_frame"]
+      }
+    }));
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: removeIds,
+      addRules
+    });
+  } catch (err) {
+    console.warn("Dynamic allow-rule update failed:", err);
+  }
 }
 
 async function disconnectProxy() {

@@ -112,8 +112,14 @@ After either action, Chrome immediately goes back to a direct connection.
 
 ## Usage
 
+- On first install, a **welcome tour** (`welcome.html`) opens
+  automatically with a complete walkthrough.
 - Click the toolbar icon to open the popup.
 - The master switch toggles all protections.
+- At the top of the popup you'll see the **current site** and a
+  **"Pause here"** / **"Resume here"** button. Use it when a site refuses
+  to work (captchas, Brave Search, logins, payments) — only that one
+  domain gets whitelisted; every other site stays protected.
 - Flip each individual defense on/off as desired.
 - Set your spoofed location (pick a preset or enter custom lat/lon).
 - Set the timezone (e.g. `Europe/Paris`) and the **reverse-sign** offset in
@@ -121,6 +127,15 @@ After either action, Chrome immediately goes back to a direct connection.
 - Click **Save & Reload tab** so the active page re-fingerprints with the
   new values.
 - Use **Purge all cookies now** to clear the entire cookie jar immediately.
+
+### Why some sites ask to "enable cookies"
+
+If a captcha, login, Brave Search, or payment page asks you to enable
+cookies or storage, that is the shield doing its job. Rather than
+globally disabling anything, use the **Pause here** button at the top
+of the popup — it adds just that one domain to the allow-list. The site
+will work; all other tabs stay fully protected. Click **Resume here**
+later to re-enable protection on that site.
 
 ## File layout
 

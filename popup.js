@@ -175,9 +175,72 @@ function save(reload) {
   });
 }
 
+async function getActiveTabHost() {
+  return new Promise((resolve) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs[0];
+      if (!tab || !tab.url) return resolve({ host: "", url: "", tabId: null });
+      try {
+        const u = new URL(tab.url);
+        resolve({
+          host: u.hostname.toLowerCase().replace(/^www\./, ""),
+          url: tab.url,
+          tabId: tab.id
+        });
+      } catch (_) {
+        resolve({ host: "", url: tab.url, tabId: tab.id });
+      }
+    });
+  });
+}
+
+function renderSiteStrip(config, active) {
+  const strip = document.querySelector(".site-strip");
+  const hostEl = $("siteHost");
+  const stateEl = $("siteState");
+  const btn = $("toggleSite");
+  if (!active.host) {
+    hostEl.textContent = "(special page)";
+    stateEl.textContent = "Shield is not active on chrome:// and extension pages";
+    btn.disabled = true;
+    btn.textContent = "—";
+    strip.classList.remove("paused");
+    return;
+  }
+  const paused = (config.siteAllowList || []).includes(active.host);
+  hostEl.textContent = active.host;
+  if (paused) {
+    stateEl.textContent = "Paused — shield is NOT running on this site";
+    btn.textContent = "Resume here";
+    btn.classList.add("primary");
+    strip.classList.add("paused");
+  } else {
+    stateEl.textContent = "Shield active on this site";
+    btn.textContent = "Pause here";
+    btn.classList.remove("primary");
+    strip.classList.remove("paused");
+  }
+  btn.disabled = false;
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   const config = await loadConfig();
   populate(config);
+
+  const active = await getActiveTabHost();
+  renderSiteStrip(config, active);
+
+  $("toggleSite").addEventListener("click", async () => {
+    const cur = await loadConfig();
+    const paused = (cur.siteAllowList || []).includes(active.host);
+    const type = paused ? "RESUME_SITE" : "PAUSE_SITE";
+    chrome.runtime.sendMessage({ type, hostname: active.host }, async () => {
+      const fresh = await loadConfig();
+      renderSiteStrip(fresh, active);
+      // Reload the tab so the change takes effect immediately.
+      if (active.tabId) chrome.tabs.reload(active.tabId);
+    });
+  });
 
   // Enable master toggle applies instantly.
   $("enabled").addEventListener("change", () => save(false));

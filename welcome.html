@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Welcome to Privacy Shield</title>
+    <link rel="stylesheet" href="welcome.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="wrap">
+        <h1>Privacy Shield is installed.</h1>
+        <p class="sub">
+          From this second on, every website you open is being lied to about
+          who you are. Here is exactly what that means and how to use it.
+        </p>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <!-- ---------------------------------------------------------------- -->
+      <section class="card">
+        <h2>1. What is already happening, automatically</h2>
+        <p>
+          You do not need to click anything. The moment a website loads
+          (including its iframes, ads, and trackers), Privacy Shield rewrites
+          the answers the page gets from Chrome so the site cannot identify
+          your specific device:
+        </p>
+        <ul class="grid">
+          <li><b>Browser type &amp; OS</b> (User-Agent, platform, vendor, sec-ch-ua)</li>
+          <li><b>Screen resolution, color depth, pixel ratio</b></li>
+          <li><b>Installed fonts &amp; plugins</b> (returns empty)</li>
+          <li><b>Time zone</b> — sites see UTC (or your chosen zone) only</li>
+          <li><b>CPU cores &amp; RAM</b> (<code>hardwareConcurrency</code>, <code>deviceMemory</code>)</li>
+          <li><b>GPU renderer</b> (<code>WEBGL_debug_renderer_info</code> blocked)</li>
+          <li><b>Canvas fingerprint</b> — noise injected into <code>toDataURL</code> / <code>getImageData</code></li>
+          <li><b>AudioContext fingerprint</b> — noise in <code>getFloatFrequencyData</code></li>
+          <li><b>Battery API</b> (always returns "charging, 100%")</li>
+          <li><b>Geolocation</b> — returns coordinates you pick in the popup</li>
+          <li><b>Cookies</b> — blocked at JS &amp; HTTP level, purged in background</li>
+          <li><b>Network trackers</b> — GA, GTM, FingerprintJS, Hotjar, Segment, etc. blocked</li>
+          <li><b>WebRTC IP leak</b> guarded</li>
+          <li><b>Referer, Client-Hints, X-Client-Data</b> stripped from every request</li>
+        </ul>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="card">
+        <h2>2. The one thing that needs YOUR action: IP / ISP / ASN</h2>
+        <p>
+          Websites don't need JavaScript to see your IP address — it's in
+          every TCP packet leaving your computer. Your ISP name, ASN, and
+          country are looked up from that IP. <b>No browser extension can
+          rewrite IP packets.</b> To change what they see, Chrome has to
+          send traffic through a <b>proxy</b>.
+        </p>
+        <p>Privacy Shield has a built-in safe proxy client:</p>
+        <ol class="steps">
+          <li>
+            Download and install <a href="https://www.torproject.org" target="_blank" rel="noopener">Tor Browser</a>.
+          </li>
+          <li>Launch it. Wait for "Connected". <b>Keep the window open.</b></li>
+          <li>Click the Privacy Shield icon in your toolbar.</li>
+          <li>
+            Under <b>"Hide real IP / ISP / ASN"</b>, choose the preset
+            <b>"Tor Browser (127.0.0.1:9150)"</b>.
+          </li>
+          <li>Click <b>Connect &amp; test</b>.</li>
+          <li>
+            You will either see <b>"Proxy connected. Sites will see IP: …"</b>
+            or an error. If it errors, the extension automatically reverts
+            — you will NOT lose internet.
+          </li>
+        </ol>
+        <p class="muted">
+          Alternatives: Mullvad / Proton / IVPN SOCKS5, your own SSH
+          <code>ssh -D 1080</code>. Use whatever you trust — no proxy ships
+          with the extension.
+        </p>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="card warn">
+        <h2>3. Some sites will ask you to "enable cookies" — that's normal</h2>
+        <p>
+          If a captcha, login, Brave Search, Google, or payment page asks
+          you to "enable cookies" or "enable storage", that is <b>proof the
+          shield is working</b>. You can fix it with one click — per site —
+          without disabling everything:
+        </p>
+        <ol class="steps">
+          <li>While on the broken site, click the Privacy Shield icon.</li>
+          <li>
+            At the top of the popup you'll see the current domain and a
+            <b>"Pause here"</b> button. Click it.
+          </li>
+          <li>
+            The tab reloads, the shield stops blocking <i>that one site</i>,
+            and everything else is still protected.
+          </li>
+          <li>
+            Come back any time and click <b>"Resume here"</b> to re-enable
+            the shield for that site.
+          </li>
+        </ol>
+        <p class="muted">
+          You can also turn off individual defenses (cookies, canvas, fonts,
+          etc.) globally in the popup if a category always causes trouble.
+        </p>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="card">
+        <h2>4. Reading the toolbar badge</h2>
+        <ul class="badge-list">
+          <li><span class="badge green">ON</span> Shield is running, direct IP connection.</li>
+          <li><span class="badge blue">VPN</span> Shield is running AND proxy is connected. This is what you want for maximum privacy.</li>
+          <li><span class="badge gray">OFF</span> Master switch is off. Chrome is fully exposed.</li>
+        </ul>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
+      <section class="card">
+        <h2>5. What this extension still cannot change</h2>
+        <ul>
+          <li>
+            <b>TLS fingerprint (JA3 / JA4)</b> — built from the ClientHello
+            Chrome itself sends. Use Tor or a TLS-terminating proxy.
+          </li>
+          <li>
+            <b>Your OS-level DNS resolver</b> — use SOCKS5 (it does DNS
+            inside the tunnel) or an encrypted DNS resolver.
+          </li>
+        </ul>
+      </section>
+
+      <p class="cta">
+        You're set up. Click the Privacy Shield icon in your toolbar to open
+        the popup any time. You can close this tab.
+      </p>
+    </main>
+  </body>
+</html>

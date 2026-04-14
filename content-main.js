@@ -71,6 +71,15 @@
   // Do nothing when the shield is disabled.
   if (!config.enabled) return;
 
+  // Do nothing when this site is explicitly paused.
+  try {
+    const host = (location.hostname || "").toLowerCase().replace(/^www\./, "");
+    const list = Array.isArray(config.siteAllowList)
+      ? config.siteAllowList
+      : [];
+    if (host && list.includes(host)) return;
+  } catch (_) {}
+
   // ------------- Tiny helpers -------------
   const defineRO = (obj, prop, value) => {
     try {
