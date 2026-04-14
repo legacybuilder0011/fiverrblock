@@ -110,6 +110,37 @@
       </section>
 
       <!-- ---------------------------------------------------------------- -->
+      <section class="card warn">
+        <h2>3b. Tor + Google / Cloudflare = CAPTCHA hell</h2>
+        <p>
+          Many big sites (Google, YouTube, Reddit, anything on Cloudflare)
+          deliberately challenge Tor exit nodes. You will see "Our systems
+          have detected unusual traffic…" or an endless hCaptcha. That is
+          not a bug in this extension — Google knows you're on Tor and is
+          blocking it.
+        </p>
+        <p>You have two good options:</p>
+        <ol class="steps">
+          <li>
+            <b>Use a search engine that doesn't punish Tor</b> —
+            <a href="https://duckduckgo.com" target="_blank" rel="noopener">duckduckgo.com</a>,
+            <a href="https://www.startpage.com" target="_blank" rel="noopener">startpage.com</a>,
+            <a href="https://kagi.com" target="_blank" rel="noopener">kagi.com</a>, or
+            <a href="https://search.brave.com" target="_blank" rel="noopener">search.brave.com</a>
+            (after <b>Pause here</b>, see §3).
+          </li>
+          <li>
+            <b>Bypass the proxy for just that domain</b>. With the proxy
+            connected, open the Privacy Shield popup while on the broken
+            site and click <b>Skip proxy here</b>. That domain will
+            connect directly (keeping your real IP), while every other
+            site still goes through Tor. Click <b>Route through proxy</b>
+            later to revert.
+          </li>
+        </ol>
+      </section>
+
+      <!-- ---------------------------------------------------------------- -->
       <section class="card">
         <h2>4. Reading the toolbar badge</h2>
         <ul class="badge-list">

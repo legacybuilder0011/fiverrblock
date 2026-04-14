@@ -24,15 +24,32 @@
         <div class="site-host" id="siteHost">—</div>
         <div class="site-state" id="siteState">Shield active on this site</div>
       </div>
-      <button id="toggleSite" class="btn small">Pause here</button>
+      <div class="site-actions">
+        <button id="toggleSite" class="btn small">Pause here</button>
+        <button id="toggleProxyBypass" class="btn small" hidden>
+          Skip proxy here
+        </button>
+      </div>
     </section>
 
     <section class="group tip">
-      <b>New here?</b> Your IP / ISP / ASN / country need a proxy (see
-      below). Canvas, WebGL, cookies, fonts, timezone, audio, battery,
-      screen, UA, hardware, and geolocation are already blocked on every
-      site. If a page breaks (captchas, Brave Search, logins, payments),
-      tap <b>Pause here</b> above to whitelist just that site and reload.
+      <b>New here?</b> Canvas, WebGL, cookies, fonts, timezone, audio,
+      battery, screen, UA, hardware, and geolocation are already blocked
+      on every site.
+      <ul class="tip-list">
+        <li>
+          Site broken (captchas / Brave Search / logins)? →
+          <b>Pause here</b> above to whitelist that one site.
+        </li>
+        <li>
+          Want to hide your IP / ISP / country? → connect a proxy below.
+        </li>
+        <li>
+          On Tor, Google or Cloudflare show a CAPTCHA? →
+          <b>Skip proxy here</b> above to connect directly to that site
+          only.
+        </li>
+      </ul>
     </section>
 
     <section class="group">

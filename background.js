@@ -129,6 +129,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (msg?.type === "RESUME_SITE") {
         const result = await resumeSite(msg.hostname);
         sendResponse(result);
+      } else if (msg?.type === "BYPASS_PROXY_SITE") {
+        const result = await bypassProxyForSite(msg.hostname);
+        sendResponse(result);
+      } else if (msg?.type === "UNBYPASS_PROXY_SITE") {
+        const result = await unbypassProxyForSite(msg.hostname);
+        sendResponse(result);
       } else if (msg?.type === "CONNECT_PROXY") {
         const result = await connectProxy(msg.proxy || {});
         sendResponse(result);
@@ -172,8 +178,12 @@ chrome.cookies.onChanged.addListener(async (changeInfo) => {
   if (!config.enabled || !config.blockCookies) return;
   if (changeInfo.removed) return;
   const c = changeInfo.cookie;
+  const host = (c.domain.startsWith(".") ? c.domain.slice(1) : c.domain)
+    .toLowerCase();
+  // Respect per-site pause: do NOT delete cookies belonging to paused hosts
+  // (matches the exact host OR any parent on the allow list).
+  if (hostMatchesAllowList(host, config.siteAllowList)) return;
   const protocol = c.secure ? "https://" : "http://";
-  const host = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain;
   const url = protocol + host + c.path;
   try {
     await chrome.cookies.remove({
@@ -186,11 +196,26 @@ chrome.cookies.onChanged.addListener(async (changeInfo) => {
   }
 });
 
-async function purgeAllCookies() {
+function hostMatchesAllowList(host, list) {
+  if (!host || !Array.isArray(list) || !list.length) return false;
+  const h = host.toLowerCase().replace(/^www\./, "");
+  for (const raw of list) {
+    const allowed = String(raw || "").toLowerCase().replace(/^www\./, "");
+    if (!allowed) continue;
+    if (h === allowed || h.endsWith("." + allowed)) return true;
+  }
+  return false;
+}
+
+async function purgeAllCookies({ respectAllowList = true } = {}) {
   const cookies = await chrome.cookies.getAll({});
+  const config = respectAllowList ? await getConfig() : null;
+  const list = config ? config.siteAllowList || [] : [];
   for (const c of cookies) {
+    const host = (c.domain.startsWith(".") ? c.domain.slice(1) : c.domain)
+      .toLowerCase();
+    if (respectAllowList && hostMatchesAllowList(host, list)) continue;
     const protocol = c.secure ? "https://" : "http://";
-    const host = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain;
     const url = protocol + host + c.path;
     try {
       await chrome.cookies.remove({ url, name: c.name, storeId: c.storeId });
@@ -393,6 +418,50 @@ async function resumeSite(hostname) {
   await applySiteAllowRules();
   broadcastConfig(next);
   return { ok: true, allowList: next.siteAllowList };
+}
+
+// Add a hostname to the proxy bypass list so Chrome connects to that
+// site directly even while the proxy is on. Useful for Google / Cloudflare
+// sites that block Tor exit nodes with CAPTCHAs.
+async function bypassProxyForSite(hostname) {
+  const host = normalizeHost(hostname);
+  if (!host) return { ok: false, error: "No hostname" };
+  const current = await getConfig();
+  const base = current.proxy?.bypassList || [
+    "localhost",
+    "127.0.0.1",
+    "<local>"
+  ];
+  // chrome.proxy accepts entries like "*.example.com" to cover subdomains.
+  const entries = new Set(base);
+  entries.add(host);
+  entries.add("*." + host);
+  const next = {
+    ...current,
+    proxy: { ...current.proxy, bypassList: Array.from(entries) }
+  };
+  await chrome.storage.local.set({ config: next });
+  if (next.useProxy) await applyProxySettings();
+  broadcastConfig(next);
+  return { ok: true, bypassList: next.proxy.bypassList };
+}
+
+async function unbypassProxyForSite(hostname) {
+  const host = normalizeHost(hostname);
+  if (!host) return { ok: false, error: "No hostname" };
+  const current = await getConfig();
+  const base = current.proxy?.bypassList || [];
+  const filtered = base.filter(
+    (e) => e !== host && e !== "*." + host
+  );
+  const next = {
+    ...current,
+    proxy: { ...current.proxy, bypassList: filtered }
+  };
+  await chrome.storage.local.set({ config: next });
+  if (next.useProxy) await applyProxySettings();
+  broadcastConfig(next);
+  return { ok: true, bypassList: next.proxy.bypassList };
 }
 
 // Installs "allow" DNR rules for every paused site so the static header /

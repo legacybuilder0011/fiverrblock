@@ -194,16 +194,32 @@ async function getActiveTabHost() {
   });
 }
 
+function hostMatchesBypassList(host, list) {
+  if (!host || !Array.isArray(list)) return false;
+  for (const entry of list) {
+    const e = String(entry || "").toLowerCase();
+    if (!e) continue;
+    if (e === host) return true;
+    if (e.startsWith("*.") && (host === e.slice(2) || host.endsWith(e.slice(1)))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function renderSiteStrip(config, active) {
   const strip = document.querySelector(".site-strip");
   const hostEl = $("siteHost");
   const stateEl = $("siteState");
   const btn = $("toggleSite");
+  const bypassBtn = $("toggleProxyBypass");
   if (!active.host) {
     hostEl.textContent = "(special page)";
-    stateEl.textContent = "Shield is not active on chrome:// and extension pages";
+    stateEl.textContent =
+      "Shield is not active on chrome:// and extension pages";
     btn.disabled = true;
     btn.textContent = "—";
+    bypassBtn.hidden = true;
     strip.classList.remove("paused");
     return;
   }
@@ -221,6 +237,20 @@ function renderSiteStrip(config, active) {
     strip.classList.remove("paused");
   }
   btn.disabled = false;
+
+  // Only show the proxy-bypass button when a proxy is actually connected,
+  // since otherwise it has no effect.
+  if (config.useProxy && config.proxy?.host) {
+    bypassBtn.hidden = false;
+    const bypassed = hostMatchesBypassList(
+      active.host,
+      config.proxy?.bypassList
+    );
+    bypassBtn.textContent = bypassed ? "Route through proxy" : "Skip proxy here";
+    bypassBtn.dataset.bypassed = bypassed ? "1" : "0";
+  } else {
+    bypassBtn.hidden = true;
+  }
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -238,6 +268,17 @@ document.addEventListener("DOMContentLoaded", async () => {
       const fresh = await loadConfig();
       renderSiteStrip(fresh, active);
       // Reload the tab so the change takes effect immediately.
+      if (active.tabId) chrome.tabs.reload(active.tabId);
+    });
+  });
+
+  // Per-site proxy bypass (e.g. skip Tor for Google to avoid captcha hell).
+  $("toggleProxyBypass").addEventListener("click", async () => {
+    const bypassed = $("toggleProxyBypass").dataset.bypassed === "1";
+    const type = bypassed ? "UNBYPASS_PROXY_SITE" : "BYPASS_PROXY_SITE";
+    chrome.runtime.sendMessage({ type, hostname: active.host }, async () => {
+      const fresh = await loadConfig();
+      renderSiteStrip(fresh, active);
       if (active.tabId) chrome.tabs.reload(active.tabId);
     });
   });

@@ -61,6 +61,7 @@ header h1 {
   border-bottom: 1px solid var(--border);
 }
 .site-info { min-width: 0; flex: 1; }
+.site-actions { display: flex; flex-direction: column; gap: 4px; }
 .site-host {
   font-size: 13px;
   font-weight: 600;
@@ -87,6 +88,8 @@ header h1 {
   line-height: 1.5;
 }
 .group.tip b { color: var(--text); }
+.tip-list { margin: 6px 0 0; padding-left: 18px; }
+.tip-list li { margin: 4px 0; }
 
 .dot {
   width: 9px;
