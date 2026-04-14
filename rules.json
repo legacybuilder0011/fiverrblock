@@ -1,0 +1,164 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "cookie", "operation": "remove" },
+        { "header": "sec-ch-ua", "operation": "remove" },
+        { "header": "sec-ch-ua-arch", "operation": "remove" },
+        { "header": "sec-ch-ua-bitness", "operation": "remove" },
+        { "header": "sec-ch-ua-full-version", "operation": "remove" },
+        { "header": "sec-ch-ua-full-version-list", "operation": "remove" },
+        { "header": "sec-ch-ua-mobile", "operation": "remove" },
+        { "header": "sec-ch-ua-model", "operation": "remove" },
+        { "header": "sec-ch-ua-platform", "operation": "remove" },
+        { "header": "sec-ch-ua-platform-version", "operation": "remove" },
+        { "header": "sec-ch-ua-wow64", "operation": "remove" },
+        { "header": "device-memory", "operation": "remove" },
+        { "header": "dpr", "operation": "remove" },
+        { "header": "viewport-width", "operation": "remove" },
+        { "header": "width", "operation": "remove" },
+        { "header": "downlink", "operation": "remove" },
+        { "header": "ect", "operation": "remove" },
+        { "header": "rtt", "operation": "remove" },
+        { "header": "save-data", "operation": "remove" },
+        { "header": "x-client-data", "operation": "remove" },
+        { "header": "x-forwarded-for", "operation": "remove" },
+        { "header": "referer", "operation": "remove" },
+        { "header": "user-agent", "operation": "set", "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
+        { "header": "accept-language", "operation": "set", "value": "en-US,en;q=0.9" }
+      ],
+      "responseHeaders": [
+        { "header": "set-cookie", "operation": "remove" },
+        { "header": "accept-ch", "operation": "remove" },
+        { "header": "accept-ch-lifetime", "operation": "remove" },
+        { "header": "critical-ch", "operation": "remove" },
+        { "header": "permissions-policy", "operation": "remove" },
+        { "header": "report-to", "operation": "remove" },
+        { "header": "nel", "operation": "remove" },
+        { "header": "server-timing", "operation": "remove" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "*",
+      "resourceTypes": [
+        "main_frame",
+        "sub_frame",
+        "stylesheet",
+        "script",
+        "image",
+        "font",
+        "object",
+        "xmlhttprequest",
+        "ping",
+        "csp_report",
+        "media",
+        "websocket",
+        "webtransport",
+        "webbundle",
+        "other"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||google-analytics.com",
+      "resourceTypes": ["script", "xmlhttprequest", "ping", "image"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||googletagmanager.com",
+      "resourceTypes": ["script", "xmlhttprequest", "ping", "image"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||doubleclick.net",
+      "resourceTypes": ["script", "xmlhttprequest", "ping", "image", "sub_frame"]
+    }
+  },
+  {
+    "id": 5,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||facebook.net",
+      "resourceTypes": ["script", "xmlhttprequest", "ping", "image"]
+    }
+  },
+  {
+    "id": 6,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||fingerprintjs.com",
+      "resourceTypes": ["script", "xmlhttprequest"]
+    }
+  },
+  {
+    "id": 7,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||fpjs.io",
+      "resourceTypes": ["script", "xmlhttprequest"]
+    }
+  },
+  {
+    "id": 8,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||hotjar.com",
+      "resourceTypes": ["script", "xmlhttprequest", "ping", "image"]
+    }
+  },
+  {
+    "id": 9,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||mixpanel.com",
+      "resourceTypes": ["script", "xmlhttprequest", "ping"]
+    }
+  },
+  {
+    "id": 10,
+    "priority": 2,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||segment.io",
+      "resourceTypes": ["script", "xmlhttprequest", "ping"]
+    }
+  }
+]

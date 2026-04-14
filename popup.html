@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Privacy Shield</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Privacy Shield</h1>
+      <label class="switch big">
+        <input type="checkbox" id="enabled" />
+        <span class="slider"></span>
+      </label>
+    </header>
+
+    <section class="status">
+      <span id="status-dot" class="dot on"></span>
+      <span id="status-text">Protection active</span>
+    </section>
+
+    <section class="group">
+      <h2>Cookies &amp; Storage</h2>
+      <label class="row">
+        <span>Block all cookies</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockCookies" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Neuter localStorage / IndexedDB / Cache</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockStorage" /><span class="slider"></span
+        ></label>
+      </label>
+      <button id="purgeNow" class="btn">Purge all cookies now</button>
+    </section>
+
+    <section class="group">
+      <h2>Geolocation spoof</h2>
+      <label class="row">
+        <span>Spoof geolocation</span>
+        <label class="switch"
+          ><input type="checkbox" id="spoofGeo" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="field">
+        <span>Preset</span>
+        <select id="geoPreset">
+          <option value="">Custom</option>
+          <option value="40.7128,-74.0060,America/New_York,300">New York, USA</option>
+          <option value="51.5074,-0.1278,Europe/London,0">London, UK</option>
+          <option value="48.8566,2.3522,Europe/Paris,-60">Paris, France</option>
+          <option value="35.6762,139.6503,Asia/Tokyo,-540">Tokyo, Japan</option>
+          <option value="-33.8688,151.2093,Australia/Sydney,-600">Sydney, Australia</option>
+          <option value="55.7558,37.6173,Europe/Moscow,-180">Moscow, Russia</option>
+          <option value="19.0760,72.8777,Asia/Kolkata,-330">Mumbai, India</option>
+          <option value="-23.5505,-46.6333,America/Sao_Paulo,180">São Paulo, Brazil</option>
+          <option value="1.3521,103.8198,Asia/Singapore,-480">Singapore</option>
+          <option value="25.2048,55.2708,Asia/Dubai,-240">Dubai, UAE</option>
+          <option value="0,0,UTC,0">Null Island (UTC)</option>
+        </select>
+      </label>
+      <div class="grid2">
+        <label class="field">
+          <span>Latitude</span>
+          <input type="number" id="latitude" step="0.0001" />
+        </label>
+        <label class="field">
+          <span>Longitude</span>
+          <input type="number" id="longitude" step="0.0001" />
+        </label>
+      </div>
+      <label class="field">
+        <span>Accuracy (m)</span>
+        <input type="number" id="accuracy" min="1" max="5000" />
+      </label>
+    </section>
+
+    <section class="group">
+      <h2>Timezone &amp; Locale</h2>
+      <label class="row">
+        <span>Spoof timezone</span>
+        <label class="switch"
+          ><input type="checkbox" id="spoofTimezone" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="field">
+        <span>Timezone name</span>
+        <input type="text" id="timezone" placeholder="UTC" />
+      </label>
+      <label class="field">
+        <span>UTC offset (minutes, reverse sign)</span>
+        <input type="number" id="localeOffsetMinutes" />
+      </label>
+      <label class="field">
+        <span>Language</span>
+        <input type="text" id="language" placeholder="en-US" />
+      </label>
+    </section>
+
+    <section class="group">
+      <h2>Fingerprinting defenses</h2>
+      <label class="row">
+        <span>Block browser / UA fingerprint</span>
+        <label class="switch"
+          ><input type="checkbox" id="spoofUA" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Block hardware (CPU cores, memory, connection)</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockHardware" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Block screen resolution / pixel ratio</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockScreen" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Block plugins / MIME types</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockPlugins" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Block installed font probing</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockFonts" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Block canvas fingerprinting</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockCanvas" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Block WebGL / GPU renderer</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockWebGL" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Block AudioContext fingerprinting</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockAudio" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
+        <span>Block Battery API</span>
+        <label class="switch"
+          ><input type="checkbox" id="blockBattery" /><span class="slider"></span
+        ></label>
+      </label>
+    </section>
+
+    <section class="group">
+      <h2>Spoofed identity</h2>
+      <label class="field">
+        <span>User-Agent</span>
+        <input type="text" id="userAgent" />
+      </label>
+      <div class="grid2">
+        <label class="field">
+          <span>Platform</span>
+          <input type="text" id="platform" />
+        </label>
+        <label class="field">
+          <span>CPU cores</span>
+          <input type="number" id="hardwareConcurrency" min="1" max="32" />
+        </label>
+      </div>
+      <div class="grid2">
+        <label class="field">
+          <span>Screen W</span>
+          <input type="number" id="screenWidth" />
+        </label>
+        <label class="field">
+          <span>Screen H</span>
+          <input type="number" id="screenHeight" />
+        </label>
+      </div>
+    </section>
+
+    <footer>
+      <button id="save" class="btn primary">Save &amp; Reload tab</button>
+      <p class="note">
+        Note: DNS-provider / AS-number and TLS/SSL fingerprints live
+        below the browser layer and cannot be changed from an extension.
+        For those, use a VPN, Tor, or a privacy-focused DNS resolver.
+      </p>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
