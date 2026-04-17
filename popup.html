@@ -260,6 +260,19 @@
     <section class="group">
       <h2>Fingerprinting defenses</h2>
       <label class="row">
+        <span>
+          Rotate fingerprint on every reload
+          <span class="hint inline" style="display:block; margin-top:2px;">
+            Picks a new OS, browser version, screen size, language, timezone,
+            CPU cores, memory, and GPU each time a page loads. Leave on for the
+            strongest anti-tracking.
+          </span>
+        </span>
+        <label class="switch"
+          ><input type="checkbox" id="rotateFingerprint" /><span class="slider"></span
+        ></label>
+      </label>
+      <label class="row">
         <span>Block browser / UA fingerprint</span>
         <label class="switch"
           ><input type="checkbox" id="spoofUA" /><span class="slider"></span

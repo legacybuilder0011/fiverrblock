@@ -35,6 +35,7 @@
     blockHardware: true,
     blockStorage: false,
     spoofUA: true,
+    rotateFingerprint: true,
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     platform: "Win32",
@@ -61,10 +62,154 @@
     /* use defaults */
   }
 
+  // ------------- Rotation pools -------------
+  // A fixed fake identity is still a stable identity. Rotating on every page
+  // load breaks passive cross-session tracking. Pools are intentionally common
+  // / plausible so the spoofed profile doesn't stand out.
+  const POOLS = {
+    ua: [
+      {
+        ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        platform: "Win32",
+        os: "Windows"
+      },
+      {
+        ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        platform: "Win32",
+        os: "Windows"
+      },
+      {
+        ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        platform: "Win32",
+        os: "Windows"
+      },
+      {
+        ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        platform: "MacIntel",
+        os: "macOS"
+      },
+      {
+        ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        platform: "MacIntel",
+        os: "macOS"
+      },
+      {
+        ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        platform: "Linux x86_64",
+        os: "Linux"
+      },
+      {
+        ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        platform: "Linux x86_64",
+        os: "Linux"
+      }
+    ],
+    screens: [
+      { w: 1920, h: 1080 },
+      { w: 1366, h: 768 },
+      { w: 1536, h: 864 },
+      { w: 1440, h: 900 },
+      { w: 1680, h: 1050 },
+      { w: 2560, h: 1440 }
+    ],
+    colorDepths: [24, 30],
+    languages: [
+      ["en-US", "en"],
+      ["en-GB", "en"],
+      ["en-CA", "en"],
+      ["fr-FR", "fr", "en"],
+      ["de-DE", "de", "en"],
+      ["es-ES", "es", "en"],
+      ["nl-NL", "nl", "en"],
+      ["it-IT", "it", "en"]
+    ],
+    timezones: [
+      { tz: "America/New_York", offset: 300 },
+      { tz: "America/Los_Angeles", offset: 480 },
+      { tz: "America/Chicago", offset: 360 },
+      { tz: "Europe/London", offset: 0 },
+      { tz: "Europe/Paris", offset: -60 },
+      { tz: "Europe/Berlin", offset: -60 },
+      { tz: "Europe/Amsterdam", offset: -60 },
+      { tz: "Asia/Tokyo", offset: -540 },
+      { tz: "Asia/Singapore", offset: -480 },
+      { tz: "Australia/Sydney", offset: -600 }
+    ],
+    cores: [2, 4, 4, 4, 8, 8, 12, 16],
+    memory: [4, 8, 8, 8, 16, 16, 32],
+    // Fake GPU strings. Mix of common Intel/NVIDIA/AMD names so the spoofed
+    // WebGL profile stays plausible across reloads.
+    gpus: [
+      {
+        vendor: "Google Inc. (Intel)",
+        renderer:
+          "ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.1)"
+      },
+      {
+        vendor: "Google Inc. (Intel)",
+        renderer:
+          "ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics, OpenGL 4.1)"
+      },
+      {
+        vendor: "Google Inc. (NVIDIA)",
+        renderer:
+          "ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      {
+        vendor: "Google Inc. (NVIDIA)",
+        renderer:
+          "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      {
+        vendor: "Google Inc. (AMD)",
+        renderer:
+          "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      }
+    ]
+  };
+
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+  // Rotate on every page load. Picks fresh plausible values and mutates the
+  // config in place so downstream overrides pick them up.
+  function rotateConfig(cfg) {
+    const uaEntry = pick(POOLS.ua);
+    const scr = pick(POOLS.screens);
+    const langs = pick(POOLS.languages);
+    const tz = pick(POOLS.timezones);
+    const gpu = pick(POOLS.gpus);
+
+    cfg.userAgent = uaEntry.ua;
+    cfg.platform = uaEntry.platform;
+    cfg._uaOS = uaEntry.os;
+    cfg._gpuVendor = gpu.vendor;
+    cfg._gpuRenderer = gpu.renderer;
+    cfg.screen = {
+      width: scr.w,
+      height: scr.h,
+      availWidth: scr.w,
+      availHeight: scr.h - 40,
+      colorDepth: pick(POOLS.colorDepths),
+      pixelDepth: 24
+    };
+    cfg.language = langs[0];
+    cfg.languages = langs;
+    cfg.timezone = tz.tz;
+    cfg.localeOffsetMinutes = tz.offset;
+    cfg.hardwareConcurrency = pick(POOLS.cores);
+    cfg.deviceMemory = pick(POOLS.memory);
+    return cfg;
+  }
+
+  if (config.rotateFingerprint !== false) {
+    config = rotateConfig({ ...config });
+  }
+
   // Live-update when the bridge pushes a new config.
   window.addEventListener("__privacy_shield_config__", (ev) => {
     try {
-      config = Object.assign({}, DEFAULTS, ev.detail || {});
+      const next = Object.assign({}, DEFAULTS, ev.detail || {});
+      config = next.rotateFingerprint !== false ? rotateConfig(next) : next;
     } catch (_) {}
   });
 
@@ -150,20 +295,25 @@
       return Object.freeze(config.languages.slice());
     });
 
-    // User-Agent Client Hints (sec-ch-ua family)
+    // User-Agent Client Hints (sec-ch-ua family) — match rotated OS / version.
     if (navigator.userAgentData) {
+      const chromeVer = (config.userAgent.match(/Chrome\/(\d+)/) || [])[1] ||
+        "120";
       const fakeBrands = [
         { brand: "Not_A Brand", version: "8" },
-        { brand: "Chromium", version: "120" },
-        { brand: "Google Chrome", version: "120" }
+        { brand: "Chromium", version: chromeVer },
+        { brand: "Google Chrome", version: chromeVer }
       ];
+      const os = config._uaOS || "Windows";
+      const platformVersion =
+        os === "macOS" ? "14.2.1" : os === "Linux" ? "6.5.0" : "15.0.0";
       try {
         Object.defineProperty(navigator, "userAgentData", {
           get() {
             return {
               brands: fakeBrands,
               mobile: false,
-              platform: "Windows",
+              platform: os,
               getHighEntropyValues(hints) {
                 return Promise.resolve({
                   architecture: "x86",
@@ -172,14 +322,14 @@
                   fullVersionList: fakeBrands,
                   mobile: false,
                   model: "",
-                  platform: "Windows",
-                  platformVersion: "10.0.0",
-                  uaFullVersion: "120.0.0.0",
+                  platform: os,
+                  platformVersion,
+                  uaFullVersion: chromeVer + ".0.0.0",
                   wow64: false
                 });
               },
               toJSON() {
-                return { brands: fakeBrands, mobile: false, platform: "Windows" };
+                return { brands: fakeBrands, mobile: false, platform: os };
               }
             };
           },
@@ -485,11 +635,14 @@
           // 37445 = UNMASKED_VENDOR_WEBGL, 37446 = UNMASKED_RENDERER_WEBGL
           if (p === 37445) {
             emit("webglAccess", "UNMASKED_VENDOR_WEBGL");
-            return "Google Inc. (Intel)";
+            return config._gpuVendor || "Google Inc. (Intel)";
           }
           if (p === 37446) {
             emit("webglAccess", "UNMASKED_RENDERER_WEBGL");
-            return "ANGLE (Intel, Intel(R) UHD Graphics, OpenGL 4.1)";
+            return (
+              config._gpuRenderer ||
+              "ANGLE (Intel, Intel(R) UHD Graphics, OpenGL 4.1)"
+            );
           }
           if (p === 7936) {
             emit("webglAccess", "VENDOR");

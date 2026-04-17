@@ -10,6 +10,7 @@ const FIELDS = [
   "localeOffsetMinutes",
   "language",
   "spoofUA",
+  "rotateFingerprint",
   "userAgent",
   "platform",
   "hardwareConcurrency",
