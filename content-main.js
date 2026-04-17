@@ -216,13 +216,17 @@
   // Do nothing when the shield is disabled.
   if (!config.enabled) return;
 
-  // Do nothing when this site is explicitly paused.
+  // Check if this site is paused. When paused we still apply fingerprint
+  // defenses (UA, screen, canvas, webgl, audio, fonts, plugins, hardware,
+  // battery, timezone, geolocation) — only cookies and storage blocking are
+  // turned off so the site works normally without leaking the real device.
+  let sitePaused = false;
   try {
     const host = (location.hostname || "").toLowerCase().replace(/^www\./, "");
     const list = Array.isArray(config.siteAllowList)
       ? config.siteAllowList
       : [];
-    if (host && list.includes(host)) return;
+    if (host && list.includes(host)) sitePaused = true;
   } catch (_) {}
 
   // ------------- Activity emitter (throttled, per-type) -------------
@@ -779,8 +783,8 @@
     }
   } catch (_) {}
 
-  // ------------- Storage neuter (optional) -------------
-  if (config.blockStorage) {
+  // ------------- Storage neuter (optional, skipped on paused sites) -------------
+  if (config.blockStorage && !sitePaused) {
     const kill = (storage, label) => {
       try {
         storage.setItem = (k) => {
@@ -832,8 +836,8 @@
     } catch (_) {}
   }
 
-  // ------------- document.cookie blocking -------------
-  if (config.blockCookies) {
+  // ------------- document.cookie blocking (skipped on paused sites) -------------
+  if (config.blockCookies && !sitePaused) {
     try {
       const desc = Object.getOwnPropertyDescriptor(
         Document.prototype,

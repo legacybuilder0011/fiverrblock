@@ -227,12 +227,13 @@ function renderSiteStrip(config, active) {
   const paused = (config.siteAllowList || []).includes(active.host);
   hostEl.textContent = active.host;
   if (paused) {
-    stateEl.textContent = "Paused — shield is NOT running on this site";
+    stateEl.textContent =
+      "Paused — cookies & storage allowed, fingerprint still spoofed";
     btn.textContent = "Resume here";
     btn.classList.add("primary");
     strip.classList.add("paused");
   } else {
-    stateEl.textContent = "Shield active on this site";
+    stateEl.textContent = "Full shield active on this site";
     btn.textContent = "Pause here";
     btn.classList.remove("primary");
     strip.classList.remove("paused");
