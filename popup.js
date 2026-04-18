@@ -428,22 +428,41 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // Country picker
+  // Each country profile: name, tor code, language, geo (lat,lon,tz,utcOffset),
+  // and a realistic identity for that region (UA/platform/cores/screen).
+  const WIN_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  const MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
   const COUNTRY_INFO = {
-    us: { name: "United States", tor: "us", lang: "en-US", geo: "40.7128,-74.0060,America/New_York,300" },
-    gb: { name: "United Kingdom", tor: "gb", lang: "en-GB", geo: "51.5074,-0.1278,Europe/London,0" },
-    de: { name: "Germany", tor: "de", lang: "de-DE", geo: "52.5200,13.4050,Europe/Berlin,-60" },
-    nl: { name: "Netherlands", tor: "nl", lang: "nl-NL", geo: "52.3676,4.9041,Europe/Amsterdam,-60" },
-    fr: { name: "France", tor: "fr", lang: "fr-FR", geo: "48.8566,2.3522,Europe/Paris,-60" },
-    ch: { name: "Switzerland", tor: "ch", lang: "de-CH", geo: "47.3769,8.5417,Europe/Zurich,-60" },
-    se: { name: "Sweden", tor: "se", lang: "sv-SE", geo: "59.3293,18.0686,Europe/Stockholm,-60" },
-    ca: { name: "Canada", tor: "ca", lang: "en-CA", geo: "43.6532,-79.3832,America/Toronto,300" },
-    au: { name: "Australia", tor: "au", lang: "en-AU", geo: "-33.8688,151.2093,Australia/Sydney,-600" },
-    jp: { name: "Japan", tor: "jp", lang: "ja-JP", geo: "35.6762,139.6503,Asia/Tokyo,-540" },
-    sg: { name: "Singapore", tor: "sg", lang: "en-SG", geo: "1.3521,103.8198,Asia/Singapore,-480" },
-    br: { name: "Brazil", tor: "br", lang: "pt-BR", geo: "-23.5505,-46.6333,America/Sao_Paulo,180" },
-    in: { name: "India", tor: "in", lang: "en-IN", geo: "19.0760,72.8777,Asia/Kolkata,-330" },
-    ae: { name: "UAE", tor: "ae", lang: "ar-AE", geo: "25.2048,55.2708,Asia/Dubai,-240" },
-    ro: { name: "Romania", tor: "ro", lang: "ro-RO", geo: "44.4268,26.1025,Europe/Bucharest,-120" },
+    us: { name: "United States", tor: "us", lang: "en-US", geo: "40.7128,-74.0060,America/New_York,300",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    gb: { name: "United Kingdom", tor: "gb", lang: "en-GB", geo: "51.5074,-0.1278,Europe/London,0",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    de: { name: "Germany", tor: "de", lang: "de-DE", geo: "52.5200,13.4050,Europe/Berlin,-60",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    nl: { name: "Netherlands", tor: "nl", lang: "nl-NL", geo: "52.3676,4.9041,Europe/Amsterdam,-60",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    fr: { name: "France", tor: "fr", lang: "fr-FR", geo: "48.8566,2.3522,Europe/Paris,-60",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    ch: { name: "Switzerland", tor: "ch", lang: "de-CH", geo: "47.3769,8.5417,Europe/Zurich,-60",
+          ua: MAC_UA, platform: "MacIntel", cores: 8, w: 2560, h: 1440 },
+    se: { name: "Sweden", tor: "se", lang: "sv-SE", geo: "59.3293,18.0686,Europe/Stockholm,-60",
+          ua: MAC_UA, platform: "MacIntel", cores: 8, w: 1920, h: 1080 },
+    ca: { name: "Canada", tor: "ca", lang: "en-CA", geo: "43.6532,-79.3832,America/Toronto,300",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    au: { name: "Australia", tor: "au", lang: "en-AU", geo: "-33.8688,151.2093,Australia/Sydney,-600",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    jp: { name: "Japan", tor: "jp", lang: "ja-JP", geo: "35.6762,139.6503,Asia/Tokyo,-540",
+          ua: WIN_UA, platform: "Win32", cores: 4, w: 1366, h: 768 },
+    sg: { name: "Singapore", tor: "sg", lang: "en-SG", geo: "1.3521,103.8198,Asia/Singapore,-480",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    br: { name: "Brazil", tor: "br", lang: "pt-BR", geo: "-23.5505,-46.6333,America/Sao_Paulo,180",
+          ua: WIN_UA, platform: "Win32", cores: 4, w: 1366, h: 768 },
+    in: { name: "India", tor: "in", lang: "en-IN", geo: "19.0760,72.8777,Asia/Kolkata,-330",
+          ua: WIN_UA, platform: "Win32", cores: 4, w: 1366, h: 768 },
+    ae: { name: "UAE", tor: "ae", lang: "ar-AE", geo: "25.2048,55.2708,Asia/Dubai,-240",
+          ua: WIN_UA, platform: "Win32", cores: 8, w: 1920, h: 1080 },
+    ro: { name: "Romania", tor: "ro", lang: "ro-RO", geo: "44.4268,26.1025,Europe/Bucharest,-120",
+          ua: WIN_UA, platform: "Win32", cores: 4, w: 1920, h: 1080 },
     random: { name: "Random", tor: "", lang: "", geo: "" }
   };
 
@@ -489,6 +508,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (info.lang) {
       $("language").value = info.lang;
+    }
+    // Fill spoofed identity to a realistic device profile for the region.
+    if (info.ua) {
+      $("userAgent").value = info.ua;
+      $("platform").value = info.platform;
+      $("hardwareConcurrency").value = info.cores;
+      $("screenWidth").value = info.w;
+      $("screenHeight").value = info.h;
     }
     if (!$("proxyHost").value) {
       $("proxyPreset").value = "socks5,127.0.0.1,9150";
