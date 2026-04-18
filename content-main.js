@@ -783,35 +783,78 @@
     }
   } catch (_) {}
 
-  // ------------- Storage neuter (optional, skipped on paused sites) -------------
-  if (config.blockStorage && !sitePaused) {
-    const kill = (storage, label) => {
-      try {
-        storage.setItem = (k) => {
+  // ------------- Storage neuter (dynamic — checks config live) -------------
+  // Always install the overrides so they respond to live config changes.
+  // The originals are saved so we can pass-through when blocking is off.
+  const origStorage = {};
+  try {
+    origStorage.lsSetItem = window.localStorage.__proto__.setItem;
+    origStorage.lsGetItem = window.localStorage.__proto__.getItem;
+    origStorage.lsRemoveItem = window.localStorage.__proto__.removeItem;
+    origStorage.lsClear = window.localStorage.__proto__.clear;
+    origStorage.lsKey = window.localStorage.__proto__.key;
+  } catch (_) {}
+  try {
+    origStorage.ssSetItem = window.sessionStorage.__proto__.setItem;
+    origStorage.ssGetItem = window.sessionStorage.__proto__.getItem;
+    origStorage.ssRemoveItem = window.sessionStorage.__proto__.removeItem;
+    origStorage.ssClear = window.sessionStorage.__proto__.clear;
+    origStorage.ssKey = window.sessionStorage.__proto__.key;
+  } catch (_) {}
+  try {
+    origStorage.idbOpen = window.indexedDB && window.indexedDB.open;
+  } catch (_) {}
+  try {
+    if (window.caches) {
+      origStorage.cachesOpen = window.caches.open;
+      origStorage.cachesKeys = window.caches.keys;
+      origStorage.cachesMatch = window.caches.match;
+      origStorage.cachesHas = window.caches.has;
+      origStorage.cachesDelete = window.caches.delete;
+    }
+  } catch (_) {}
+
+  function installStorageProxy(storage, origSet, origGet, origRemove, origClear, origKey, label) {
+    try {
+      storage.setItem = function (k, v) {
+        if (config.blockStorage && !sitePaused) {
           emit("storageAccess", label + ".setItem" + (k ? ":" + k : ""));
-        };
-        storage.getItem = (k) => {
+          return;
+        }
+        return origSet.call(this, k, v);
+      };
+      storage.getItem = function (k) {
+        if (config.blockStorage && !sitePaused) {
           emit("storageAccess", label + ".getItem" + (k ? ":" + k : ""));
           return null;
-        };
-        storage.removeItem = () => {};
-        storage.clear = () => {};
-        storage.key = () => null;
-        Object.defineProperty(storage, "length", {
-          get: () => 0,
-          configurable: true
-        });
-      } catch (_) {}
-    };
-    try {
-      kill(window.localStorage, "localStorage");
+        }
+        return origGet.call(this, k);
+      };
+      storage.removeItem = function (k) {
+        if (config.blockStorage && !sitePaused) return;
+        return origRemove.call(this, k);
+      };
+      storage.clear = function () {
+        if (config.blockStorage && !sitePaused) return;
+        return origClear.call(this);
+      };
+      storage.key = function (i) {
+        if (config.blockStorage && !sitePaused) return null;
+        return origKey.call(this, i);
+      };
     } catch (_) {}
-    try {
-      kill(window.sessionStorage, "sessionStorage");
-    } catch (_) {}
-    try {
-      if (window.indexedDB) {
-        window.indexedDB.open = function () {
+  }
+  try {
+    installStorageProxy(window.localStorage, origStorage.lsSetItem, origStorage.lsGetItem, origStorage.lsRemoveItem, origStorage.lsClear, origStorage.lsKey, "localStorage");
+  } catch (_) {}
+  try {
+    installStorageProxy(window.sessionStorage, origStorage.ssSetItem, origStorage.ssGetItem, origStorage.ssRemoveItem, origStorage.ssClear, origStorage.ssKey, "sessionStorage");
+  } catch (_) {}
+  try {
+    if (window.indexedDB && origStorage.idbOpen) {
+      const origIdb = origStorage.idbOpen;
+      window.indexedDB.open = function (...a) {
+        if (config.blockStorage && !sitePaused) {
           emit("storageAccess", "indexedDB.open");
           const req = {};
           setTimeout(() => {
@@ -819,50 +862,72 @@
               req.onerror({ target: { error: new Error("blocked") } });
           }, 0);
           return req;
-        };
-      }
-    } catch (_) {}
-    try {
-      if (window.caches) {
-        window.caches.open = () => {
+        }
+        return origIdb.apply(this, a);
+      };
+    }
+  } catch (_) {}
+  try {
+    if (window.caches && origStorage.cachesOpen) {
+      window.caches.open = function (...a) {
+        if (config.blockStorage && !sitePaused) {
           emit("storageAccess", "caches.open");
           return Promise.reject(new Error("caches disabled"));
-        };
-        window.caches.keys = () => Promise.resolve([]);
-        window.caches.match = () => Promise.resolve(undefined);
-        window.caches.has = () => Promise.resolve(false);
-        window.caches.delete = () => Promise.resolve(false);
-      }
-    } catch (_) {}
-  }
+        }
+        return origStorage.cachesOpen.apply(this, a);
+      };
+      window.caches.keys = function (...a) {
+        if (config.blockStorage && !sitePaused) return Promise.resolve([]);
+        return origStorage.cachesKeys.apply(this, a);
+      };
+      window.caches.match = function (...a) {
+        if (config.blockStorage && !sitePaused) return Promise.resolve(undefined);
+        return origStorage.cachesMatch.apply(this, a);
+      };
+      window.caches.has = function (...a) {
+        if (config.blockStorage && !sitePaused) return Promise.resolve(false);
+        return origStorage.cachesHas.apply(this, a);
+      };
+      window.caches.delete = function (...a) {
+        if (config.blockStorage && !sitePaused) return Promise.resolve(false);
+        return origStorage.cachesDelete.apply(this, a);
+      };
+    }
+  } catch (_) {}
 
-  // ------------- document.cookie blocking (skipped on paused sites) -------------
-  if (config.blockCookies && !sitePaused) {
-    try {
-      const desc = Object.getOwnPropertyDescriptor(
-        Document.prototype,
-        "cookie"
-      );
-      if (desc && desc.configurable) {
-        Object.defineProperty(Document.prototype, "cookie", {
-          get() {
+  // ------------- document.cookie blocking (dynamic — checks config live) -------------
+  try {
+    const cookieDesc = Object.getOwnPropertyDescriptor(
+      Document.prototype,
+      "cookie"
+    );
+    if (cookieDesc && cookieDesc.configurable) {
+      const origGet = cookieDesc.get;
+      const origSet = cookieDesc.set;
+      Object.defineProperty(Document.prototype, "cookie", {
+        get() {
+          if (config.blockCookies && !sitePaused) {
             emit("cookiesBlocked", "document.cookie read");
             return "";
-          },
-          set(v) {
+          }
+          return origGet.call(this);
+        },
+        set(v) {
+          if (config.blockCookies && !sitePaused) {
             try {
               const name = String(v || "").split("=")[0].trim();
               emit("cookiesBlocked", name ? "set:" + name : "document.cookie write");
             } catch (_) {
               emit("cookiesBlocked", "document.cookie write");
             }
-            /* swallow writes */
-          },
-          configurable: true
-        });
-      }
-    } catch (_) {}
-  }
+            return;
+          }
+          origSet.call(this, v);
+        },
+        configurable: true
+      });
+    }
+  } catch (_) {}
 
   // ------------- RTCPeerConnection IP leak guard -------------
   try {
