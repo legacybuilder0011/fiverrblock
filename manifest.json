@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Privacy Shield - Fingerprint & Cookie Blocker",
   "version": "1.0.0",
-  "description": "Blocks cookies, spoofs geolocation & timezone, and defeats browser/hardware fingerprinting (canvas, WebGL, audio, fonts, battery, plugins, UA, screen, hardware concurrency).",
+  "description": "Blocks ads & crypto-miners, blocks cookies, spoofs geolocation & timezone, and defeats browser/hardware fingerprinting (canvas, WebGL, audio, fonts, battery, plugins, UA, screen, hardware concurrency).",
   "permissions": [
     "cookies",
     "storage",
@@ -60,6 +60,16 @@
         "id": "privacy_rules",
         "enabled": true,
         "path": "rules.json"
+      },
+      {
+        "id": "ads_rules",
+        "enabled": true,
+        "path": "ads_rules.json"
+      },
+      {
+        "id": "mining_rules",
+        "enabled": true,
+        "path": "mining_rules.json"
       }
     ]
   },

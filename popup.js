@@ -4,6 +4,8 @@ const FIELDS = [
   "enabled",
   "blockCookies",
   "blockStorage",
+  "blockAds",
+  "blockMining",
   "spoofGeo",
   "spoofTimezone",
   "timezone",
@@ -257,6 +259,9 @@ function renderSiteStrip(config, active) {
 
 // ----- Live activity -----
 const CATEGORY_LABELS = {
+  adsBlocked: "Ads",
+  minersBlocked: "Miners",
+  trackersBlocked: "Trackers",
   cookiesBlocked: "Cookies",
   canvasAccess: "Canvas",
   webglAccess: "WebGL",

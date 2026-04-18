@@ -1,0 +1,272 @@
+[
+  {
+    "id": 1,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||coinhive.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||coin-hive.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||coinhive.net",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||cnhv.co",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 5,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||authedmine.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 6,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||crypto-loot.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 7,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||cryptoloot.pro",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 8,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||minero.cc",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 9,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||coinimp.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 10,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||webminerpool.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 11,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||deepminer.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 12,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||jsecoin.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 13,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||browsermine.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 14,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||webmine.cz",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 15,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||papoto.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 16,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||cryptonoter.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 17,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||reasedoper.pw",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 18,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||2giga.link",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 19,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||monerominer.rocks",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 20,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||nerohut.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 21,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||coinblind.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 22,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||cpufan.club",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 23,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||coinerra.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 24,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||minexmr.stream",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 25,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||hashing.win",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 26,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||cryptaloot.com",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket", "sub_frame"]
+    }
+  },
+  {
+    "id": 27,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "*/cryptonight*",
+      "resourceTypes": ["script", "xmlhttprequest", "websocket"]
+    }
+  },
+  {
+    "id": 28,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "*/coinhive.min.js",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 29,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "*/miner.js",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 30,
+    "priority": 3,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "*/webmr.js",
+      "resourceTypes": ["script"]
+    }
+  }
+]

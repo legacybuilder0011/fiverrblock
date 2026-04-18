@@ -22,7 +22,8 @@ const ACTIVITY_EMPTY = () => ({
     hardwareAccess: 0,
     timezoneAccess: 0,
     storageAccess: 0,
-    headersStripped: 0,
+    adsBlocked: 0,
+    minersBlocked: 0,
     trackersBlocked: 0
   },
   recent: []
@@ -89,6 +90,9 @@ function clearActivity(host) {
 const DEFAULT_CONFIG = {
   enabled: true,
   blockCookies: true,
+  // Ads + crypto-miners are blocked via their own DNR rulesets.
+  blockAds: true,
+  blockMining: true,
   // Proxy - the ONLY way to change IP / ISP / ASN / country reported by sites.
   useProxy: false,
   proxy: {
@@ -377,11 +381,18 @@ async function applyNetworkPrivacySettings() {
     console.warn("Privacy toggles failed:", err);
   }
 
-  // Toggle the DNR ruleset based on enabled.
+  // Toggle the DNR rulesets based on master switch + per-feature toggles.
   try {
+    const enable = [];
+    const disable = [];
+    (enabled ? enable : disable).push("privacy_rules");
+    (enabled && config.blockAds !== false ? enable : disable).push("ads_rules");
+    (enabled && config.blockMining !== false ? enable : disable).push(
+      "mining_rules"
+    );
     await chrome.declarativeNetRequest.updateEnabledRulesets({
-      enableRulesetIds: enabled ? ["privacy_rules"] : [],
-      disableRulesetIds: enabled ? [] : ["privacy_rules"]
+      enableRulesetIds: enable,
+      disableRulesetIds: disable
     });
   } catch (err) {
     console.warn("DNR toggle failed:", err);
@@ -646,3 +657,33 @@ async function updateBadge(tabId) {
     await chrome.action.setBadgeBackgroundColor({ color, tabId });
   } catch (_) {}
 }
+
+// ---------- DNR match counting (unpacked installs only) ----------
+// onRuleMatchedDebug only fires when the extension is loaded unpacked. In a
+// packaged Chrome Web Store install the counters for ads/miners/trackers will
+// stay at 0; the blocking itself still works via the static rulesets.
+try {
+  if (chrome.declarativeNetRequest?.onRuleMatchedDebug) {
+    chrome.declarativeNetRequest.onRuleMatchedDebug.addListener((info) => {
+      const rs = info?.rule?.rulesetId || "";
+      const req = info?.request || {};
+      let host = "";
+      try {
+        host = new URL(req.documentUrl || req.initiator || req.url || "")
+          .hostname;
+      } catch (_) {}
+      const target = (() => {
+        try {
+          return new URL(req.url || "").hostname;
+        } catch (_) {
+          return req.url || "";
+        }
+      })();
+      if (rs === "ads_rules") recordActivity(host, "adsBlocked", target);
+      else if (rs === "mining_rules")
+        recordActivity(host, "minersBlocked", target);
+      else if (rs === "privacy_rules")
+        recordActivity(host, "trackersBlocked", target);
+    });
+  }
+} catch (_) {}
