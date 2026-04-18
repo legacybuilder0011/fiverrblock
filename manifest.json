@@ -52,6 +52,14 @@
       "all_frames": true,
       "match_about_blank": true,
       "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["cosmetic-filters.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": false,
+      "world": "ISOLATED"
     }
   ],
   "declarative_net_request": {

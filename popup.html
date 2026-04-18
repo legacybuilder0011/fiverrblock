@@ -71,12 +71,12 @@
     </section>
 
     <section class="group">
-      <h2>Hide real IP / ISP / ASN (proxy)</h2>
+      <h2>Route traffic through another country</h2>
       <p class="hint">
-        Your IP / ISP / ASN / country come from the TCP connection, not
-        JavaScript. Route Chrome through a proxy to change them. The proxy
-        is tested BEFORE it is applied, so a bad entry will not lock you
-        out of the internet.
+        Pick a country below, connect a supported proxy (Tor, VPN, or SSH
+        tunnel), and all your browser traffic will be encrypted &amp;
+        routed through that country's servers. Sites will see that
+        country's IP address instead of yours.
       </p>
 
       <div class="proxy-status" id="proxyStatusCard">
@@ -85,7 +85,30 @@
       </div>
 
       <label class="field">
-        <span>Quick preset</span>
+        <span>Country / server location</span>
+        <select id="countryPicker">
+          <option value="">— Select country —</option>
+          <option value="us">&#127482;&#127480; United States</option>
+          <option value="gb">&#127468;&#127463; United Kingdom</option>
+          <option value="de">&#127465;&#127466; Germany</option>
+          <option value="nl">&#127475;&#127473; Netherlands</option>
+          <option value="fr">&#127467;&#127479; France</option>
+          <option value="ch">&#127464;&#127469; Switzerland</option>
+          <option value="se">&#127480;&#127466; Sweden</option>
+          <option value="ca">&#127464;&#127462; Canada</option>
+          <option value="au">&#127462;&#127482; Australia</option>
+          <option value="jp">&#127471;&#127477; Japan</option>
+          <option value="sg">&#127480;&#127468; Singapore</option>
+          <option value="br">&#127463;&#127479; Brazil</option>
+          <option value="in">&#127470;&#127475; India</option>
+          <option value="ae">&#127462;&#127466; UAE (Dubai)</option>
+          <option value="ro">&#127479;&#127476; Romania</option>
+          <option value="random">&#127760; Random (Tor auto-select)</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Proxy service</span>
         <select id="proxyPreset">
           <option value="">Custom</option>
           <option value="socks5,127.0.0.1,9150">Tor Browser (127.0.0.1:9150)</option>
@@ -132,42 +155,54 @@
       <input type="checkbox" id="useProxy" hidden />
 
       <details class="guide">
-        <summary>First-time setup guide — how do I get a proxy?</summary>
+        <summary>How to route traffic through another country</summary>
         <ol>
           <li>
-            <b>Use Tor Browser (free, easiest)</b>
+            <b>Tor Browser — free, encrypted, easiest</b>
             <ul>
               <li>Download from <code>torproject.org</code> and run it.</li>
-              <li>While Tor Browser is open pick the "Tor Browser" preset
-                above, or set SOCKS5 <code>127.0.0.1:9150</code>.</li>
-              <li>Click <b>Connect &amp; test</b>.</li>
+              <li>Pick a country above — the extension fills in geo + timezone.</li>
+              <li>Select "Tor Browser" as the proxy service, or set SOCKS5
+                <code>127.0.0.1:9150</code>.</li>
+              <li>Click <b>Connect &amp; test</b>. Traffic is encrypted
+                through Tor's 3-hop relay network.</li>
+              <li>Want a specific exit country? Edit Tor's <code>torrc</code>
+                and add <code>ExitNodes {us}</code> (replace <code>us</code>
+                with the 2-letter country code). Tor Browser's
+                torrc is at
+                <code>Browser/TorBrowser/Data/Tor/torrc</code>.</li>
             </ul>
           </li>
           <li>
-            <b>Use a paid VPN with a SOCKS5 endpoint</b>
+            <b>VPN with SOCKS5 — paid, fast, specific countries</b>
             <ul>
-              <li>Mullvad: <code>10.64.0.1:1080</code> while the Mullvad
-                app is connected (WireGuard).</li>
-              <li>ProtonVPN, IVPN, AirVPN: check the provider's dashboard
-                for the SOCKS5 host / port.</li>
+              <li><b>Mullvad:</b> <code>10.64.0.1:1080</code> (connect
+                WireGuard first, then pick any country).</li>
+              <li><b>ProtonVPN, IVPN, AirVPN:</b> check the dashboard for
+                the SOCKS5 host:port per country server.</li>
+              <li><b>NordVPN:</b> SOCKS5 available on some plans.</li>
+              <li>Connect the VPN to the country you picked above, then
+                enter the SOCKS5 address here and click
+                <b>Connect &amp; test</b>.</li>
             </ul>
           </li>
           <li>
-            <b>Run your own SSH tunnel</b>
+            <b>SSH tunnel — your own server</b>
             <ul>
-              <li>Command: <code>ssh -D 1080 -N user@yourserver</code></li>
-              <li>Then set SOCKS5 <code>127.0.0.1:1080</code>.</li>
+              <li><code>ssh -D 1080 -N user@yourserver</code></li>
+              <li>Set SOCKS5 <code>127.0.0.1:1080</code>. Your traffic
+                exits from your server's country.</li>
             </ul>
           </li>
           <li>
-            <b>If it says "Proxy unreachable"</b>
+            <b>Troubleshooting</b>
             <ul>
-              <li>The proxy software is not actually running (most common
-                cause). Launch Tor Browser / your VPN, then retry.</li>
+              <li>"Proxy unreachable" = the proxy app isn't running. Launch
+                Tor Browser or connect your VPN first.</li>
               <li>Wrong port — Tor Browser is 9150, Tor daemon is 9050.</li>
-              <li>You are stuck with "No internet"? Click
-                <b>Disconnect</b> or turn the master switch off. The
-                extension also auto-disconnects on failed tests.</li>
+              <li>Stuck with no internet? Click <b>Disconnect</b> or
+                toggle the master switch off. The extension also
+                auto-rollbacks on test failure.</li>
             </ul>
           </li>
         </ol>
