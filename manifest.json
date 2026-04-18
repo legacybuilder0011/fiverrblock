@@ -78,6 +78,11 @@
         "id": "mining_rules",
         "enabled": true,
         "path": "mining_rules.json"
+      },
+      {
+        "id": "cookie_rules",
+        "enabled": false,
+        "path": "cookie_rules.json"
       }
     ]
   },

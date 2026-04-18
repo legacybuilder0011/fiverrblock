@@ -390,6 +390,9 @@ async function applyNetworkPrivacySettings() {
     (enabled && config.blockMining !== false ? enable : disable).push(
       "mining_rules"
     );
+    (enabled && config.blockCookies === true ? enable : disable).push(
+      "cookie_rules"
+    );
     await chrome.declarativeNetRequest.updateEnabledRulesets({
       enableRulesetIds: enable,
       disableRulesetIds: disable
