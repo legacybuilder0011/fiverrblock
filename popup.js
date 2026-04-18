@@ -23,7 +23,8 @@ const FIELDS = [
   "blockCanvas",
   "blockWebGL",
   "blockAudio",
-  "blockBattery"
+  "blockBattery",
+  "selectedCountry"
 ];
 
 function $(id) {
@@ -65,6 +66,9 @@ function populate(config) {
     $("proxyPort").value = config.proxy.port || 1080;
   }
   $("useProxy").checked = Boolean(config.useProxy);
+  if (config.selectedCountry) {
+    $("countryPicker").value = config.selectedCountry;
+  }
   updateStatus(config.enabled);
   updateProxyState(config);
 }
@@ -425,47 +429,29 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Country picker
   const COUNTRY_INFO = {
-    us: { name: "United States", tor: "us", geo: "40.7128,-74.0060,America/New_York,300" },
-    gb: { name: "United Kingdom", tor: "gb", geo: "51.5074,-0.1278,Europe/London,0" },
-    de: { name: "Germany", tor: "de", geo: "52.5200,13.4050,Europe/Berlin,-60" },
-    nl: { name: "Netherlands", tor: "nl", geo: "52.3676,4.9041,Europe/Amsterdam,-60" },
-    fr: { name: "France", tor: "fr", geo: "48.8566,2.3522,Europe/Paris,-60" },
-    ch: { name: "Switzerland", tor: "ch", geo: "47.3769,8.5417,Europe/Zurich,-60" },
-    se: { name: "Sweden", tor: "se", geo: "59.3293,18.0686,Europe/Stockholm,-60" },
-    ca: { name: "Canada", tor: "ca", geo: "43.6532,-79.3832,America/Toronto,300" },
-    au: { name: "Australia", tor: "au", geo: "-33.8688,151.2093,Australia/Sydney,-600" },
-    jp: { name: "Japan", tor: "jp", geo: "35.6762,139.6503,Asia/Tokyo,-540" },
-    sg: { name: "Singapore", tor: "sg", geo: "1.3521,103.8198,Asia/Singapore,-480" },
-    br: { name: "Brazil", tor: "br", geo: "-23.5505,-46.6333,America/Sao_Paulo,180" },
-    in: { name: "India", tor: "in", geo: "19.0760,72.8777,Asia/Kolkata,-330" },
-    ae: { name: "UAE", tor: "ae", geo: "25.2048,55.2708,Asia/Dubai,-240" },
-    ro: { name: "Romania", tor: "ro", geo: "44.4268,26.1025,Europe/Bucharest,-120" },
-    random: { name: "Random", tor: "", geo: "" }
+    us: { name: "United States", tor: "us", lang: "en-US", geo: "40.7128,-74.0060,America/New_York,300" },
+    gb: { name: "United Kingdom", tor: "gb", lang: "en-GB", geo: "51.5074,-0.1278,Europe/London,0" },
+    de: { name: "Germany", tor: "de", lang: "de-DE", geo: "52.5200,13.4050,Europe/Berlin,-60" },
+    nl: { name: "Netherlands", tor: "nl", lang: "nl-NL", geo: "52.3676,4.9041,Europe/Amsterdam,-60" },
+    fr: { name: "France", tor: "fr", lang: "fr-FR", geo: "48.8566,2.3522,Europe/Paris,-60" },
+    ch: { name: "Switzerland", tor: "ch", lang: "de-CH", geo: "47.3769,8.5417,Europe/Zurich,-60" },
+    se: { name: "Sweden", tor: "se", lang: "sv-SE", geo: "59.3293,18.0686,Europe/Stockholm,-60" },
+    ca: { name: "Canada", tor: "ca", lang: "en-CA", geo: "43.6532,-79.3832,America/Toronto,300" },
+    au: { name: "Australia", tor: "au", lang: "en-AU", geo: "-33.8688,151.2093,Australia/Sydney,-600" },
+    jp: { name: "Japan", tor: "jp", lang: "ja-JP", geo: "35.6762,139.6503,Asia/Tokyo,-540" },
+    sg: { name: "Singapore", tor: "sg", lang: "en-SG", geo: "1.3521,103.8198,Asia/Singapore,-480" },
+    br: { name: "Brazil", tor: "br", lang: "pt-BR", geo: "-23.5505,-46.6333,America/Sao_Paulo,180" },
+    in: { name: "India", tor: "in", lang: "en-IN", geo: "19.0760,72.8777,Asia/Kolkata,-330" },
+    ae: { name: "UAE", tor: "ae", lang: "ar-AE", geo: "25.2048,55.2708,Asia/Dubai,-240" },
+    ro: { name: "Romania", tor: "ro", lang: "ro-RO", geo: "44.4268,26.1025,Europe/Bucharest,-120" },
+    random: { name: "Random", tor: "", lang: "", geo: "" }
   };
 
-  $("countryPicker").addEventListener("change", (e) => {
-    const code = e.target.value;
+  function applyCountryHint(code) {
     const info = COUNTRY_INFO[code];
-    // Remove any existing hint
     const old = document.querySelector(".country-hint");
     if (old) old.remove();
     if (!info) return;
-    // Auto-fill geolocation to match the country
-    if (info.geo) {
-      const [lat, lon, tz, off] = info.geo.split(",");
-      $("latitude").value = lat;
-      $("longitude").value = lon;
-      $("timezone").value = tz;
-      $("localeOffsetMinutes").value = off;
-    }
-    // Auto-select Tor Browser preset if no proxy is configured yet
-    if (!$("proxyHost").value) {
-      $("proxyPreset").value = "socks5,127.0.0.1,9150";
-      $("proxyScheme").value = "socks5";
-      $("proxyHost").value = "127.0.0.1";
-      $("proxyPort").value = "9150";
-    }
-    // Show country-specific connection hint
     const hint = document.createElement("div");
     hint.className = "country-hint";
     if (code === "random") {
@@ -482,6 +468,35 @@ document.addEventListener("DOMContentLoaded", async () => {
         "Geolocation + timezone are set to match.";
     }
     $("countryPicker").parentElement.after(hint);
+  }
+
+  if (config.selectedCountry) {
+    applyCountryHint(config.selectedCountry);
+  }
+
+  $("countryPicker").addEventListener("change", (e) => {
+    const code = e.target.value;
+    const info = COUNTRY_INFO[code];
+    $("selectedCountry").value = code;
+    applyCountryHint(code);
+    if (!info) return;
+    if (info.geo) {
+      const [lat, lon, tz, off] = info.geo.split(",");
+      $("latitude").value = lat;
+      $("longitude").value = lon;
+      $("timezone").value = tz;
+      $("localeOffsetMinutes").value = off;
+    }
+    if (info.lang) {
+      $("language").value = info.lang;
+    }
+    if (!$("proxyHost").value) {
+      $("proxyPreset").value = "socks5,127.0.0.1,9150";
+      $("proxyScheme").value = "socks5";
+      $("proxyHost").value = "127.0.0.1";
+      $("proxyPort").value = "9150";
+    }
+    save(false);
   });
 
   // Proxy preset filler
