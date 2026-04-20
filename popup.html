@@ -332,6 +332,22 @@
         ></label>
       </label>
       <label class="row">
+        <span>
+          Per-tab fingerprint isolation
+          <span class="hint inline" style="display:block; margin-top:2px;">
+            Each browser tab gets its own stable fingerprint. Different tabs
+            look like different devices, so sites can't correlate your
+            activity across them. Essential for multi-account workflows.
+          </span>
+        </span>
+        <label class="switch"
+          ><input type="checkbox" id="perTabFingerprint" /><span class="slider"></span
+        ></label>
+      </label>
+      <button id="newTabIdentity" class="btn small" style="margin-top:6px;">
+        New identity for this tab
+      </button>
+      <label class="row">
         <span>Block browser / UA fingerprint</span>
         <label class="switch"
           ><input type="checkbox" id="spoofUA" /><span class="slider"></span

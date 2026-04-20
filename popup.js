@@ -13,6 +13,7 @@ const FIELDS = [
   "language",
   "spoofUA",
   "rotateFingerprint",
+  "perTabFingerprint",
   "userAgent",
   "platform",
   "hardwareConcurrency",
@@ -416,6 +417,20 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Save button
   $("save").addEventListener("click", () => save(true));
+
+  // New identity for this tab (per-tab fingerprint regeneration)
+  $("newTabIdentity").addEventListener("click", async () => {
+    if (!active.tabId) return;
+    chrome.runtime.sendMessage(
+      { type: "REGENERATE_TAB_FP", tabId: active.tabId },
+      () => {
+        const btn = $("newTabIdentity");
+        const old = btn.textContent;
+        btn.textContent = "New identity applied";
+        setTimeout(() => (btn.textContent = old), 1500);
+      }
+    );
+  });
 
   // Purge cookies button
   $("purgeNow").addEventListener("click", () => {

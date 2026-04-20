@@ -128,6 +128,10 @@ const DEFAULT_CONFIG = {
   // load so trackers can't use the "stable fake" as its own cross-session ID.
   selectedCountry: "",
   rotateFingerprint: true,
+  // When true, each tab gets its own stable fingerprint (different tabs see
+  // different identities). Overrides rotateFingerprint within a single tab —
+  // the fingerprint stays stable across reloads within that tab.
+  perTabFingerprint: false,
   userAgent:
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   platform: "Win32",
@@ -157,6 +161,99 @@ async function getConfig() {
   }
   // Merge with defaults (handles extension upgrades)
   return { ...DEFAULT_CONFIG, ...stored.config };
+}
+
+// ---------- Per-tab fingerprint isolation ----------
+// Each tab gets its own stable fingerprint so sites opened in different tabs
+// can't correlate you. Fingerprint is created lazily on first GET_CONFIG from
+// a tab and persists in chrome.storage.session until the tab is closed.
+const TAB_POOLS = {
+  ua: [
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "MacIntel" },
+    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", platform: "MacIntel" },
+    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "Linux x86_64" }
+  ],
+  screens: [
+    { w: 1920, h: 1080 }, { w: 1536, h: 864 }, { w: 1440, h: 900 },
+    { w: 1366, h: 768 }, { w: 2560, h: 1440 }, { w: 1680, h: 1050 }
+  ],
+  languages: ["en-US", "en-GB", "en-CA", "de-DE", "fr-FR", "nl-NL", "it-IT", "es-ES", "pt-BR"],
+  cores: [4, 6, 8, 12, 16],
+  memory: [4, 8, 16, 32],
+  gpus: [
+    { vendor: "Google Inc. (Intel)", renderer: "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+    { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+    { vendor: "Google Inc. (AMD)", renderer: "ANGLE (AMD, AMD Radeon RX 580 2048SP Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+    { vendor: "Google Inc. (Apple)", renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)" }
+  ]
+};
+
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+function makeTabFingerprint() {
+  const ua = pick(TAB_POOLS.ua);
+  const screen = pick(TAB_POOLS.screens);
+  const gpu = pick(TAB_POOLS.gpus);
+  return {
+    userAgent: ua.ua,
+    platform: ua.platform,
+    language: pick(TAB_POOLS.languages),
+    hardwareConcurrency: pick(TAB_POOLS.cores),
+    deviceMemory: pick(TAB_POOLS.memory),
+    screen: {
+      width: screen.w,
+      height: screen.h,
+      availWidth: screen.w,
+      availHeight: screen.h - 40,
+      colorDepth: 24,
+      pixelDepth: 24
+    },
+    _gpuVendor: gpu.vendor,
+    _gpuRenderer: gpu.renderer
+  };
+}
+
+let tabFingerprints = {};
+chrome.storage.session.get("tabFingerprints").then((r) => {
+  if (r && r.tabFingerprints) tabFingerprints = r.tabFingerprints;
+});
+
+function persistTabFingerprints() {
+  chrome.storage.session.set({ tabFingerprints }).catch(() => {});
+}
+
+function getOrCreateTabFingerprint(tabId) {
+  if (!tabId) return null;
+  if (!tabFingerprints[tabId]) {
+    tabFingerprints[tabId] = makeTabFingerprint();
+    persistTabFingerprints();
+  }
+  return tabFingerprints[tabId];
+}
+
+function regenerateTabFingerprint(tabId) {
+  if (!tabId) return null;
+  tabFingerprints[tabId] = makeTabFingerprint();
+  persistTabFingerprints();
+  return tabFingerprints[tabId];
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabFingerprints[tabId]) {
+    delete tabFingerprints[tabId];
+    persistTabFingerprints();
+  }
+});
+
+async function getConfigForTab(tabId) {
+  const config = await getConfig();
+  if (!config.perTabFingerprint || !tabId) return config;
+  const fp = getOrCreateTabFingerprint(tabId);
+  // Override rotateFingerprint — tab FP is stable within the tab lifetime.
+  return { ...config, ...fp, rotateFingerprint: false };
 }
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -197,8 +294,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       if (msg?.type === "GET_CONFIG") {
-        const config = await getConfig();
+        // Content scripts get tab-specific config (with per-tab fingerprint
+        // if the toggle is on). Popup/welcome page gets the base config.
+        const config = sender?.tab?.id
+          ? await getConfigForTab(sender.tab.id)
+          : await getConfig();
         sendResponse({ ok: true, config });
+      } else if (msg?.type === "REGENERATE_TAB_FP") {
+        const tabId = msg.tabId || sender?.tab?.id;
+        if (tabId) {
+          regenerateTabFingerprint(tabId);
+          const fresh = await getConfigForTab(tabId);
+          chrome.tabs.sendMessage(tabId, { type: "CONFIG_UPDATE", config: fresh }).catch(() => {});
+          chrome.tabs.reload(tabId).catch(() => {});
+        }
+        sendResponse({ ok: true });
       } else if (msg?.type === "SET_CONFIG") {
         const current = await getConfig();
         const next = { ...current, ...msg.config };
@@ -273,11 +383,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 function broadcastConfig(config) {
-  chrome.tabs.query({}, (tabs) => {
+  chrome.tabs.query({}, async (tabs) => {
     for (const tab of tabs) {
       if (!tab.id) continue;
+      // If per-tab fingerprint is on, merge the tab's fingerprint in so
+      // each tab still gets its own stable identity on config change.
+      let toSend = config;
+      if (config.perTabFingerprint) {
+        const fp = getOrCreateTabFingerprint(tab.id);
+        toSend = { ...config, ...fp, rotateFingerprint: false };
+      }
       chrome.tabs
-        .sendMessage(tab.id, { type: "CONFIG_UPDATE", config })
+        .sendMessage(tab.id, { type: "CONFIG_UPDATE", config: toSend })
         .catch(() => {});
     }
   });
