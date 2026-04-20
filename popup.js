@@ -458,7 +458,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   $("perTabFingerprint").addEventListener("change", () => {
     save(false);
-    setTimeout(refreshTabFp, 300);
+    // Reload the tab so the per-tab fingerprint is delivered synchronously
+    // before any page script reads navigator.userAgent / screen / etc.
+    // Without the reload, the page keeps whatever fingerprint it loaded with.
+    if (active.tabId) {
+      setTimeout(() => chrome.tabs.reload(active.tabId), 50);
+    }
+    setTimeout(refreshTabFp, 600);
   });
 
   $("newTabIdentity").addEventListener("click", async () => {
