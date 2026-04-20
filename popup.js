@@ -418,7 +418,49 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Save button
   $("save").addEventListener("click", () => save(true));
 
-  // New identity for this tab (per-tab fingerprint regeneration)
+  // ---------- Per-tab fingerprint display ----------
+  function renderTabFp(fp) {
+    const card = $("tabFpCard");
+    const box = $("tabFpDetails");
+    if (!fp) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const rows = [
+      ["Platform", fp.platform || "—"],
+      ["Cores", fp.hardwareConcurrency || "—"],
+      ["Memory", (fp.deviceMemory || "—") + " GB"],
+      ["Screen", fp.screen ? fp.screen.width + " x " + fp.screen.height : "—"],
+      ["Language", fp.language || "—"],
+      ["GPU", fp._gpuRenderer ? fp._gpuRenderer.split(",")[0] : "—"]
+    ];
+    let html = "";
+    for (const [label, val] of rows) {
+      html +=
+        '<span class="fp-label">' + escapeHtml(label) + '</span>' +
+        '<span class="fp-val">' + escapeHtml(String(val)) + '</span>';
+    }
+    box.innerHTML = html;
+  }
+
+  function refreshTabFp() {
+    if (!active.tabId || !$("perTabFingerprint").checked) {
+      renderTabFp(null);
+      return;
+    }
+    chrome.runtime.sendMessage({ type: "GET_TAB_FP", tabId: active.tabId }, (res) => {
+      renderTabFp(res?.fp || null);
+    });
+  }
+
+  refreshTabFp();
+
+  $("perTabFingerprint").addEventListener("change", () => {
+    save(false);
+    setTimeout(refreshTabFp, 300);
+  });
+
   $("newTabIdentity").addEventListener("click", async () => {
     if (!active.tabId) return;
     chrome.runtime.sendMessage(
@@ -426,8 +468,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       () => {
         const btn = $("newTabIdentity");
         const old = btn.textContent;
-        btn.textContent = "New identity applied";
-        setTimeout(() => (btn.textContent = old), 1500);
+        btn.textContent = "Done!";
+        setTimeout(() => (btn.textContent = old), 1200);
+        refreshTabFp();
       }
     );
   });

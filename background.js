@@ -300,6 +300,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ? await getConfigForTab(sender.tab.id)
           : await getConfig();
         sendResponse({ ok: true, config });
+      } else if (msg?.type === "GET_TAB_FP") {
+        const tabId = msg.tabId;
+        const config = await getConfig();
+        if (!config.perTabFingerprint || !tabId || !tabFingerprints[tabId]) {
+          sendResponse({ ok: true, fp: null });
+        } else {
+          sendResponse({ ok: true, fp: tabFingerprints[tabId] });
+        }
       } else if (msg?.type === "REGENERATE_TAB_FP") {
         const tabId = msg.tabId || sender?.tab?.id;
         if (tabId) {

@@ -538,6 +538,44 @@ footer {
   color: var(--danger);
 }
 
+/* Per-tab fingerprint card */
+.tab-fp-card {
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.tab-fp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.tab-fp-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.tab-fp-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  font-size: 11px;
+}
+.tab-fp-details .fp-label {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tab-fp-details .fp-val {
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 /* Leak test result */
 .leak-result {
   margin-top: 8px;

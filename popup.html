@@ -340,18 +340,26 @@
         <span>
           Per-tab fingerprint isolation
           <span class="hint inline" style="display:block; margin-top:2px;">
-            Each browser tab gets its own stable fingerprint. Different tabs
-            look like different devices, so sites can't correlate your
-            activity across them. Essential for multi-account workflows.
+            Turn this ON and each tab automatically gets its own unique
+            device identity. Nothing to save — it happens instantly.
           </span>
         </span>
         <label class="switch"
           ><input type="checkbox" id="perTabFingerprint" /><span class="slider"></span
         ></label>
       </label>
-      <button id="newTabIdentity" class="btn small" style="margin-top:6px;">
-        New identity for this tab
-      </button>
+      <div id="tabFpCard" class="tab-fp-card" hidden>
+        <div class="tab-fp-header">
+          <span class="tab-fp-title">This tab's fingerprint</span>
+          <button id="newTabIdentity" class="btn small">Randomize</button>
+        </div>
+        <div id="tabFpDetails" class="tab-fp-details"></div>
+        <p class="hint" style="margin:6px 0 0;">
+          Each tab gets a different identity automatically. Click
+          <b>Randomize</b> to get a new one. Fingerprints last until the tab
+          is closed.
+        </p>
+      </div>
       <label class="row">
         <span>Block browser / UA fingerprint</span>
         <label class="switch"
