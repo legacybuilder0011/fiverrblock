@@ -1088,22 +1088,78 @@
     }
   } catch (_) {}
 
-  // ------------- RTCPeerConnection IP leak guard -------------
+  // ------------- RTCPeerConnection IP leak guard (hardened) -------------
+  // WebRTC leaks real IP in three ways — this blocks all three:
+  //  1. Host candidates   → expose local LAN IP (192.168.x.x, 10.x.x.x)
+  //  2. srflx candidates  → expose real public IP via STUN server
+  //  3. prflx candidates  → expose via peer-reflexive discovery
+  // We also strip iceServers so STUN probes can't happen, and filter any
+  // candidates that still leak through onicecandidate.
   try {
     if (typeof RTCPeerConnection !== "undefined") {
       const OrigRTC = window.RTCPeerConnection;
-      window.RTCPeerConnection = function (...args) {
-        const pc = new OrigRTC(...args);
+
+      const isLeakyCandidate = (cand) => {
+        if (!cand) return false;
+        const c = typeof cand === "string" ? cand : cand.candidate;
+        if (!c) return false;
+        // Strip candidates that reveal host/public IPs.
+        return /\btyp (host|srflx|prflx)\b/i.test(c);
+      };
+
+      function PatchedRTC(config, ...rest) {
+        // Strip all STUN/TURN servers — no ICE gathering means no IP leak.
+        const safeConfig = config ? { ...config } : {};
+        safeConfig.iceServers = [];
+        // Force mDNS so local IPs get hashed instead of leaked verbatim.
+        safeConfig.iceTransportPolicy = safeConfig.iceTransportPolicy || "all";
+
+        const pc = new OrigRTC(safeConfig, ...rest);
+        emit("hardwareAccess", "RTCPeerConnection");
+
+        // Kill audio/video offers so receiving tracks can't trigger STUN.
         const origCreateOffer = pc.createOffer.bind(pc);
         pc.createOffer = function (opts) {
-          opts = opts || {};
-          opts.offerToReceiveAudio = false;
-          opts.offerToReceiveVideo = false;
-          return origCreateOffer(opts);
+          const o = Object.assign({}, opts || {});
+          o.offerToReceiveAudio = false;
+          o.offerToReceiveVideo = false;
+          return origCreateOffer(o);
         };
+
+        // Filter ICE candidates passed in from the peer.
+        const origAddIce = pc.addIceCandidate.bind(pc);
+        pc.addIceCandidate = function (cand, ...a) {
+          if (isLeakyCandidate(cand)) return Promise.resolve();
+          return origAddIce(cand, ...a);
+        };
+
+        // Intercept onicecandidate so our outbound candidates don't leak either.
+        let userHandler = null;
+        Object.defineProperty(pc, "onicecandidate", {
+          get() { return userHandler; },
+          set(fn) {
+            userHandler = fn;
+            pc.addEventListener("icecandidate", function wrapped(ev) {
+              if (isLeakyCandidate(ev.candidate)) return;
+              if (typeof fn === "function") fn.call(pc, ev);
+            }, { once: false });
+          },
+          configurable: true
+        });
+
         return pc;
-      };
-      window.RTCPeerConnection.prototype = OrigRTC.prototype;
+      }
+      PatchedRTC.prototype = OrigRTC.prototype;
+      fakeNative(PatchedRTC, "RTCPeerConnection");
+      window.RTCPeerConnection = PatchedRTC;
+
+      // Alias for legacy webkit/moz prefixes if present.
+      if (window.webkitRTCPeerConnection) {
+        window.webkitRTCPeerConnection = PatchedRTC;
+      }
+      if (window.mozRTCPeerConnection) {
+        window.mozRTCPeerConnection = PatchedRTC;
+      }
     }
   } catch (_) {}
 

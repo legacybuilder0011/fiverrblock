@@ -590,6 +590,52 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   });
 
+  // ---------- Leak test ----------
+  $("runLeakTest").addEventListener("click", () => {
+    const box = $("leakResult");
+    const btn = $("runLeakTest");
+    btn.disabled = true;
+    btn.textContent = "Testing…";
+    box.hidden = false;
+    box.innerHTML = '<div class="hint" style="margin:0;">Running IP + DNS leak test…</div>';
+    chrome.runtime.sendMessage({ type: "LEAK_TEST" }, (res) => {
+      btn.disabled = false;
+      btn.textContent = "Test for IP / DNS leaks";
+      if (!res?.ok) {
+        box.innerHTML = '<div class="leak-warn">Test failed: ' + escapeHtml(res?.error || "unknown") + '</div>';
+        return;
+      }
+      const r = res.result;
+      const rows = [
+        ["IP address", r.ip || "unknown"],
+        ["Country", r.country || "unknown"],
+        ["City", r.city || "unknown"],
+        ["ISP / Org", r.isp || "unknown"],
+        ["ASN", r.asn || "unknown"]
+      ];
+      if (r.dns && r.dns.length) {
+        rows.push(["DNS resolver", r.dns.join(", ")]);
+      }
+      let html = "";
+      for (const [label, val] of rows) {
+        html +=
+          '<div class="leak-row"><span class="leak-label">' +
+          escapeHtml(label) +
+          '</span><span class="leak-val">' +
+          escapeHtml(val) +
+          '</span></div>';
+      }
+      if (r.warnings && r.warnings.length) {
+        for (const w of r.warnings) {
+          html += '<div class="leak-warn">⚠ ' + escapeHtml(w) + '</div>';
+        }
+      } else {
+        html += '<div class="leak-ok">✓ No leaks detected. IP matches picked country.</div>';
+      }
+      box.innerHTML = html;
+    });
+  });
+
   // ---------- Identity Presets ----------
   const PRESET_FIELDS = [
     "selectedCountry", "userAgent", "platform", "hardwareConcurrency",

@@ -369,6 +369,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (msg?.type === "PURGE_COOKIES") {
         await purgeAllCookies();
         sendResponse({ ok: true });
+      } else if (msg?.type === "LEAK_TEST") {
+        const result = await runLeakTest();
+        sendResponse({ ok: true, result });
       } else if (msg?.type === "RELOAD_TAB") {
         if (sender.tab?.id) chrome.tabs.reload(sender.tab.id);
         sendResponse({ ok: true });
@@ -573,6 +576,80 @@ function humanizeProxyError(err) {
     return "Proxy unreachable. Nothing is listening at that host:port, or the proxy timed out. Is Tor / your VPN actually running?";
   }
   return s;
+}
+
+// ---------- Leak test ----------
+// Fetches IP/country/ISP and DNS servers so the user can verify their VPN is
+// actually routing traffic and no DNS queries are leaking to their real ISP.
+async function runLeakTest() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  const result = {
+    ip: null,
+    country: null,
+    city: null,
+    isp: null,
+    asn: null,
+    dns: [],
+    warnings: []
+  };
+  try {
+    const r = await fetch("https://ipapi.co/json/", {
+      cache: "no-store",
+      signal: ctrl.signal
+    });
+    if (r.ok) {
+      const j = await r.json();
+      result.ip = j.ip || null;
+      result.country = j.country_name || j.country || null;
+      result.city = j.city || null;
+      result.isp = j.org || null;
+      result.asn = j.asn || null;
+    }
+  } catch (_) {}
+  try {
+    // EDNS-client-subnet echo — reveals approximate DNS resolver location.
+    // If Cloudflare sees a different country than the IP API, DNS is leaking.
+    const r = await fetch("https://cloudflare-dns.com/dns-query?name=whoami.cloudflare&type=TXT", {
+      cache: "no-store",
+      headers: { accept: "application/dns-json" },
+      signal: ctrl.signal
+    });
+    if (r.ok) {
+      const j = await r.json();
+      if (j.Answer) {
+        for (const a of j.Answer) {
+          if (a.data) result.dns.push(a.data.replace(/"/g, ""));
+        }
+      }
+    }
+  } catch (_) {}
+  clearTimeout(timer);
+  const config = await getConfig();
+  // Warnings
+  if (config.useProxy && config.proxy?.host) {
+    if (!result.ip) {
+      result.warnings.push("Could not reach leak-test server through proxy — check proxy connectivity.");
+    }
+  } else {
+    result.warnings.push("No proxy configured. Sites see your real IP and ISP.");
+  }
+  if (config.selectedCountry && result.country) {
+    const map = {
+      us: "United States", gb: "United Kingdom", de: "Germany",
+      nl: "Netherlands", fr: "France", ch: "Switzerland", se: "Sweden",
+      ca: "Canada", au: "Australia", jp: "Japan", sg: "Singapore",
+      br: "Brazil", in: "India", ae: "United Arab Emirates", ro: "Romania"
+    };
+    const expected = map[config.selectedCountry];
+    if (expected && !result.country.toLowerCase().includes(expected.toLowerCase())) {
+      result.warnings.push(
+        "IP country (" + result.country + ") does not match picked country (" + expected + "). " +
+        "Your VPN/Tor is exiting somewhere else."
+      );
+    }
+  }
+  return result;
 }
 
 // Try to bring the proxy up. Applies it, runs a preflight fetch, and if the

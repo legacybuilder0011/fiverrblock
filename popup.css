@@ -537,3 +537,52 @@ footer {
 .preset-card .preset-del:hover {
   color: var(--danger);
 }
+
+/* Leak test result */
+.leak-result {
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.leak-result .leak-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.leak-result .leak-label {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.leak-result .leak-val {
+  color: var(--text);
+  font-weight: 600;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.leak-warn {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.leak-ok {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: rgba(74, 222, 128, 0.1);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}

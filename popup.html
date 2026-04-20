@@ -151,6 +151,11 @@
       </div>
       <p id="proxyResult" class="hint"></p>
 
+      <button id="runLeakTest" class="btn small" style="margin-top:6px;">
+        Test for IP / DNS leaks
+      </button>
+      <div id="leakResult" class="leak-result" hidden></div>
+
       <!-- dummy checkbox that tracks server-side useProxy; keeps popup.js
            FIELDS array happy without an extra user toggle -->
       <input type="checkbox" id="useProxy" hidden />
