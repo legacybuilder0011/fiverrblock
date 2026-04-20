@@ -464,3 +464,76 @@ footer {
 .switch.big input:checked + .slider::before {
   transform: translateX(20px);
 }
+
+/* Identity presets */
+.preset-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.preset-input {
+  flex: 1;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 12px;
+  outline: none;
+}
+.preset-input:focus {
+  border-color: var(--accent);
+}
+.preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.preset-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.preset-card:hover {
+  border-color: var(--accent);
+}
+.preset-card.active {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(74, 222, 128, 0.10), transparent);
+}
+.preset-card .preset-label {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset-card .preset-meta {
+  color: var(--muted);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.preset-card .preset-del {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.preset-card .preset-del:hover {
+  color: var(--danger);
+}

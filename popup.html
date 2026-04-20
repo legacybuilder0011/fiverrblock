@@ -388,6 +388,24 @@
     </section>
 
     <section class="group">
+      <h2>Identity presets</h2>
+      <p class="hint">
+        Save your current fingerprint + country as a named profile.
+        Switch between presets instantly.
+      </p>
+      <div class="preset-bar">
+        <input type="text" id="presetName" placeholder="e.g. US-Windows-1" class="preset-input" />
+        <button id="savePreset" class="btn small primary">Save</button>
+      </div>
+      <div id="presetList" class="preset-list"></div>
+      <div class="grid2" style="margin-top:8px;">
+        <button id="exportConfig" class="btn small">Export config</button>
+        <button id="importConfig" class="btn small">Import config</button>
+      </div>
+      <input type="file" id="importFile" accept=".json" hidden />
+    </section>
+
+    <section class="group">
       <h2>Spoofed identity</h2>
       <label class="field">
         <span>User-Agent</span>

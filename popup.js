@@ -574,6 +574,149 @@ document.addEventListener("DOMContentLoaded", async () => {
         "Proxy disconnected. Chrome is back to direct connection.";
     });
   });
+
+  // ---------- Identity Presets ----------
+  const PRESET_FIELDS = [
+    "selectedCountry", "userAgent", "platform", "hardwareConcurrency",
+    "language", "timezone", "localeOffsetMinutes",
+    "spoofGeo", "spoofTimezone", "spoofUA"
+  ];
+
+  async function loadPresets() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get("presets", (r) => resolve(r.presets || []));
+    });
+  }
+
+  async function savePresets(presets) {
+    return new Promise((resolve) => {
+      chrome.storage.local.set({ presets }, resolve);
+    });
+  }
+
+  function presetSnapshot(config) {
+    const snap = {};
+    for (const k of PRESET_FIELDS) snap[k] = config[k];
+    snap.geo = config.geo ? { ...config.geo } : null;
+    snap.screen = config.screen ? { ...config.screen } : null;
+    return snap;
+  }
+
+  function presetSummary(snap) {
+    const parts = [];
+    if (snap.selectedCountry) parts.push(snap.selectedCountry.toUpperCase());
+    if (snap.platform) parts.push(snap.platform);
+    if (snap.screen) parts.push(snap.screen.width + "x" + snap.screen.height);
+    return parts.join(" · ") || "Custom";
+  }
+
+  async function renderPresets() {
+    const presets = await loadPresets();
+    const config = await loadConfig();
+    const list = $("presetList");
+    list.innerHTML = "";
+    if (!presets.length) {
+      list.innerHTML = '<div class="hint" style="margin:0;text-align:center;">No saved presets yet</div>';
+      return;
+    }
+    for (let i = 0; i < presets.length; i++) {
+      const p = presets[i];
+      const isActive = config.activePreset === p.name;
+      const card = document.createElement("div");
+      card.className = "preset-card" + (isActive ? " active" : "");
+      card.innerHTML =
+        '<span class="preset-label">' + escapeHtml(p.name) + '</span>' +
+        '<span class="preset-meta">' + escapeHtml(presetSummary(p.data)) + '</span>' +
+        '<button class="preset-del" title="Delete">&times;</button>';
+      card.querySelector(".preset-label").addEventListener("click", async () => {
+        const cur = await loadConfig();
+        const merged = { ...cur, ...p.data, activePreset: p.name };
+        chrome.runtime.sendMessage({ type: "SET_CONFIG", config: merged }, async () => {
+          const fresh = await loadConfig();
+          populate(fresh);
+          renderPresets();
+        });
+      });
+      card.querySelector(".preset-del").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const all = await loadPresets();
+        all.splice(i, 1);
+        await savePresets(all);
+        renderPresets();
+      });
+      list.appendChild(card);
+    }
+  }
+
+  $("savePreset").addEventListener("click", async () => {
+    const name = $("presetName").value.trim();
+    if (!name) { $("presetName").focus(); return; }
+    const config = collect();
+    const snap = presetSnapshot(config);
+    const presets = await loadPresets();
+    const existing = presets.findIndex((p) => p.name === name);
+    if (existing >= 0) {
+      presets[existing].data = snap;
+    } else {
+      presets.push({ name, data: snap });
+    }
+    await savePresets(presets);
+    const cur = await loadConfig();
+    chrome.runtime.sendMessage({
+      type: "SET_CONFIG",
+      config: { ...cur, activePreset: name }
+    });
+    $("presetName").value = "";
+    renderPresets();
+  });
+
+  renderPresets();
+
+  // ---------- Export / Import Config ----------
+  $("exportConfig").addEventListener("click", async () => {
+    const config = await loadConfig();
+    const presets = await loadPresets();
+    const blob = new Blob(
+      [JSON.stringify({ config, presets }, null, 2)],
+      { type: "application/json" }
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "privacy-shield-config.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  $("importConfig").addEventListener("click", () => {
+    $("importFile").click();
+  });
+
+  $("importFile").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (data.config) {
+          chrome.runtime.sendMessage({ type: "SET_CONFIG", config: data.config }, async () => {
+            if (Array.isArray(data.presets)) await savePresets(data.presets);
+            const fresh = await loadConfig();
+            populate(fresh);
+            renderPresets();
+            $("importConfig").textContent = "Imported!";
+            setTimeout(() => ($("importConfig").textContent = "Import config"), 1500);
+          });
+        }
+      } catch (err) {
+        $("importConfig").textContent = "Invalid file";
+        setTimeout(() => ($("importConfig").textContent = "Import config"), 1500);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  });
 });
 
 function escapeHtml(s) {
