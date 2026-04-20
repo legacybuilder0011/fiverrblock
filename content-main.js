@@ -717,11 +717,43 @@
           return orig.call(this, name);
         }
       );
+      // Normalized Chrome 120+ WebGL extensions list — returning the real list
+      // leaks the actual GPU driver. This set is what modern Chrome typically
+      // reports across desktops; using a fixed list kills a whole fingerprint vector.
+      const NORMALIZED_EXTENSIONS = [
+        "ANGLE_instanced_arrays",
+        "EXT_blend_minmax",
+        "EXT_color_buffer_half_float",
+        "EXT_disjoint_timer_query",
+        "EXT_float_blend",
+        "EXT_frag_depth",
+        "EXT_shader_texture_lod",
+        "EXT_texture_compression_bptc",
+        "EXT_texture_compression_rgtc",
+        "EXT_texture_filter_anisotropic",
+        "EXT_sRGB",
+        "KHR_parallel_shader_compile",
+        "OES_element_index_uint",
+        "OES_fbo_render_mipmap",
+        "OES_standard_derivatives",
+        "OES_texture_float",
+        "OES_texture_float_linear",
+        "OES_texture_half_float",
+        "OES_texture_half_float_linear",
+        "OES_vertex_array_object",
+        "WEBGL_color_buffer_float",
+        "WEBGL_compressed_texture_s3tc",
+        "WEBGL_compressed_texture_s3tc_srgb",
+        "WEBGL_debug_shaders",
+        "WEBGL_depth_texture",
+        "WEBGL_draw_buffers",
+        "WEBGL_lose_context",
+        "WEBGL_multi_draw"
+      ];
       wrap(proto, "getSupportedExtensions", (orig) =>
         function () {
           emit("webglAccess", "getSupportedExtensions");
-          const ext = orig.call(this) || [];
-          return ext.filter((e) => e !== "WEBGL_debug_renderer_info");
+          return NORMALIZED_EXTENSIONS.slice();
         }
       );
       wrap(proto, "readPixels", (orig) =>
@@ -807,21 +839,107 @@
     }
   }
 
-  // ------------- Media / speech enumeration -------------
+  // ------------- navigator.webdriver = undefined (bot-detection flag #1) -------------
+  // Chrome sets this to `true` under automation. Every anti-bot system checks
+  // it first. Explicitly force it to `false` / undefined so we pass that gate.
   try {
-    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-      navigator.mediaDevices.enumerateDevices = function () {
-        return Promise.resolve([]);
-      };
+    Object.defineProperty(Navigator.prototype, "webdriver", {
+      get() {
+        return false;
+      },
+      configurable: true
+    });
+  } catch (_) {}
+  try {
+    // Also wipe any other automation-framework leaks on window.
+    const automationKeys = [
+      "__webdriver_evaluate",
+      "__selenium_evaluate",
+      "__webdriver_script_function",
+      "__webdriver_script_func",
+      "__webdriver_script_fn",
+      "__fxdriver_evaluate",
+      "__driver_unwrapped",
+      "__webdriver_unwrapped",
+      "__driver_evaluate",
+      "__selenium_unwrapped",
+      "__fxdriver_unwrapped",
+      "_Selenium_IDE_Recorder",
+      "_selenium",
+      "calledSelenium",
+      "$cdc_asdjflasutopfhvcZLmcfl_",
+      "$chrome_asyncScriptInfo",
+      "__$webdriverAsyncExecutor"
+    ];
+    for (const k of automationKeys) {
+      try { delete window[k]; } catch (_) {}
+      try { delete document[k]; } catch (_) {}
     }
   } catch (_) {}
 
+  // ------------- MediaDevices.enumerateDevices (realistic fakes) -------------
+  // Returning [] is itself a fingerprint — real browsers always have at least
+  // a default audio input/output. Return a plausible minimal set.
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      const fakeDevices = [
+        { deviceId: "default", kind: "audioinput", label: "", groupId: "ps-g1" },
+        { deviceId: "default", kind: "audiooutput", label: "", groupId: "ps-g1" },
+        { deviceId: "ps-cam-1", kind: "videoinput", label: "", groupId: "ps-g2" }
+      ];
+      navigator.mediaDevices.enumerateDevices = function () {
+        emit("hardwareAccess", "enumerateDevices");
+        return Promise.resolve(fakeDevices.map((d) => ({ ...d })));
+      };
+      fakeNative(navigator.mediaDevices.enumerateDevices, "enumerateDevices");
+    }
+  } catch (_) {}
+
+  // ------------- SpeechSynthesis voices (match rotated OS) -------------
+  // Windows and macOS ship very different voice sets — returning [] or a
+  // mismatched set leaks the real OS. Build a plausible list from config.platform.
   try {
     if (window.speechSynthesis) {
+      const winVoices = [
+        { name: "Microsoft David - English (United States)", lang: "en-US", voiceURI: "Microsoft David - English (United States)", localService: true, default: true },
+        { name: "Microsoft Zira - English (United States)", lang: "en-US", voiceURI: "Microsoft Zira - English (United States)", localService: true, default: false },
+        { name: "Microsoft Mark - English (United States)", lang: "en-US", voiceURI: "Microsoft Mark - English (United States)", localService: true, default: false }
+      ];
+      const macVoices = [
+        { name: "Alex", lang: "en-US", voiceURI: "com.apple.speech.synthesis.voice.Alex", localService: true, default: true },
+        { name: "Samantha", lang: "en-US", voiceURI: "com.apple.speech.synthesis.voice.samantha", localService: true, default: false },
+        { name: "Victoria", lang: "en-US", voiceURI: "com.apple.speech.synthesis.voice.victoria", localService: true, default: false }
+      ];
+      const voicesFor = () =>
+        /mac|darwin/i.test(config.platform || "") ? macVoices : winVoices;
       window.speechSynthesis.getVoices = function () {
-        return [];
+        emit("hardwareAccess", "speechSynthesis.getVoices");
+        return voicesFor().map((v) => ({ ...v }));
       };
+      fakeNative(window.speechSynthesis.getVoices, "getVoices");
     }
+  } catch (_) {}
+
+  // ------------- performance.now() precision reduction -------------
+  // High-precision timing is used for side-channel attacks and mouse
+  // trajectory analysis. Round to 0.1ms and jitter slightly so the value
+  // still advances but attackers can't use sub-ms resolution.
+  try {
+    const origNow = performance.now.bind(performance);
+    performance.now = function () {
+      const v = origNow();
+      return Math.floor(v * 10) / 10 + Math.random() * 0.01;
+    };
+    fakeNative(performance.now, "now");
+  } catch (_) {}
+  try {
+    // Date.now() gets similar treatment — some fingerprinters use it for timing.
+    const origDateNow = Date.now;
+    Date.now = function () {
+      const v = origDateNow();
+      return Math.floor(v / 2) * 2;
+    };
+    fakeNative(Date.now, "now");
   } catch (_) {}
 
   // ------------- Storage neuter (dynamic — checks config live) -------------
