@@ -247,12 +247,51 @@
   };
 
   // ------------- Tiny helpers -------------
+  // Make a function report as native code when fingerprinters call .toString() on it.
+  const fakeNative = (fn, name) => {
+    try {
+      const nativeStr = "function " + (name || fn.name || "") + "() { [native code] }";
+      Object.defineProperty(fn, "toString", {
+        value: function () {
+          return nativeStr;
+        },
+        configurable: true,
+        writable: true
+      });
+      Object.defineProperty(fn, "name", {
+        value: name || fn.name || "",
+        configurable: true
+      });
+    } catch (_) {}
+    return fn;
+  };
+
+  // Also mask Function.prototype.toString so calling nativeStr from there works too.
+  try {
+    const origFnToString = Function.prototype.toString;
+    const fakeMap = new WeakMap();
+    Function.prototype.toString = fakeNative(function toString() {
+      if (fakeMap.has(this)) return fakeMap.get(this);
+      return origFnToString.call(this);
+    }, "toString");
+    // Expose a way for our overrides to register their fake toString output.
+    window.__ps_fakeNative = (fn, str) => {
+      try { fakeMap.set(fn, str); } catch (_) {}
+    };
+  } catch (_) {}
+
   const defineRO = (obj, prop, value) => {
     try {
+      const getter = function () {
+        return typeof value === "function" ? value() : value;
+      };
+      fakeNative(getter, "get " + prop);
+      try {
+        window.__ps_fakeNative &&
+          window.__ps_fakeNative(getter, "function get " + prop + "() { [native code] }");
+      } catch (_) {}
       Object.defineProperty(obj, prop, {
-        get() {
-          return typeof value === "function" ? value() : value;
-        },
+        get: getter,
         configurable: true
       });
     } catch (_) {}
@@ -261,13 +300,15 @@
   const wrap = (target, prop, replacement) => {
     try {
       const original = target[prop];
-      target[prop] = replacement(original);
-      // Make toString look native so naive fingerprinters don't detect the hook.
+      const replaced = replacement(original);
+      target[prop] = replaced;
+      fakeNative(replaced, prop);
       try {
-        target[prop].toString = () =>
+        const nativeStr =
           typeof original === "function"
             ? Function.prototype.toString.call(original)
             : "function " + prop + "() { [native code] }";
+        window.__ps_fakeNative && window.__ps_fakeNative(replaced, nativeStr);
       } catch (_) {}
     } catch (_) {}
   };
