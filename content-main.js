@@ -246,6 +246,18 @@
     } catch (_) {}
   };
 
+  // ------------- Deterministic noise (seeded PRNG) -------------
+  // PerimeterX reads canvas/audio/WebGL TWICE and compares. Random noise gives
+  // different results each read = instant detection. A seeded PRNG gives the
+  // same noise for the same pixel index within a page load.
+  const NOISE_SEED = (Math.random() * 0x7FFFFFFF) >>> 0;
+  function stableNoise(index) {
+    let h = (index + NOISE_SEED) | 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+    h = Math.imul(h ^ (h >>> 13), 0x45d9f3b);
+    return ((h ^ (h >>> 16)) >>> 0) / 0x100000000;
+  }
+
   // ------------- Tiny helpers -------------
   // Make a function report as native code when fingerprinters call .toString() on it.
   const fakeNative = (fn, name) => {
@@ -274,10 +286,14 @@
       if (fakeMap.has(this)) return fakeMap.get(this);
       return origFnToString.call(this);
     }, "toString");
-    // Expose a way for our overrides to register their fake toString output.
-    window.__ps_fakeNative = (fn, str) => {
+    const registerFake = (fn, str) => {
       try { fakeMap.set(fn, str); } catch (_) {}
     };
+    // Store in a non-enumerable, randomly-named key so bot detectors can't find it.
+    const regKey = "_" + Math.random().toString(36).slice(2, 8);
+    Object.defineProperty(window, regKey, {
+      value: registerFake, writable: false, enumerable: false, configurable: false
+    });
   } catch (_) {}
 
   const defineRO = (obj, prop, value) => {
@@ -287,8 +303,8 @@
       };
       fakeNative(getter, "get " + prop);
       try {
-        window.__ps_fakeNative &&
-          window.__ps_fakeNative(getter, "function get " + prop + "() { [native code] }");
+        window[regKey] &&
+          window[regKey](getter, "function get " + prop + "() { [native code] }");
       } catch (_) {}
       Object.defineProperty(obj, prop, {
         get: getter,
@@ -308,7 +324,7 @@
           typeof original === "function"
             ? Function.prototype.toString.call(original)
             : "function " + prop + "() { [native code] }";
-        window.__ps_fakeNative && window.__ps_fakeNative(replaced, nativeStr);
+        window[regKey] && window[regKey](replaced, nativeStr);
       } catch (_) {}
     } catch (_) {}
   };
@@ -442,27 +458,48 @@
   }
 
   // ------------- Plugins / MIME types -------------
+  // Real Chrome always has 5 PDF-related plugins. Returning 0 is a red flag.
   if (config.blockPlugins) {
-    const emptyPlugins = Object.freeze({
-      length: 0,
-      item() {
-        return null;
-      },
-      namedItem() {
-        return null;
-      },
+    const pdfMime = Object.freeze({
+      type: "application/pdf", suffixes: "pdf", description: "Portable Document Format",
+      enabledPlugin: null
+    });
+    const pluginNames = [
+      "PDF Viewer", "Chrome PDF Viewer", "Chromium PDF Viewer",
+      "Microsoft Edge PDF Viewer", "WebKit built-in PDF"
+    ];
+    const fakePluginList = pluginNames.map((name) => {
+      const p = Object.freeze({
+        name, filename: "internal-pdf-viewer",
+        description: "Portable Document Format", length: 1,
+        item: (i) => i === 0 ? pdfMime : null,
+        namedItem: (n) => n === "application/pdf" ? pdfMime : null,
+        [Symbol.iterator]: function* () { yield pdfMime; }
+      });
+      return p;
+    });
+    const pluginsObj = Object.freeze({
+      length: 5,
+      item(i) { return fakePluginList[i] || null; },
+      namedItem(n) { return fakePluginList.find((p) => p.name === n) || null; },
       refresh() {},
-      [Symbol.iterator]: function* () {}
+      [Symbol.iterator]: function* () { for (const p of fakePluginList) yield p; }
+    });
+    const mimesObj = Object.freeze({
+      length: 1,
+      item(i) { return i === 0 ? pdfMime : null; },
+      namedItem(n) { return n === "application/pdf" ? pdfMime : null; },
+      [Symbol.iterator]: function* () { yield pdfMime; }
     });
     defineRO(Navigator.prototype, "plugins", () => {
       emit("pluginsAccess", "navigator.plugins");
-      return emptyPlugins;
+      return pluginsObj;
     });
     defineRO(Navigator.prototype, "mimeTypes", () => {
       emit("pluginsAccess", "navigator.mimeTypes");
-      return emptyPlugins;
+      return mimesObj;
     });
-    defineRO(Navigator.prototype, "pdfViewerEnabled", false);
+    defineRO(Navigator.prototype, "pdfViewerEnabled", true);
   }
 
   // ------------- Fonts API -------------
@@ -603,22 +640,27 @@
   }
 
   // ------------- Canvas fingerprint defense -------------
+  // Uses deterministic noise so multiple reads return IDENTICAL results.
+  // Saves and restores original pixels so the canvas isn't permanently modified.
   if (config.blockCanvas) {
-    const noiseCanvas = (ctx, canvas) => {
-      try {
-        const w = canvas.width;
-        const h = canvas.height;
-        if (!w || !h) return;
-        const imgData = ctx.getImageData(0, 0, w, h);
-        const data = imgData.data;
-        // Light, deterministic-per-page noise so functionality isn't broken.
-        for (let i = 0; i < data.length; i += 4) {
-          data[i] = data[i] ^ (Math.random() < 0.01 ? 1 : 0);
-          data[i + 1] = data[i + 1] ^ (Math.random() < 0.01 ? 1 : 0);
-          data[i + 2] = data[i + 2] ^ (Math.random() < 0.01 ? 1 : 0);
-        }
-        ctx.putImageData(imgData, 0, 0);
-      } catch (_) {}
+    const noiseAndRead = (canvas, ctx, origFn, args) => {
+      const w = canvas.width;
+      const h = canvas.height;
+      if (!w || !h || !ctx) return origFn.apply(canvas, args);
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const backup = new Uint8ClampedArray(imgData.data);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        if (stableNoise(i) < 0.01) d[i] ^= 1;
+        if (stableNoise(i + 1) < 0.01) d[i + 1] ^= 1;
+        if (stableNoise(i + 2) < 0.01) d[i + 2] ^= 1;
+      }
+      ctx.putImageData(imgData, 0, 0);
+      const result = origFn.apply(canvas, args);
+      const restore = ctx.createImageData(w, h);
+      restore.data.set(backup);
+      ctx.putImageData(restore, 0, 0);
+      return result;
     };
 
     wrap(HTMLCanvasElement.prototype, "toDataURL", (orig) =>
@@ -626,7 +668,7 @@
         emit("canvasAccess", "toDataURL");
         try {
           const ctx = this.getContext("2d");
-          if (ctx) noiseCanvas(ctx, this);
+          if (ctx) return noiseAndRead(this, ctx, orig, args);
         } catch (_) {}
         return orig.apply(this, args);
       }
@@ -637,7 +679,25 @@
         emit("canvasAccess", "toBlob");
         try {
           const ctx = this.getContext("2d");
-          if (ctx) noiseCanvas(ctx, this);
+          if (ctx) {
+            const w = this.width, h = this.height;
+            if (w && h) {
+              const imgData = ctx.getImageData(0, 0, w, h);
+              const backup = new Uint8ClampedArray(imgData.data);
+              const d = imgData.data;
+              for (let i = 0; i < d.length; i += 4) {
+                if (stableNoise(i) < 0.01) d[i] ^= 1;
+                if (stableNoise(i + 1) < 0.01) d[i + 1] ^= 1;
+                if (stableNoise(i + 2) < 0.01) d[i + 2] ^= 1;
+              }
+              ctx.putImageData(imgData, 0, 0);
+              const result = orig.call(this, cb, ...rest);
+              const restore = ctx.createImageData(w, h);
+              restore.data.set(backup);
+              ctx.putImageData(restore, 0, 0);
+              return result;
+            }
+          }
         } catch (_) {}
         return orig.call(this, cb, ...rest);
       }
@@ -648,27 +708,16 @@
         emit("canvasAccess", "getImageData");
         const imgData = orig.apply(this, args);
         try {
-          const data = imgData.data;
-          for (let i = 0; i < data.length; i += 4) {
-            if (Math.random() < 0.005) data[i] ^= 1;
-            if (Math.random() < 0.005) data[i + 1] ^= 1;
-            if (Math.random() < 0.005) data[i + 2] ^= 1;
+          const d = imgData.data;
+          for (let i = 0; i < d.length; i += 4) {
+            if (stableNoise(i) < 0.005) d[i] ^= 1;
+            if (stableNoise(i + 1) < 0.005) d[i + 1] ^= 1;
+            if (stableNoise(i + 2) < 0.005) d[i + 2] ^= 1;
           }
         } catch (_) {}
         return imgData;
       }
     );
-
-    // OffscreenCanvas
-    try {
-      if (typeof OffscreenCanvas !== "undefined") {
-        wrap(OffscreenCanvas.prototype, "convertToBlob", (orig) =>
-          function (...args) {
-            return orig.apply(this, args);
-          }
-        );
-      }
-    } catch (_) {}
   }
 
   // ------------- WebGL blocking -------------
@@ -764,7 +813,7 @@
             const buf = args[6];
             if (buf && buf.length) {
               for (let i = 0; i < buf.length; i += 4) {
-                if (Math.random() < 0.002) buf[i] ^= 1;
+                if (stableNoise(i) < 0.002) buf[i] ^= 1;
               }
             }
           } catch (_) {}
@@ -783,7 +832,7 @@
     const noiseArr = (arr) => {
       try {
         for (let i = 0; i < arr.length; i++) {
-          arr[i] = arr[i] + (Math.random() - 0.5) * 1e-7;
+          arr[i] = arr[i] + (stableNoise(i) - 0.5) * 1e-7;
         }
       } catch (_) {}
     };
@@ -800,7 +849,7 @@
           emit("audioAccess", "getByteFrequencyData");
           orig.call(this, arr);
           for (let i = 0; i < arr.length; i++) {
-            if (Math.random() < 0.01) arr[i] = (arr[i] ^ 1) & 0xff;
+            if (stableNoise(i) < 0.01) arr[i] = (arr[i] ^ 1) & 0xff;
           }
         }
       );
@@ -819,7 +868,7 @@
           const data = orig.apply(this, args);
           try {
             for (let i = 0; i < data.length; i += 500) {
-              data[i] = data[i] + (Math.random() - 0.5) * 1e-7;
+              data[i] = data[i] + (stableNoise(i) - 0.5) * 1e-7;
             }
           } catch (_) {}
           return data;
@@ -831,7 +880,7 @@
           orig.call(this, dest, ...rest);
           try {
             for (let i = 0; i < dest.length; i += 500) {
-              dest[i] = dest[i] + (Math.random() - 0.5) * 1e-7;
+              dest[i] = dest[i] + (stableNoise(i) - 0.5) * 1e-7;
             }
           } catch (_) {}
         }
@@ -882,10 +931,12 @@
   // a default audio input/output. Return a plausible minimal set.
   try {
     if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      const gid1 = NOISE_SEED.toString(16).padStart(8, "0") + "a1b2c3d4e5f60718";
+      const gid2 = (NOISE_SEED ^ 0x5a5a5a5a).toString(16).padStart(8, "0") + "91a2b3c4d5e6f708";
       const fakeDevices = [
-        { deviceId: "default", kind: "audioinput", label: "", groupId: "ps-g1" },
-        { deviceId: "default", kind: "audiooutput", label: "", groupId: "ps-g1" },
-        { deviceId: "ps-cam-1", kind: "videoinput", label: "", groupId: "ps-g2" }
+        { deviceId: "default", kind: "audioinput", label: "", groupId: gid1 },
+        { deviceId: "default", kind: "audiooutput", label: "", groupId: gid1 },
+        { deviceId: (NOISE_SEED ^ 0xCAFE).toString(16).padStart(16, "0").slice(0, 64), kind: "videoinput", label: "", groupId: gid2 }
       ];
       navigator.mediaDevices.enumerateDevices = function () {
         emit("hardwareAccess", "enumerateDevices");
@@ -921,25 +972,14 @@
   } catch (_) {}
 
   // ------------- performance.now() precision reduction -------------
-  // High-precision timing is used for side-channel attacks and mouse
-  // trajectory analysis. Round to 0.1ms and jitter slightly so the value
-  // still advances but attackers can't use sub-ms resolution.
+  // Reduce to 0.1ms precision — enough to block side-channel attacks without
+  // triggering bot detectors that look for jitter or rounding artifacts.
   try {
     const origNow = performance.now.bind(performance);
     performance.now = function () {
-      const v = origNow();
-      return Math.floor(v * 10) / 10 + Math.random() * 0.01;
+      return Math.round(origNow() * 10) / 10;
     };
     fakeNative(performance.now, "now");
-  } catch (_) {}
-  try {
-    // Date.now() gets similar treatment — some fingerprinters use it for timing.
-    const origDateNow = Date.now;
-    Date.now = function () {
-      const v = origDateNow();
-      return Math.floor(v / 2) * 2;
-    };
-    fakeNative(Date.now, "now");
   } catch (_) {}
 
   // ------------- Storage neuter (dynamic — checks config live) -------------
@@ -1163,13 +1203,4 @@
     }
   } catch (_) {}
 
-  // Signal page scripts (and our own code) that shields are active.
-  try {
-    Object.defineProperty(window, "__privacyShieldActive", {
-      value: true,
-      writable: false,
-      configurable: false,
-      enumerable: false
-    });
-  } catch (_) {}
 })();

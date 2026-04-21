@@ -265,9 +265,8 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   await applyNetworkPrivacySettings();
   await applyProxySettings();
   await applySiteAllowRules();
+  await syncHeadersWithConfig();
   await applyBadgeDefaults();
-  // Open a welcome tour on first install so users know what the shield does
-  // and how to pause it per site.
   if (details.reason === "install") {
     chrome.tabs.create({ url: chrome.runtime.getURL("welcome.html") });
   }
@@ -277,6 +276,7 @@ chrome.runtime.onStartup.addListener(async () => {
   await applyNetworkPrivacySettings();
   await applyProxySettings();
   await applySiteAllowRules();
+  await syncHeadersWithConfig();
   await applyBadgeDefaults();
 });
 
@@ -332,6 +332,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await chrome.storage.local.set({ config: next });
         await applyNetworkPrivacySettings();
         await applyProxySettings();
+        await syncHeadersWithConfig(next);
         await applyBadgeDefaults();
         await purgeCookiesIfEnabled();
         broadcastConfig(next);
@@ -531,6 +532,45 @@ async function applyNetworkPrivacySettings() {
     });
   } catch (err) {
     console.warn("DNR toggle failed:", err);
+  }
+}
+
+// ---------- Dynamic header sync ----------
+// Keeps HTTP User-Agent, Accept-Language, and sec-ch-ua headers in sync with
+// the JS-side spoofed values. Without this, PerimeterX sees the HTTP header
+// saying one browser and navigator.userAgent saying another = instant flag.
+async function syncHeadersWithConfig(cfg) {
+  if (!cfg) cfg = await getConfig();
+  const ua = cfg.userAgent || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  const lang = cfg.language || "en-US";
+  const chromeVer = (ua.match(/Chrome\/(\d+)/) || [])[1] || "120";
+  const platform = /Macintosh/.test(ua) ? "macOS" : /Linux/.test(ua) ? "Linux" : "Windows";
+  try {
+    const existing = await chrome.declarativeNetRequest.getDynamicRules();
+    const removeIds = existing.filter((r) => r.id >= 9000 && r.id < 9010).map((r) => r.id);
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: removeIds,
+      addRules: [{
+        id: 9000,
+        priority: 10,
+        action: {
+          type: "modifyHeaders",
+          requestHeaders: [
+            { header: "user-agent", operation: "set", value: ua },
+            { header: "accept-language", operation: "set", value: lang + "," + lang.split("-")[0] + ";q=0.9,en;q=0.8" },
+            { header: "sec-ch-ua", operation: "set", value: '"Not_A Brand";v="8", "Chromium";v="' + chromeVer + '", "Google Chrome";v="' + chromeVer + '"' },
+            { header: "sec-ch-ua-platform", operation: "set", value: '"' + platform + '"' },
+            { header: "sec-ch-ua-mobile", operation: "set", value: "?0" }
+          ]
+        },
+        condition: {
+          urlFilter: "*",
+          resourceTypes: ["main_frame", "sub_frame", "xmlhttprequest", "script", "image", "font", "stylesheet", "media", "ping", "other"]
+        }
+      }]
+    });
+  } catch (err) {
+    console.warn("Dynamic header sync failed:", err);
   }
 }
 
