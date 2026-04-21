@@ -8,19 +8,30 @@
   const SYNC_KEY = "__privacy_shield_config__";
   const EVENT_KEY = "__privacy_shield_event__";
 
+  const CACHE_KEY = "__ps_cfg_cache";
+
   function deliver(config) {
-    // Stash on document attribute in case the MAIN world script starts later.
+    const json = JSON.stringify(config);
     try {
-      document.documentElement.setAttribute(
-        "data-privacy-shield",
-        JSON.stringify(config)
-      );
+      document.documentElement.setAttribute("data-privacy-shield", json);
     } catch (_) {}
-    // Also dispatch a live event for already-running MAIN world.
+    try {
+      sessionStorage.setItem(CACHE_KEY, json);
+    } catch (_) {}
     window.dispatchEvent(
-      new CustomEvent(SYNC_KEY, { detail: JSON.parse(JSON.stringify(config)) })
+      new CustomEvent(SYNC_KEY, { detail: JSON.parse(json) })
     );
   }
+
+  // Deliver cached config synchronously so MAIN world gets it before any
+  // page script runs. This is critical for per-tab fingerprint stability —
+  // without it, MAIN falls back to defaults and re-rotates on every reload.
+  try {
+    const cached = sessionStorage.getItem(CACHE_KEY);
+    if (cached) {
+      document.documentElement.setAttribute("data-privacy-shield", cached);
+    }
+  } catch (_) {}
 
   chrome.runtime.sendMessage({ type: "GET_CONFIG" }, (res) => {
     if (chrome.runtime.lastError) return;

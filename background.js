@@ -217,7 +217,7 @@ function makeTabFingerprint() {
 }
 
 let tabFingerprints = {};
-chrome.storage.session.get("tabFingerprints").then((r) => {
+const tabFpReady = chrome.storage.session.get("tabFingerprints").then((r) => {
   if (r && r.tabFingerprints) tabFingerprints = r.tabFingerprints;
 });
 
@@ -225,7 +225,8 @@ function persistTabFingerprints() {
   chrome.storage.session.set({ tabFingerprints }).catch(() => {});
 }
 
-function getOrCreateTabFingerprint(tabId) {
+async function getOrCreateTabFingerprint(tabId) {
+  await tabFpReady;
   if (!tabId) return null;
   if (!tabFingerprints[tabId]) {
     tabFingerprints[tabId] = makeTabFingerprint();
@@ -234,7 +235,8 @@ function getOrCreateTabFingerprint(tabId) {
   return tabFingerprints[tabId];
 }
 
-function regenerateTabFingerprint(tabId) {
+async function regenerateTabFingerprint(tabId) {
+  await tabFpReady;
   if (!tabId) return null;
   tabFingerprints[tabId] = makeTabFingerprint();
   persistTabFingerprints();
@@ -251,8 +253,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 async function getConfigForTab(tabId) {
   const config = await getConfig();
   if (!config.perTabFingerprint || !tabId) return config;
-  const fp = getOrCreateTabFingerprint(tabId);
-  // Override rotateFingerprint — tab FP is stable within the tab lifetime.
+  const fp = await getOrCreateTabFingerprint(tabId);
   return { ...config, ...fp, rotateFingerprint: false };
 }
 
@@ -301,6 +302,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           : await getConfig();
         sendResponse({ ok: true, config });
       } else if (msg?.type === "GET_TAB_FP") {
+        await tabFpReady;
         const tabId = msg.tabId;
         const config = await getConfig();
         if (!config.perTabFingerprint || !tabId || !tabFingerprints[tabId]) {
@@ -311,7 +313,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (msg?.type === "REGENERATE_TAB_FP") {
         const tabId = msg.tabId || sender?.tab?.id;
         if (tabId) {
-          regenerateTabFingerprint(tabId);
+          await regenerateTabFingerprint(tabId);
           const fresh = await getConfigForTab(tabId);
           chrome.tabs.sendMessage(tabId, { type: "CONFIG_UPDATE", config: fresh }).catch(() => {});
           chrome.tabs.reload(tabId).catch(() => {});
@@ -401,7 +403,7 @@ function broadcastConfig(config) {
       // each tab still gets its own stable identity on config change.
       let toSend = config;
       if (config.perTabFingerprint) {
-        const fp = getOrCreateTabFingerprint(tab.id);
+        const fp = await getOrCreateTabFingerprint(tab.id);
         toSend = { ...config, ...fp, rotateFingerprint: false };
       }
       chrome.tabs
