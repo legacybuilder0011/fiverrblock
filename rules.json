@@ -5,14 +5,14 @@
     "action": {
       "type": "modifyHeaders",
       "requestHeaders": [
-        { "header": "sec-ch-ua", "operation": "remove" },
+        { "header": "sec-ch-ua", "operation": "set", "value": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"" },
         { "header": "sec-ch-ua-arch", "operation": "remove" },
         { "header": "sec-ch-ua-bitness", "operation": "remove" },
         { "header": "sec-ch-ua-full-version", "operation": "remove" },
         { "header": "sec-ch-ua-full-version-list", "operation": "remove" },
-        { "header": "sec-ch-ua-mobile", "operation": "remove" },
+        { "header": "sec-ch-ua-mobile", "operation": "set", "value": "?0" },
         { "header": "sec-ch-ua-model", "operation": "remove" },
-        { "header": "sec-ch-ua-platform", "operation": "remove" },
+        { "header": "sec-ch-ua-platform", "operation": "set", "value": "\"Windows\"" },
         { "header": "sec-ch-ua-platform-version", "operation": "remove" },
         { "header": "sec-ch-ua-wow64", "operation": "remove" },
         { "header": "device-memory", "operation": "remove" },
@@ -25,7 +25,6 @@
         { "header": "save-data", "operation": "remove" },
         { "header": "x-client-data", "operation": "remove" },
         { "header": "x-forwarded-for", "operation": "remove" },
-        { "header": "referer", "operation": "remove" },
         { "header": "user-agent", "operation": "set", "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
         { "header": "accept-language", "operation": "set", "value": "en-US,en;q=0.9" }
       ],

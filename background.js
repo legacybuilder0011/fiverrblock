@@ -480,9 +480,10 @@ async function applyNetworkPrivacySettings() {
 
   // Toggle Referer, Hyperlink-auditing, Network Prediction, WebRTC IP leak.
   try {
-    if (chrome.privacy?.websites?.referrersEnabled) {
-      await chrome.privacy.websites.referrersEnabled.set({ value: !enabled });
-    }
+    // Don't disable referrers globally — stripping all Referer headers breaks
+    // CSRF protection and login flows on many sites (including Fiverr).
+    // Chrome's default Referrer-Policy (strict-origin-when-cross-origin) already
+    // limits cross-origin leakage to the origin only.
     if (chrome.privacy?.websites?.hyperlinkAuditingEnabled) {
       await chrome.privacy.websites.hyperlinkAuditingEnabled.set({
         value: !enabled
