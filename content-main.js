@@ -1094,39 +1094,11 @@
     }
   } catch (_) {}
 
-  // ------------- document.cookie blocking (dynamic — checks config live) -------------
-  try {
-    const cookieDesc = Object.getOwnPropertyDescriptor(
-      Document.prototype,
-      "cookie"
-    );
-    if (cookieDesc && cookieDesc.configurable) {
-      const origGet = cookieDesc.get;
-      const origSet = cookieDesc.set;
-      Object.defineProperty(Document.prototype, "cookie", {
-        get() {
-          if (config.blockCookies && !sitePaused) {
-            emit("cookiesBlocked", "document.cookie read");
-            return "";
-          }
-          return origGet.call(this);
-        },
-        set(v) {
-          if (config.blockCookies && !sitePaused) {
-            try {
-              const name = String(v || "").split("=")[0].trim();
-              emit("cookiesBlocked", name ? "set:" + name : "document.cookie write");
-            } catch (_) {
-              emit("cookiesBlocked", "document.cookie write");
-            }
-            return;
-          }
-          origSet.call(this, v);
-        },
-        configurable: true
-      });
-    }
-  } catch (_) {}
+  // ------------- document.cookie — first-party, don't block -------------
+  // document.cookie only accesses the CURRENT site's cookies (first-party).
+  // Third-party tracking cookies are already blocked by the DNR cookie_rules
+  // (domainType: thirdParty). Blocking document.cookie breaks CSRF tokens,
+  // login sessions, and verification flows on every site that uses cookies.
 
   // ------------- RTCPeerConnection IP leak guard (hardened) -------------
   // WebRTC leaks real IP in three ways — this blocks all three:
