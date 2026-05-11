@@ -624,3 +624,31 @@ footer {
   font-size: 11px;
   font-weight: 600;
 }
+
+/* Profile bar */
+.profile-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 14px;
+  background: #0a1628;
+  border-bottom: 1px solid #1e3a5f;
+  font-size: 11px;
+}
+.profile-bar-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.chip.blue { background: #1e3a5f; color: #60a5fa; }

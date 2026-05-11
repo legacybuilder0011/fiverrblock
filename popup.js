@@ -827,6 +827,39 @@ document.addEventListener("DOMContentLoaded", async () => {
     reader.readAsText(file);
     e.target.value = "";
   });
+
+  // ---- Profile Manager button ----
+  $("openProfileManager").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("profiles.html") });
+  });
+
+  // ---- Profile bar: show active profile for current tab ----
+  async function loadTabProfile() {
+    const { tabId } = await new Promise((res) => {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        res({ tabId: tabs[0]?.id || null });
+      });
+    });
+    if (!tabId) return;
+    chrome.runtime.sendMessage({ type: "PROFILE_GET_TAB", tabId }, (r) => {
+      const bar = $("profileBar");
+      const chip = $("profileChip");
+      const text = $("profileBarText");
+      if (r && r.profile) {
+        bar.hidden = false;
+        chip.textContent = r.profile.name;
+        text.textContent = "Profile active on this tab";
+        $("profileDetachBtn").onclick = () => {
+          chrome.runtime.sendMessage({ type: "PROFILE_ASSIGN_TAB", tabId, profileId: null }, () => {
+            bar.hidden = true;
+          });
+        };
+      } else {
+        bar.hidden = true;
+      }
+    });
+  }
+  loadTabProfile();
 });
 
 function escapeHtml(s) {

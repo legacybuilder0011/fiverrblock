@@ -8,11 +8,22 @@
   <body>
     <header>
       <h1>Privacy Shield</h1>
-      <label class="switch big">
-        <input type="checkbox" id="enabled" />
-        <span class="slider"></span>
-      </label>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button id="openProfileManager" class="btn small" title="Profile Manager" style="font-size:11px;padding:4px 10px;">Profiles</button>
+        <label class="switch big">
+          <input type="checkbox" id="enabled" />
+          <span class="slider"></span>
+        </label>
+      </div>
     </header>
+
+    <section class="profile-bar" id="profileBar" hidden>
+      <div class="profile-bar-info">
+        <span class="chip blue" id="profileChip"></span>
+        <span class="site-state" id="profileBarText"></span>
+      </div>
+      <button class="btn small" id="profileDetachBtn" style="font-size:11px;padding:3px 8px;">Remove</button>
+    </section>
 
     <section class="status">
       <span id="status-dot" class="dot on"></span>

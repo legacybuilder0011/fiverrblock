@@ -1100,6 +1100,102 @@
   // (domainType: thirdParty). Blocking document.cookie breaks CSRF tokens,
   // login sessions, and verification flows on every site that uses cookies.
 
+  // ------------- Do Not Track -------------
+  try {
+    const dntVal = config._doNotTrack ? "1" : "0";
+    defineRO(Navigator.prototype, "doNotTrack", dntVal);
+  } catch (_) {}
+
+  // ------------- ClientRects noise (Dolphin Anty: clientRects=noise) -------------
+  if (config._clientRects === "noise") {
+    const noiseRect = (orig) => {
+      const noise = (stableNoise(Math.round((orig.top + orig.left) * 100)) - 0.5) * 0.2;
+      const r = {
+        top: orig.top + noise, left: orig.left + noise,
+        right: orig.right + noise, bottom: orig.bottom + noise,
+        width: orig.width, height: orig.height,
+        x: (orig.x != null ? orig.x : orig.left) + noise,
+        y: (orig.y != null ? orig.y : orig.top) + noise,
+        toJSON() { return { top: this.top, left: this.left, right: this.right, bottom: this.bottom, width: this.width, height: this.height, x: this.x, y: this.y }; }
+      };
+      return r;
+    };
+    try {
+      wrap(Element.prototype, "getBoundingClientRect", (orig) =>
+        function () { return noiseRect(orig.call(this)); }
+      );
+      wrap(Range.prototype, "getBoundingClientRect", (orig) =>
+        function () { return noiseRect(orig.call(this)); }
+      );
+      wrap(Element.prototype, "getClientRects", (orig) =>
+        function () { return Array.from(orig.call(this)).map(noiseRect); }
+      );
+      wrap(Range.prototype, "getClientRects", (orig) =>
+        function () { return Array.from(orig.call(this)).map(noiseRect); }
+      );
+    } catch (_) {}
+  }
+
+  // ------------- WebGPU spoof (Dolphin Anty: webgpu on/off) -------------
+  try {
+    if (config._webgpu === false && typeof navigator.gpu !== "undefined") {
+      defineRO(Navigator.prototype, "gpu", undefined);
+    }
+  } catch (_) {}
+
+  // ------------- Enhanced Media Devices (manual device counts) -------------
+  if (config._mediaDevices === "manual" && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+    try {
+      const gs = NOISE_SEED.toString(16).padStart(16, "0");
+      const devs = [];
+      for (let i = 0; i < Math.max(0, Number(config._microphones) || 1); i++) {
+        devs.push({ deviceId: "default", kind: "audioinput", label: "", groupId: gs + "m" + i });
+      }
+      for (let i = 0; i < Math.max(0, Number(config._speakers) || 1); i++) {
+        devs.push({ deviceId: "default", kind: "audiooutput", label: "", groupId: gs + "s" + i });
+      }
+      for (let i = 0; i < Math.max(0, Number(config._cameras) || 1); i++) {
+        devs.push({ deviceId: (NOISE_SEED ^ (0xCAFE + i)).toString(16).padStart(16, "0"), kind: "videoinput", label: "", groupId: gs + "c" + i });
+      }
+      navigator.mediaDevices.enumerateDevices = function () {
+        emit("hardwareAccess", "enumerateDevices");
+        return Promise.resolve(devs.map((d) => ({ ...d })));
+      };
+      fakeNative(navigator.mediaDevices.enumerateDevices, "enumerateDevices");
+    } catch (_) {}
+  }
+
+  // ------------- WebSocket port blocking (Dolphin Anty: ports=block) -------------
+  if (config._ports === "block" && Array.isArray(config._blockedPorts) && config._blockedPorts.length) {
+    try {
+      const blockedPorts = new Set(config._blockedPorts.map(Number).filter(Boolean));
+      const OrigWS = window.WebSocket;
+      function BlockedWebSocket(url, ...rest) {
+        try {
+          const u = new URL(url);
+          const port = Number(u.port) || (u.protocol === "wss:" ? 443 : 80);
+          if (blockedPorts.has(port)) {
+            const dummy = Object.create(OrigWS.prototype);
+            Object.assign(dummy, { readyState: 3, url, bufferedAmount: 0, extensions: "", protocol: "", binaryType: "blob" });
+            setTimeout(() => {
+              try { dummy.dispatchEvent(new Event("error")); } catch (_) {}
+              try { dummy.dispatchEvent(new CloseEvent("close", { code: 1006, reason: "blocked" })); } catch (_) {}
+            }, 0);
+            return dummy;
+          }
+        } catch (_) {}
+        return new OrigWS(url, ...rest);
+      }
+      BlockedWebSocket.prototype = OrigWS.prototype;
+      BlockedWebSocket.CONNECTING = 0;
+      BlockedWebSocket.OPEN = 1;
+      BlockedWebSocket.CLOSING = 2;
+      BlockedWebSocket.CLOSED = 3;
+      fakeNative(BlockedWebSocket, "WebSocket");
+      window.WebSocket = BlockedWebSocket;
+    } catch (_) {}
+  }
+
   // ------------- RTCPeerConnection IP leak guard (hardened) -------------
   // WebRTC leaks real IP in three ways — this blocks all three:
   //  1. Host candidates   → expose local LAN IP (192.168.x.x, 10.x.x.x)

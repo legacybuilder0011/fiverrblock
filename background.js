@@ -251,10 +251,19 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 async function getConfigForTab(tabId) {
-  const config = await getConfig();
-  if (!config.perTabFingerprint || !tabId) return config;
+  await tabProfileMapReady;
+  const baseConfig = await getConfig();
+  const profileId = tabId ? tabProfileMap[tabId] : null;
+  if (profileId) {
+    const profiles = await getProfiles();
+    const profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
+    if (profile) return buildConfigFromProfile(profile, baseConfig);
+    delete tabProfileMap[tabId];
+    persistTabProfileMap();
+  }
+  if (!baseConfig.perTabFingerprint || !tabId) return baseConfig;
   const fp = await getOrCreateTabFingerprint(tabId);
-  return { ...config, ...fp, rotateFingerprint: false };
+  return { ...baseConfig, ...fp, rotateFingerprint: false };
 }
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -936,3 +945,472 @@ try {
     });
   }
 } catch (_) {}
+
+// ==================== PROFILE SYSTEM ====================
+
+const PROFILE_STORAGE_KEY = "profiles_v1";
+const TAB_PROFILE_MAP_KEY = "tabProfileMap";
+
+const PROFILE_UA_POOLS = {
+  windows: [
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", platform: "Win32" }
+  ],
+  macos: [
+    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", platform: "MacIntel" },
+    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "MacIntel" },
+    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", platform: "MacIntel" }
+  ],
+  linux: [
+    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", platform: "Linux x86_64" },
+    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "Linux x86_64" },
+    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", platform: "Linux x86_64" }
+  ]
+};
+
+const PROFILE_WEBGL_PRESETS = [
+  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 2080 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+  { vendor: "Google Inc. (Intel)", renderer: "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+  { vendor: "Google Inc. (Intel)", renderer: "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+  { vendor: "Google Inc. (AMD)", renderer: "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+  { vendor: "Google Inc. (AMD)", renderer: "ANGLE (AMD, AMD Radeon RX 5700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)" },
+  { vendor: "Google Inc. (Apple)", renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)" },
+  { vendor: "Google Inc. (Apple)", renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)" }
+];
+
+function generateProfileId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+async function getProfiles() {
+  const r = await chrome.storage.local.get(PROFILE_STORAGE_KEY);
+  return Array.isArray(r[PROFILE_STORAGE_KEY]) ? r[PROFILE_STORAGE_KEY] : [];
+}
+
+async function saveProfiles(profiles) {
+  await chrome.storage.local.set({ [PROFILE_STORAGE_KEY]: profiles });
+}
+
+let tabProfileMap = {};
+const tabProfileMapReady = chrome.storage.session.get(TAB_PROFILE_MAP_KEY).then((r) => {
+  if (r && r[TAB_PROFILE_MAP_KEY]) tabProfileMap = r[TAB_PROFILE_MAP_KEY];
+});
+
+function persistTabProfileMap() {
+  chrome.storage.session.set({ [TAB_PROFILE_MAP_KEY]: tabProfileMap }).catch(() => {});
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabProfileMap[tabId]) {
+    delete tabProfileMap[tabId];
+    persistTabProfileMap();
+  }
+});
+
+function buildConfigFromProfile(profile, baseConfig) {
+  if (!profile) return baseConfig;
+  const fp = profile.fingerprint || {};
+  const cfg = { ...baseConfig };
+
+  cfg.rotateFingerprint = false;
+  cfg.perTabFingerprint = false;
+  cfg.enabled = true;
+
+  // Platform / OS
+  const platformMap = { windows: "Win32", macos: "MacIntel", linux: "Linux x86_64" };
+  cfg.platform = platformMap[profile.os || "windows"] || "Win32";
+
+  // User Agent — stable per profile using id as seed
+  if (fp.userAgent === "manual" && fp.userAgentValue) {
+    cfg.userAgent = fp.userAgentValue;
+  } else {
+    const pool = PROFILE_UA_POOLS[profile.os || "windows"] || PROFILE_UA_POOLS.windows;
+    const seed = parseInt(profile.id.replace(/\D/g, "").slice(-6) || "0") % pool.length;
+    cfg.userAgent = pool[seed].ua;
+    cfg.platform = pool[seed].platform;
+  }
+  cfg.spoofUA = true;
+
+  // Canvas
+  cfg.blockCanvas = fp.canvas !== "real";
+  cfg._canvasMode = fp.canvas || "noise";
+
+  // WebGL
+  cfg.blockWebGL = fp.webgl !== "real";
+  cfg._webglMode = fp.webgl || "noise";
+  if (fp.webglInfo === "manual" && fp.webglVendor) {
+    cfg._gpuVendor = fp.webglVendor;
+    cfg._gpuRenderer = fp.webglRenderer || "";
+  } else {
+    // Stable GPU based on profile id
+    const gi = parseInt(profile.id.slice(-4), 36) % PROFILE_WEBGL_PRESETS.length;
+    cfg._gpuVendor = PROFILE_WEBGL_PRESETS[gi].vendor;
+    cfg._gpuRenderer = PROFILE_WEBGL_PRESETS[gi].renderer;
+  }
+
+  // WebGPU, ClientRects, DoNotTrack
+  cfg._webgpu = Boolean(fp.webgpu);
+  cfg._clientRects = fp.clientRects || "real";
+  cfg._doNotTrack = Boolean(fp.doNotTrack);
+
+  // Timezone
+  cfg.spoofTimezone = true;
+  if (fp.timezone === "manual") {
+    cfg.timezone = fp.timezoneValue || "UTC";
+    cfg.localeOffsetMinutes = typeof fp.timezoneOffset === "number" ? fp.timezoneOffset : 0;
+  }
+
+  // Language
+  if (fp.language === "manual" && fp.languageValue) {
+    cfg.language = fp.languageValue;
+    cfg.languages = [fp.languageValue, fp.languageValue.split("-")[0]].filter(Boolean);
+  }
+
+  // Geolocation
+  cfg.spoofGeo = true;
+  if (fp.geolocation === "manual") {
+    cfg.geo = {
+      latitude: Number(fp.geoLat) || 0,
+      longitude: Number(fp.geoLng) || 0,
+      accuracy: Number(fp.geoAccuracy) || 50,
+      altitude: null, altitudeAccuracy: null, heading: null, speed: null
+    };
+  }
+
+  // Hardware
+  cfg.blockHardware = true;
+  if (fp.cpuCores === "manual") cfg.hardwareConcurrency = Number(fp.cpuCoresValue) || 4;
+  if (fp.ram === "manual") cfg.deviceMemory = Number(fp.ramValue) || 8;
+
+  // Screen
+  if (fp.screen === "manual") {
+    cfg.blockScreen = true;
+    cfg.screen = {
+      width: Number(fp.screenWidth) || 1920,
+      height: Number(fp.screenHeight) || 1080,
+      availWidth: Number(fp.screenWidth) || 1920,
+      availHeight: (Number(fp.screenHeight) || 1080) - 40,
+      colorDepth: 24, pixelDepth: 24
+    };
+  }
+
+  // Audio
+  cfg.blockAudio = fp.audio !== "real";
+  cfg._audioMode = fp.audio || "noise";
+
+  // Fonts
+  cfg.blockFonts = true;
+
+  // Media Devices
+  cfg._mediaDevices = fp.mediaDevices || "real";
+  cfg._cameras = typeof fp.cameras === "number" ? fp.cameras : 1;
+  cfg._microphones = typeof fp.microphones === "number" ? fp.microphones : 1;
+  cfg._speakers = typeof fp.speakers === "number" ? fp.speakers : 1;
+
+  // Device Name
+  cfg._deviceName = fp.deviceName || "off";
+  cfg._deviceNameValue = fp.deviceNameValue || "";
+
+  // Ports
+  cfg._ports = fp.ports || "real";
+  cfg._blockedPorts = Array.isArray(fp.blockedPorts) ? fp.blockedPorts : [3389, 5938];
+
+  // WebRTC mode
+  cfg._webrtcMode = fp.webrtc || "altered";
+  cfg._webrtcIP = fp.webrtcIP || "";
+
+  // Storage / Cookies
+  cfg.blockStorage = Boolean(fp.blockStorage);
+  cfg.blockCookies = Boolean(fp.blockCookies);
+
+  // Profile metadata
+  cfg._profileId = profile.id;
+  cfg._profileName = profile.name;
+
+  return cfg;
+}
+
+// Profile CRUD helpers
+async function createProfile(data) {
+  const profiles = await getProfiles();
+  const now = Date.now();
+  const profile = {
+    id: generateProfileId(),
+    name: data.name || "Profile " + (profiles.length + 1),
+    status: data.status || "new",
+    tags: Array.isArray(data.tags) ? data.tags : [],
+    notes: data.notes || "",
+    os: data.os || "windows",
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+    fingerprint: data.fingerprint || getDefaultFingerprint(),
+    proxy: data.proxy || getDefaultProxy(),
+    cookies: data.cookies || [],
+    localStorageData: data.localStorageData || {}
+  };
+  profiles.push(profile);
+  await saveProfiles(profiles);
+  return profile;
+}
+
+async function updateProfile(id, data) {
+  const profiles = await getProfiles();
+  const idx = profiles.findIndex((p) => p.id === id);
+  if (idx === -1) return null;
+  profiles[idx] = { ...profiles[idx], ...data, id, updatedAt: Date.now() };
+  if (data.fingerprint) profiles[idx].fingerprint = { ...profiles[idx].fingerprint, ...data.fingerprint };
+  if (data.proxy) profiles[idx].proxy = { ...profiles[idx].proxy, ...data.proxy };
+  await saveProfiles(profiles);
+  return profiles[idx];
+}
+
+async function deleteProfile(id, hard = false) {
+  const profiles = await getProfiles();
+  if (hard) {
+    const next = profiles.filter((p) => p.id !== id);
+    await saveProfiles(next);
+  } else {
+    const idx = profiles.findIndex((p) => p.id === id);
+    if (idx !== -1) {
+      profiles[idx].deletedAt = Date.now();
+      await saveProfiles(profiles);
+    }
+  }
+  // Unassign from all tabs
+  for (const [tabId, pid] of Object.entries(tabProfileMap)) {
+    if (pid === id) delete tabProfileMap[tabId];
+  }
+  persistTabProfileMap();
+}
+
+async function duplicateProfile(id) {
+  const profiles = await getProfiles();
+  const src = profiles.find((p) => p.id === id);
+  if (!src) return null;
+  const now = Date.now();
+  const copy = JSON.parse(JSON.stringify(src));
+  copy.id = generateProfileId();
+  copy.name = src.name + " (copy)";
+  copy.createdAt = now;
+  copy.updatedAt = now;
+  copy.deletedAt = null;
+  profiles.push(copy);
+  await saveProfiles(profiles);
+  return copy;
+}
+
+async function restoreProfile(id) {
+  return updateProfile(id, { deletedAt: null });
+}
+
+function getDefaultFingerprint() {
+  return {
+    userAgent: "auto", userAgentValue: "",
+    canvas: "noise",
+    webgl: "noise", webglInfo: "manual",
+    webglVendor: "Google Inc. (NVIDIA)",
+    webglRenderer: "ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    webgpu: false,
+    clientRects: "real",
+    timezone: "auto", timezoneValue: "America/New_York", timezoneOffset: 300,
+    language: "auto", languageValue: "en-US",
+    geolocation: "auto", geoLat: 40.7128, geoLng: -74.006, geoAccuracy: 50,
+    cpuCores: "manual", cpuCoresValue: 4,
+    ram: "manual", ramValue: 8,
+    screen: "manual", screenWidth: 1920, screenHeight: 1080,
+    audio: "noise",
+    fonts: "real",
+    mediaDevices: "real", cameras: 1, microphones: 1, speakers: 1,
+    deviceName: "off", deviceNameValue: "",
+    ports: "block", blockedPorts: [3389, 5938],
+    doNotTrack: false,
+    webrtc: "altered", webrtcIP: "",
+    blockStorage: false, blockCookies: false
+  };
+}
+
+function getDefaultProxy() {
+  return { enabled: false, scheme: "socks5", host: "", port: 1080, username: "", password: "", rotationUrl: "", bypassList: [] };
+}
+
+// Cookie export/import per profile
+async function exportProfileCookies(profileId) {
+  const profiles = await getProfiles();
+  const profile = profiles.find((p) => p.id === profileId);
+  return profile ? profile.cookies || [] : [];
+}
+
+async function importProfileCookies(profileId, cookies) {
+  const profiles = await getProfiles();
+  const idx = profiles.findIndex((p) => p.id === profileId);
+  if (idx === -1) return false;
+  profiles[idx].cookies = Array.isArray(cookies) ? cookies : [];
+  profiles[idx].updatedAt = Date.now();
+  await saveProfiles(profiles);
+  return true;
+}
+
+async function captureTabCookies(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab.url || "";
+    if (!url.startsWith("http")) return [];
+    const cookies = await chrome.cookies.getAll({ url });
+    return cookies.map((c) => ({
+      name: c.name, value: c.value, domain: c.domain,
+      path: c.path, secure: c.secure, httpOnly: c.httpOnly,
+      sameSite: c.sameSite, expirationDate: c.expirationDate,
+      storeId: c.storeId
+    }));
+  } catch (_) {
+    return [];
+  }
+}
+
+async function injectProfileCookies(profileId, tabId) {
+  const profiles = await getProfiles();
+  const profile = profiles.find((p) => p.id === profileId);
+  if (!profile || !profile.cookies || !profile.cookies.length) return 0;
+  let n = 0;
+  for (const c of profile.cookies) {
+    try {
+      const protocol = c.secure ? "https://" : "http://";
+      const domain = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain;
+      await chrome.cookies.set({
+        url: protocol + domain + (c.path || "/"),
+        name: c.name, value: c.value,
+        domain: c.domain, path: c.path || "/",
+        secure: Boolean(c.secure), httpOnly: Boolean(c.httpOnly),
+        sameSite: c.sameSite || "unspecified",
+        expirationDate: c.expirationDate
+      });
+      n++;
+    } catch (_) {}
+  }
+  return n;
+}
+
+// Apply profile proxy
+async function applyProfileProxy(profile) {
+  const px = profile.proxy;
+  if (!px || !px.enabled || !px.host) {
+    await chrome.proxy.settings.clear({ scope: "regular" }).catch(() => {});
+    return;
+  }
+  const cfg = {
+    mode: "fixed_servers",
+    rules: {
+      singleProxy: { scheme: px.scheme || "socks5", host: px.host, port: Number(px.port) || 1080 },
+      bypassList: Array.isArray(px.bypassList) && px.bypassList.length
+        ? px.bypassList
+        : ["localhost", "127.0.0.1", "<local>"]
+    }
+  };
+  await chrome.proxy.settings.set({ value: cfg, scope: "regular" }).catch(() => {});
+}
+
+// Handle profile message types added to the central listener
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || !msg.type || !msg.type.startsWith("PROFILE_")) return false;
+  (async () => {
+    try {
+      if (msg.type === "PROFILE_LIST") {
+        const profiles = await getProfiles();
+        const showDeleted = Boolean(msg.showDeleted);
+        sendResponse({ ok: true, profiles: showDeleted ? profiles : profiles.filter((p) => !p.deletedAt) });
+
+      } else if (msg.type === "PROFILE_GET") {
+        const profiles = await getProfiles();
+        const p = profiles.find((p) => p.id === msg.id);
+        sendResponse({ ok: Boolean(p), profile: p || null });
+
+      } else if (msg.type === "PROFILE_CREATE") {
+        const profile = await createProfile(msg.data || {});
+        sendResponse({ ok: true, profile });
+
+      } else if (msg.type === "PROFILE_UPDATE") {
+        const profile = await updateProfile(msg.id, msg.data || {});
+        sendResponse({ ok: Boolean(profile), profile });
+
+      } else if (msg.type === "PROFILE_DELETE") {
+        await deleteProfile(msg.id, msg.hard === true);
+        sendResponse({ ok: true });
+
+      } else if (msg.type === "PROFILE_RESTORE") {
+        const profile = await restoreProfile(msg.id);
+        sendResponse({ ok: Boolean(profile), profile });
+
+      } else if (msg.type === "PROFILE_DUPLICATE") {
+        const profile = await duplicateProfile(msg.id);
+        sendResponse({ ok: Boolean(profile), profile });
+
+      } else if (msg.type === "PROFILE_ASSIGN_TAB") {
+        await tabProfileMapReady;
+        const tabId = msg.tabId || sender?.tab?.id;
+        if (!tabId) { sendResponse({ ok: false, error: "no tabId" }); return; }
+        if (msg.profileId) {
+          tabProfileMap[tabId] = msg.profileId;
+          const profiles = await getProfiles();
+          const profile = profiles.find((p) => p.id === msg.profileId && !p.deletedAt);
+          if (profile && profile.proxy && profile.proxy.enabled) {
+            await applyProfileProxy(profile);
+          }
+        } else {
+          delete tabProfileMap[tabId];
+          await applyProxySettings();
+        }
+        persistTabProfileMap();
+        // Push updated config to the tab
+        const newCfg = await getConfigForTab(tabId);
+        chrome.tabs.sendMessage(tabId, { type: "CONFIG_UPDATE", config: newCfg }).catch(() => {});
+        await updateBadge(tabId);
+        sendResponse({ ok: true, tabId, profileId: msg.profileId || null });
+
+      } else if (msg.type === "PROFILE_GET_TAB") {
+        await tabProfileMapReady;
+        const tabId = msg.tabId || sender?.tab?.id;
+        const profileId = tabId ? tabProfileMap[tabId] || null : null;
+        let profile = null;
+        if (profileId) {
+          const profiles = await getProfiles();
+          profile = profiles.find((p) => p.id === profileId) || null;
+        }
+        sendResponse({ ok: true, profileId, profile });
+
+      } else if (msg.type === "PROFILE_EXPORT_COOKIES") {
+        const cookies = await exportProfileCookies(msg.profileId);
+        sendResponse({ ok: true, cookies });
+
+      } else if (msg.type === "PROFILE_IMPORT_COOKIES") {
+        const ok = await importProfileCookies(msg.profileId, msg.cookies);
+        sendResponse({ ok });
+
+      } else if (msg.type === "PROFILE_CAPTURE_COOKIES") {
+        const tabId = msg.tabId || sender?.tab?.id;
+        const cookies = await captureTabCookies(tabId);
+        if (msg.profileId && cookies.length) await importProfileCookies(msg.profileId, cookies);
+        sendResponse({ ok: true, cookies, count: cookies.length });
+
+      } else if (msg.type === "PROFILE_INJECT_COOKIES") {
+        const tabId = msg.tabId || sender?.tab?.id;
+        const n = await injectProfileCookies(msg.profileId, tabId);
+        sendResponse({ ok: true, count: n });
+
+      } else if (msg.type === "PROFILE_WEBGL_PRESETS") {
+        sendResponse({ ok: true, presets: PROFILE_WEBGL_PRESETS });
+
+      } else {
+        sendResponse({ ok: false, error: "unknown profile message" });
+      }
+    } catch (err) {
+      sendResponse({ ok: false, error: String(err) });
+    }
+  })();
+  return true;
+});

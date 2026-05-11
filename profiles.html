@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Profile Manager — Privacy Shield</title>
+  <link rel="stylesheet" href="profiles.css" />
+</head>
+<body>
+<div class="pm-root">
+
+  <!-- ===== SIDEBAR ===== -->
+  <aside class="pm-sidebar">
+    <div class="pm-sidebar-top">
+      <div class="pm-logo-row">
+        <span class="pm-logo-icon">&#128737;</span>
+        <span class="pm-logo-text">Profile Manager</span>
+      </div>
+      <button class="pm-btn primary" id="btnNewProfile">+ New Profile</button>
+    </div>
+
+    <div class="pm-search-wrap">
+      <input type="text" id="searchInput" class="pm-search" placeholder="Search profiles…" />
+    </div>
+
+    <div class="pm-filter-row">
+      <select id="filterStatus" class="pm-sel-sm">
+        <option value="">All statuses</option>
+        <option value="new">New</option>
+        <option value="active">Active</option>
+        <option value="ready">Ready</option>
+        <option value="work">Work</option>
+        <option value="suspended">Suspended</option>
+      </select>
+      <select id="filterOS" class="pm-sel-sm">
+        <option value="">All OS</option>
+        <option value="windows">Windows</option>
+        <option value="macos">macOS</option>
+        <option value="linux">Linux</option>
+      </select>
+    </div>
+
+    <div class="pm-bulk-bar" id="bulkBar" hidden>
+      <span id="bulkCount" class="pm-bulk-count"></span>
+      <button class="pm-btn-xs" id="bulkExport">Export</button>
+      <button class="pm-btn-xs danger" id="bulkDelete">Delete</button>
+      <button class="pm-btn-xs muted" id="bulkClear">Clear</button>
+    </div>
+
+    <div class="pm-list" id="profileList">
+      <div class="pm-list-empty" id="listEmpty">No profiles yet.<br>Click <b>+ New Profile</b> to start.</div>
+    </div>
+
+    <div class="pm-sidebar-footer">
+      <button class="pm-btn-xs" id="btnImport">Import JSON</button>
+      <button class="pm-btn-xs" id="btnExportAll">Export All</button>
+      <button class="pm-btn-xs muted" id="btnTrash">Trash</button>
+      <input type="file" id="importFile" accept=".json" hidden />
+    </div>
+  </aside>
+
+  <!-- ===== EDITOR ===== -->
+  <main class="pm-editor" id="pmEditor">
+
+    <!-- Empty state -->
+    <div class="pm-empty" id="emptyState">
+      <div class="pm-empty-icon">&#128737;</div>
+      <h2>No profile selected</h2>
+      <p>Select a profile from the list or create a new one to configure its unique digital identity.</p>
+      <button class="pm-btn primary" id="btnNewProfileEmpty">Create first profile</button>
+    </div>
+
+    <!-- Editor form -->
+    <div class="pm-form-wrap" id="formWrap" hidden>
+
+      <!-- Form header -->
+      <div class="pm-form-header">
+        <div class="pm-form-title-row">
+          <input type="text" id="fp-name" class="pm-name-input" placeholder="Profile name…" />
+          <div class="pm-hdr-actions">
+            <button type="button" class="pm-btn-sm" id="btnAssignTab" title="Apply to current tab">Apply to tab</button>
+            <button type="button" class="pm-btn-sm" id="btnDuplicate">Duplicate</button>
+            <button type="button" class="pm-btn-sm danger" id="btnDelete">Delete</button>
+            <button type="button" class="pm-btn primary" id="btnSave">Save</button>
+          </div>
+        </div>
+        <div class="pm-form-meta-row">
+          <select id="fp-status" class="pm-sel-sm">
+            <option value="new">New</option>
+            <option value="active">Active</option>
+            <option value="ready">Ready</option>
+            <option value="work">Work</option>
+            <option value="suspended">Suspended</option>
+          </select>
+          <select id="fp-os" class="pm-sel-sm">
+            <option value="windows">Windows</option>
+            <option value="macos">macOS</option>
+            <option value="linux">Linux</option>
+          </select>
+          <input type="text" id="fp-tags" class="pm-tags-input" placeholder="tags, comma, separated" />
+        </div>
+        <textarea id="fp-notes" class="pm-notes" rows="2" placeholder="Notes…"></textarea>
+        <div id="assignedTabInfo" class="pm-assigned-tab" hidden></div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="pm-tabs">
+        <button class="pm-tab active" data-tab="fingerprint">Fingerprint</button>
+        <button class="pm-tab" data-tab="proxy">Proxy</button>
+        <button class="pm-tab" data-tab="cookies">Cookies &amp; Storage</button>
+      </div>
+
+      <!-- ========= FINGERPRINT TAB ========= -->
+      <div class="pm-tab-panel active" id="tab-fingerprint">
+
+        <div class="pm-section">
+          <div class="pm-section-title">User Agent</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-userAgent" class="pm-sel">
+              <option value="auto">Auto (based on OS)</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div class="pm-row" id="uaManualRow" hidden>
+            <label class="pm-label">User-Agent string</label>
+            <input type="text" id="fp-userAgentValue" class="pm-input" placeholder="Mozilla/5.0 …" />
+          </div>
+          <div class="pm-hint" id="uaPreview"></div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Canvas</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-canvas" class="pm-sel">
+              <option value="noise">Noise (recommended)</option>
+              <option value="real">Real</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+          <div class="pm-hint">Noise = identical deterministic hash per page load, different from your real device.</div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">WebGL / GPU</div>
+          <div class="pm-row">
+            <label class="pm-label">WebGL</label>
+            <select id="fp-webgl" class="pm-sel">
+              <option value="noise">Noise (recommended)</option>
+              <option value="real">Real</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">GPU Info</label>
+            <select id="fp-webglInfo" class="pm-sel">
+              <option value="manual">Manual (from preset)</option>
+              <option value="real">Real device GPU</option>
+            </select>
+          </div>
+          <div id="webglManualRow">
+            <div class="pm-row">
+              <label class="pm-label">Vendor</label>
+              <select id="fp-webglVendor" class="pm-sel" id="webglVendorSel"></select>
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Renderer</label>
+              <input type="text" id="fp-webglRenderer" class="pm-input" placeholder="ANGLE (NVIDIA …)" />
+            </div>
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">WebGPU</label>
+            <select id="fp-webgpu" class="pm-sel">
+              <option value="false">Off (recommended)</option>
+              <option value="true">On (follows WebGL)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Audio</div>
+          <div class="pm-row">
+            <label class="pm-label">AudioContext</label>
+            <select id="fp-audio" class="pm-sel">
+              <option value="noise">Noise (recommended)</option>
+              <option value="real">Real</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Client Rects</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-clientRects" class="pm-sel">
+              <option value="real">Real (recommended)</option>
+              <option value="noise">Noise</option>
+            </select>
+          </div>
+          <div class="pm-hint">Client Rects = DOM element bounding boxes. Noise adds sub-pixel variance to defeat layout fingerprinting.</div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Timezone</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-timezone" class="pm-sel">
+              <option value="auto">Auto (from proxy IP)</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div id="tzManualRow">
+            <div class="pm-row">
+              <label class="pm-label">Timezone</label>
+              <input type="text" id="fp-timezoneValue" class="pm-input" placeholder="America/New_York" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">UTC offset (min)</label>
+              <input type="number" id="fp-timezoneOffset" class="pm-input-sm" placeholder="300" />
+              <span class="pm-hint inline">Positive = behind UTC (e.g. NY = 300)</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Language</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-language" class="pm-sel">
+              <option value="auto">Auto (from proxy IP)</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div class="pm-row" id="langManualRow" hidden>
+            <label class="pm-label">Language tag</label>
+            <select id="fp-languageValue" class="pm-sel">
+              <option value="en-US">en-US (English, US)</option>
+              <option value="en-GB">en-GB (English, UK)</option>
+              <option value="en-CA">en-CA (English, Canada)</option>
+              <option value="de-DE">de-DE (German)</option>
+              <option value="fr-FR">fr-FR (French)</option>
+              <option value="nl-NL">nl-NL (Dutch)</option>
+              <option value="it-IT">it-IT (Italian)</option>
+              <option value="es-ES">es-ES (Spanish)</option>
+              <option value="pt-BR">pt-BR (Portuguese, Brazil)</option>
+              <option value="ja-JP">ja-JP (Japanese)</option>
+              <option value="zh-CN">zh-CN (Chinese, Simplified)</option>
+              <option value="ko-KR">ko-KR (Korean)</option>
+              <option value="ru-RU">ru-RU (Russian)</option>
+              <option value="ar-SA">ar-SA (Arabic)</option>
+              <option value="tr-TR">tr-TR (Turkish)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Geolocation</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-geolocation" class="pm-sel">
+              <option value="auto">Auto (from proxy IP)</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div id="geoManualRow" hidden>
+            <div class="pm-row">
+              <label class="pm-label">Preset</label>
+              <select id="geoPresetSel" class="pm-sel">
+                <option value="">Custom</option>
+                <option value="40.7128,-74.0060">New York, USA</option>
+                <option value="51.5074,-0.1278">London, UK</option>
+                <option value="48.8566,2.3522">Paris, France</option>
+                <option value="52.5200,13.4050">Berlin, Germany</option>
+                <option value="35.6762,139.6503">Tokyo, Japan</option>
+                <option value="1.3521,103.8198">Singapore</option>
+                <option value="25.2048,55.2708">Dubai, UAE</option>
+                <option value="-33.8688,151.2093">Sydney, Australia</option>
+                <option value="43.6532,-79.3832">Toronto, Canada</option>
+                <option value="55.7558,37.6173">Moscow, Russia</option>
+              </select>
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Latitude</label>
+              <input type="number" id="fp-geoLat" class="pm-input-sm" step="0.0001" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Longitude</label>
+              <input type="number" id="fp-geoLng" class="pm-input-sm" step="0.0001" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Accuracy (m)</label>
+              <input type="number" id="fp-geoAccuracy" class="pm-input-sm" min="1" max="5000" />
+            </div>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Hardware</div>
+          <div class="pm-row">
+            <label class="pm-label">CPU Cores</label>
+            <select id="fp-cpuCores" class="pm-sel-sm">
+              <option value="real">Real device</option>
+              <option value="manual">Manual</option>
+            </select>
+            <select id="fp-cpuCoresValue" class="pm-sel-sm">
+              <option value="2">2</option>
+              <option value="4" selected>4</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+              <option value="10">10</option>
+              <option value="12">12</option>
+              <option value="16">16</option>
+              <option value="24">24</option>
+              <option value="32">32</option>
+              <option value="64">64</option>
+            </select>
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">RAM</label>
+            <select id="fp-ram" class="pm-sel-sm">
+              <option value="real">Real device</option>
+              <option value="manual">Manual</option>
+            </select>
+            <select id="fp-ramValue" class="pm-sel-sm">
+              <option value="1">1 GB</option>
+              <option value="2">2 GB</option>
+              <option value="4">4 GB</option>
+              <option value="8" selected>8 GB</option>
+              <option value="16">16 GB</option>
+              <option value="32">32 GB</option>
+              <option value="64">64 GB</option>
+              <option value="128">128 GB</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Screen Resolution</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-screen" class="pm-sel">
+              <option value="manual">Manual</option>
+              <option value="real">Real device</option>
+            </select>
+          </div>
+          <div id="screenManualRow">
+            <div class="pm-row">
+              <label class="pm-label">Preset</label>
+              <select id="screenPresetSel" class="pm-sel">
+                <option value="">Custom</option>
+                <option value="1920,1080">1920×1080 (Full HD)</option>
+                <option value="2560,1440">2560×1440 (QHD)</option>
+                <option value="3840,2160">3840×2160 (4K)</option>
+                <option value="1536,864">1536×864</option>
+                <option value="1440,900">1440×900</option>
+                <option value="1366,768">1366×768</option>
+                <option value="1280,800">1280×800</option>
+                <option value="1280,720">1280×720</option>
+                <option value="1680,1050">1680×1050</option>
+                <option value="2560,1600">2560×1600</option>
+              </select>
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Width</label>
+              <input type="number" id="fp-screenWidth" class="pm-input-sm" />
+              <label class="pm-label" style="margin-left:8px">Height</label>
+              <input type="number" id="fp-screenHeight" class="pm-input-sm" />
+            </div>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Media Devices</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-mediaDevices" class="pm-sel">
+              <option value="real">Real (device count)</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div id="mediaManualRow" hidden>
+            <div class="pm-row">
+              <label class="pm-label">Cameras</label>
+              <select id="fp-cameras" class="pm-sel-sm">
+                <option value="0">0</option>
+                <option value="1" selected>1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+              </select>
+              <label class="pm-label" style="margin-left:12px">Microphones</label>
+              <select id="fp-microphones" class="pm-sel-sm">
+                <option value="0">0</option>
+                <option value="1" selected>1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+              </select>
+              <label class="pm-label" style="margin-left:12px">Speakers</label>
+              <select id="fp-speakers" class="pm-sel-sm">
+                <option value="0">0</option>
+                <option value="1" selected>1</option>
+                <option value="2">2</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Fonts</div>
+          <div class="pm-row">
+            <label class="pm-label">Font list</label>
+            <select id="fp-fonts" class="pm-sel">
+              <option value="real">Real OS fonts (for selected OS)</option>
+              <option value="blocked">Blocked (return empty set)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Device Name</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-deviceName" class="pm-sel">
+              <option value="off">Off (default)</option>
+              <option value="random">Random</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div class="pm-row" id="deviceNameManualRow" hidden>
+            <label class="pm-label">Device name</label>
+            <input type="text" id="fp-deviceNameValue" class="pm-input" placeholder="DESKTOP-ABCD123" />
+            <button type="button" class="pm-btn-xs" id="btnRandDeviceName">Random</button>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Ports</div>
+          <div class="pm-row">
+            <label class="pm-label">Mode</label>
+            <select id="fp-ports" class="pm-sel">
+              <option value="real">Real (open)</option>
+              <option value="block">Block selected ports</option>
+            </select>
+          </div>
+          <div class="pm-row" id="portsBlockRow" hidden>
+            <label class="pm-label">Block ports (comma-separated)</label>
+            <input type="text" id="fp-blockedPorts" class="pm-input" placeholder="3389, 5938" />
+          </div>
+          <div class="pm-hint">Default blocked: 3389 (RDP), 5938 (TeamViewer). Most real users have these blocked.</div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">WebRTC</div>
+          <div class="pm-row">
+            <label class="pm-label">IP handling</label>
+            <select id="fp-webrtc" class="pm-sel">
+              <option value="altered">Altered (show proxy IP)</option>
+              <option value="no-udp">Without UDP (block non-proxied)</option>
+              <option value="off">Off (disable WebRTC)</option>
+              <option value="real">Real (not recommended)</option>
+              <option value="manual">Manual IP</option>
+            </select>
+          </div>
+          <div class="pm-row" id="webrtcManualRow" hidden>
+            <label class="pm-label">Custom IP</label>
+            <input type="text" id="fp-webrtcIP" class="pm-input" placeholder="1.2.3.4" />
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Privacy Extras</div>
+          <div class="pm-row">
+            <label class="pm-label">Do Not Track</label>
+            <select id="fp-doNotTrack" class="pm-sel">
+              <option value="false">Off (default — DNT = 0)</option>
+              <option value="true">On (DNT = 1)</option>
+            </select>
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">Block cookies</label>
+            <select id="fp-blockCookies" class="pm-sel">
+              <option value="false">No (allow cookies)</option>
+              <option value="true">Yes (purge all cookies)</option>
+            </select>
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">Block storage</label>
+            <select id="fp-blockStorage" class="pm-sel">
+              <option value="false">No (allow localStorage/IDB)</option>
+              <option value="true">Yes (neuter storage APIs)</option>
+            </select>
+          </div>
+        </div>
+
+      </div><!-- /tab-fingerprint -->
+
+      <!-- ========= PROXY TAB ========= -->
+      <div class="pm-tab-panel" id="tab-proxy">
+        <div class="pm-section">
+          <div class="pm-section-title">Proxy Configuration</div>
+          <div class="pm-row">
+            <label class="pm-label">Enable proxy for this profile</label>
+            <select id="px-enabled" class="pm-sel">
+              <option value="false">Off (direct connection)</option>
+              <option value="true">On</option>
+            </select>
+          </div>
+          <div id="proxyFields">
+            <div class="pm-row">
+              <label class="pm-label">Type</label>
+              <select id="px-scheme" class="pm-sel-sm">
+                <option value="socks5">SOCKS5</option>
+                <option value="socks4">SOCKS4</option>
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+              </select>
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Host</label>
+              <input type="text" id="px-host" class="pm-input" placeholder="127.0.0.1 or proxy.example.com" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Port</label>
+              <input type="number" id="px-port" class="pm-input-sm" min="1" max="65535" value="1080" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Username</label>
+              <input type="text" id="px-username" class="pm-input" placeholder="(optional)" autocomplete="off" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Password</label>
+              <input type="password" id="px-password" class="pm-input" placeholder="(optional)" autocomplete="off" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Rotation URL</label>
+              <input type="text" id="px-rotationUrl" class="pm-input" placeholder="https://… (for mobile proxies)" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Bypass list</label>
+              <input type="text" id="px-bypassList" class="pm-input" placeholder="localhost, 127.0.0.1" />
+            </div>
+            <div class="pm-btn-row">
+              <button type="button" class="pm-btn-sm" id="btnTestProxy">Test connection</button>
+              <span id="proxyTestResult" class="pm-proxy-result"></span>
+            </div>
+          </div>
+          <div class="pm-hint">
+            When this profile is applied to a tab, its proxy is activated globally in Chrome. Chrome's proxy API does not support per-tab proxies — each profile switch changes the active proxy.
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Quick Presets</div>
+          <div class="pm-preset-btns">
+            <button type="button" class="pm-btn-xs" data-preset="socks5,127.0.0.1,9150">Tor Browser (9150)</button>
+            <button type="button" class="pm-btn-xs" data-preset="socks5,127.0.0.1,9050">Tor Daemon (9050)</button>
+            <button type="button" class="pm-btn-xs" data-preset="socks5,127.0.0.1,1080">SSH -D 1080</button>
+            <button type="button" class="pm-btn-xs" data-preset="socks5,10.64.0.1,1080">Mullvad (10.64.0.1)</button>
+          </div>
+        </div>
+      </div><!-- /tab-proxy -->
+
+      <!-- ========= COOKIES TAB ========= -->
+      <div class="pm-tab-panel" id="tab-cookies">
+        <div class="pm-section">
+          <div class="pm-section-title">Cookie Management</div>
+          <p class="pm-hint">
+            Each profile stores its own cookie set. Capture cookies from the active tab to save them to this profile,
+            or inject saved cookies into a tab to restore a session.
+          </p>
+          <div class="pm-btn-row">
+            <button type="button" class="pm-btn-sm" id="btnCaptureCookies">Capture from active tab</button>
+            <button type="button" class="pm-btn-sm" id="btnInjectCookies">Inject into active tab</button>
+          </div>
+          <div class="pm-btn-row" style="margin-top:6px">
+            <button type="button" class="pm-btn-sm" id="btnExportCookies">Export cookies (JSON)</button>
+            <button type="button" class="pm-btn-sm" id="btnImportCookies">Import cookies (JSON)</button>
+            <input type="file" id="cookieImportFile" accept=".json" hidden />
+          </div>
+          <div id="cookieSummary" class="pm-cookie-summary"></div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Stored Cookies Preview</div>
+          <div id="cookieList" class="pm-cookie-list">
+            <div class="pm-list-empty">No cookies stored in this profile.</div>
+          </div>
+        </div>
+      </div><!-- /tab-cookies -->
+
+    </div><!-- /pm-form-wrap -->
+  </main>
+
+</div><!-- /pm-root -->
+
+<!-- Toast notification -->
+<div class="pm-toast" id="toast"></div>
+
+<script src="profiles.js"></script>
+</body>
+</html>
