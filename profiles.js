@@ -67,10 +67,21 @@ async function init() {
   webglPresets = wRes.presets || [];
   buildWebglVendorSelect();
 
+  // Load open windows map
+  await refreshOpenWindows();
+
   await loadProfiles();
   bindSidebarEvents();
   bindFormEvents();
+  bindSessionEvents();
   renderList();
+
+  // Poll open windows every 5 seconds to update running indicators
+  setInterval(async () => {
+    await refreshOpenWindows();
+    renderList();
+    if (selectedId) updateSessionTab();
+  }, 5000);
 }
 
 function buildWebglVendorSelect() {
@@ -213,6 +224,11 @@ function renderList() {
     const cb = list.querySelector(`input[data-id="${id}"]`);
     if (cb) cb.checked = true;
   }
+  // Mark running profile windows with green border
+  for (const pid of Object.keys(openWindows)) {
+    const card = list.querySelector(`.pm-card[data-id="${pid}"]`);
+    if (card) card.classList.add("running");
+  }
   updateBulkBar();
 }
 
@@ -231,6 +247,7 @@ function selectProfile(id) {
   $("formWrap").hidden = false;
   populateForm(p);
   renderList();
+  updateSessionTab();
 }
 
 function populateForm(p) {
@@ -703,6 +720,203 @@ function bindFormEvents() {
       if (panel) panel.classList.add("active");
     });
   });
+}
+
+// =========================================================
+// Session event binding
+// =========================================================
+function bindSessionEvents() {
+  $("btnOpenWindow")?.addEventListener("click", () => selectedId && openProfileWindow(selectedId));
+  $("btnSaveSession")?.addEventListener("click", () => selectedId && saveSession(selectedId));
+  $("btnCloseWindow")?.addEventListener("click", () => selectedId && closeProfileWindow(selectedId));
+  $("btnClearSession")?.addEventListener("click", () => selectedId && clearSession(selectedId));
+  document.querySelectorAll(".pm-country-btn").forEach((btn) => {
+    btn.addEventListener("click", () => applyCountryPreset(btn.dataset.country));
+  });
+}
+
+// =========================================================
+// Window / Session management
+// =========================================================
+
+// Map of { profileId: windowId } for currently open profile windows
+let openWindows = {};
+
+async function refreshOpenWindows() {
+  const r = await msg("PROFILE_GET_WINDOWS");
+  openWindows = r.windows || {};
+}
+
+function isProfileRunning(profileId) {
+  return profileId in openWindows;
+}
+
+async function openProfileWindow(profileId) {
+  const btn = $("btnOpenWindow");
+  if (btn) { btn.textContent = "Opening…"; btn.disabled = true; }
+  const r = await msg("PROFILE_OPEN_WINDOW", { profileId });
+  if (!r.ok) {
+    toast("Failed to open window: " + (r.error || "unknown"));
+  } else if (r.existing) {
+    toast("Window already open — brought to front");
+  } else {
+    toast(`Window opened with ${r.restored || 1} tab(s)`);
+  }
+  await refreshOpenWindows();
+  renderList();
+  updateSessionTab();
+  if (btn) { btn.textContent = "Open in new window"; btn.disabled = false; }
+}
+
+async function saveSession(profileId) {
+  const r = await msg("PROFILE_SAVE_SESSION", { profileId });
+  if (!r.ok) { toast("Save failed: " + (r.error || "no open window")); return; }
+  await loadProfiles();
+  toast(`Session saved — ${r.count} tab(s)`);
+  updateSessionTab();
+}
+
+async function closeProfileWindow(profileId) {
+  if (!confirm("Close this profile's window? Session will be saved first.")) return;
+  const r = await msg("PROFILE_CLOSE_WINDOW", { profileId });
+  if (!r.ok) { toast("Close failed: " + (r.error || "unknown")); return; }
+  await refreshOpenWindows();
+  await loadProfiles();
+  renderList();
+  updateSessionTab();
+  toast("Window closed and session saved");
+}
+
+async function clearSession(profileId) {
+  if (!confirm("Clear the saved session? This will forget all saved tabs.")) return;
+  await msg("PROFILE_UPDATE", { id: profileId, data: { session: null } });
+  await loadProfiles();
+  updateSessionTab();
+  toast("Session cleared");
+}
+
+function updateSessionTab() {
+  const profileId = selectedId;
+  const p = profiles.find((p) => p.id === profileId);
+  if (!p) return;
+
+  const running = isProfileRunning(profileId);
+  const dot = $("windowDot");
+  const statusText = $("windowStatusText");
+  const openBtn = $("btnOpenWindow");
+  const saveBtn = $("btnSaveSession");
+  const closeBtn = $("btnCloseWindow");
+  const hint = $("windowHint");
+
+  if (dot) {
+    dot.className = "pw-dot " + (running ? "running" : "closed");
+  }
+  if (statusText) statusText.textContent = running ? "Window is running" : "Window closed";
+  if (openBtn) openBtn.textContent = running ? "Bring to front" : "Open in new window";
+  if (saveBtn) saveBtn.hidden = !running;
+  if (closeBtn) closeBtn.hidden = !running;
+  if (hint) {
+    hint.innerHTML = running
+      ? "Profile window is open. Use <b>Save session</b> to snapshot your current tabs so they restore next time."
+      : "Click <b>Open in new window</b> to launch a dedicated Chrome window with this profile's proxy and fingerprint.";
+  }
+
+  // Session tabs list
+  renderSessionTabs(p);
+}
+
+function renderSessionTabs(p) {
+  const list = $("sessionTabList");
+  const meta = $("sessionMeta");
+  const session = p.session;
+
+  if (!session || !session.tabs || !session.tabs.length) {
+    if (list) list.innerHTML = '<div class="pm-list-empty">No session saved yet.<br>Open a window, browse, then click <b>Save session</b>.</div>';
+    if (meta) meta.textContent = "";
+    return;
+  }
+
+  const savedAt = new Date(session.lastSaved);
+  if (meta) meta.textContent = `${session.tabs.length} tab(s) saved · Last saved ${savedAt.toLocaleString()}`;
+
+  if (!list) return;
+  list.innerHTML = "";
+  for (const t of session.tabs) {
+    let domain = "";
+    try { domain = new URL(t.url).hostname; } catch (_) {}
+    const item = document.createElement("div");
+    item.className = "pm-session-item";
+    item.innerHTML = `
+      <img class="pm-session-favicon" src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=16" onerror="this.style.display='none'" />
+      <div style="flex:1;min-width:0;">
+        <div class="pm-session-title">${escHtml(t.title || t.url)}</div>
+        <div class="pm-session-url">${escHtml(t.url)}</div>
+      </div>
+      ${t.active ? '<span class="chip status-active" style="font-size:9px;">Active</span>' : ""}
+    `;
+    list.appendChild(item);
+  }
+}
+
+// =========================================================
+// Country presets — auto-fill timezone, language, geo, UA
+// =========================================================
+const COUNTRY_PRESETS = {
+  us: { name: "United States", timezone: "America/New_York", offset: 300, language: "en-US", lat: 40.7128, lng: -74.0060, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  gb: { name: "United Kingdom", timezone: "Europe/London", offset: 0, language: "en-GB", lat: 51.5074, lng: -0.1278, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  de: { name: "Germany", timezone: "Europe/Berlin", offset: -60, language: "de-DE", lat: 52.5200, lng: 13.4050, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  nl: { name: "Netherlands", timezone: "Europe/Amsterdam", offset: -60, language: "nl-NL", lat: 52.3676, lng: 4.9041, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  fr: { name: "France", timezone: "Europe/Paris", offset: -60, language: "fr-FR", lat: 48.8566, lng: 2.3522, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  ch: { name: "Switzerland", timezone: "Europe/Zurich", offset: -60, language: "de-DE", lat: 47.3769, lng: 8.5417, os: "windows", screenWidth: 2560, screenHeight: 1440 },
+  se: { name: "Sweden", timezone: "Europe/Stockholm", offset: -60, language: "en-GB", lat: 59.3293, lng: 18.0686, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  ca: { name: "Canada", timezone: "America/Toronto", offset: 300, language: "en-CA", lat: 43.6532, lng: -79.3832, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  au: { name: "Australia", timezone: "Australia/Sydney", offset: -600, language: "en-GB", lat: -33.8688, lng: 151.2093, os: "macos", screenWidth: 1440, screenHeight: 900 },
+  jp: { name: "Japan", timezone: "Asia/Tokyo", offset: -540, language: "ja-JP", lat: 35.6762, lng: 139.6503, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  sg: { name: "Singapore", timezone: "Asia/Singapore", offset: -480, language: "en-GB", lat: 1.3521, lng: 103.8198, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  br: { name: "Brazil", timezone: "America/Sao_Paulo", offset: 180, language: "pt-BR", lat: -23.5505, lng: -46.6333, os: "windows", screenWidth: 1366, screenHeight: 768 },
+  in: { name: "India", timezone: "Asia/Kolkata", offset: -330, language: "en-US", lat: 19.0760, lng: 72.8777, os: "windows", screenWidth: 1366, screenHeight: 768 },
+  ae: { name: "UAE (Dubai)", timezone: "Asia/Dubai", offset: -240, language: "en-US", lat: 25.2048, lng: 55.2708, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  ru: { name: "Russia", timezone: "Europe/Moscow", offset: -180, language: "ru-RU", lat: 55.7558, lng: 37.6173, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  tr: { name: "Turkey", timezone: "Europe/Istanbul", offset: -180, language: "tr-TR", lat: 41.0082, lng: 28.9784, os: "windows", screenWidth: 1920, screenHeight: 1080 }
+};
+
+function applyCountryPreset(countryCode) {
+  const p = COUNTRY_PRESETS[countryCode];
+  if (!p) return;
+
+  // Fingerprint tab
+  setVal("fp-timezone", "manual");
+  setVal("fp-timezoneValue", p.timezone);
+  setVal("fp-timezoneOffset", p.offset);
+  setVal("fp-language", "manual");
+  setVal("fp-languageValue", p.language);
+  setVal("fp-geolocation", "manual");
+  setVal("fp-geoLat", p.lat);
+  setVal("fp-geoLng", p.lng);
+  setVal("fp-geoAccuracy", 50);
+  setVal("fp-os", p.os);
+  setVal("fp-screen", "manual");
+  setVal("fp-screenWidth", p.screenWidth);
+  setVal("fp-screenHeight", p.screenHeight);
+  setVal("fp-userAgent", "auto");
+
+  // Update OS-related UI
+  updateConditionalRows();
+  updateUAPreview();
+
+  // Highlight selected button
+  document.querySelectorAll(".pm-country-btn").forEach((btn) => {
+    btn.classList.toggle("selected", btn.dataset.country === countryCode);
+  });
+
+  // Show confirmation
+  const applied = $("countryApplied");
+  if (applied) {
+    applied.hidden = false;
+    applied.textContent = `Applied ${p.name} — timezone, language, geolocation, and screen set. Remember to add your proxy in the Proxy tab, then click Save.`;
+  }
+
+  toast(`${p.name} preset applied — click Save to keep it`);
 }
 
 // =========================================================

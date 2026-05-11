@@ -1405,6 +1405,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (msg.type === "PROFILE_WEBGL_PRESETS") {
         sendResponse({ ok: true, presets: PROFILE_WEBGL_PRESETS });
 
+      } else if (msg.type === "PROFILE_OPEN_WINDOW") {
+        const result = await openProfileWindow(msg.profileId);
+        sendResponse(result);
+
+      } else if (msg.type === "PROFILE_SAVE_SESSION") {
+        const result = await saveProfileSession(msg.profileId, msg.windowId || null);
+        sendResponse(result);
+
+      } else if (msg.type === "PROFILE_CLOSE_WINDOW") {
+        const result = await closeProfileWindow(msg.profileId);
+        sendResponse(result);
+
+      } else if (msg.type === "PROFILE_GET_WINDOWS") {
+        sendResponse({ ok: true, windows: await getOpenProfileWindows() });
+
       } else {
         sendResponse({ ok: false, error: "unknown profile message" });
       }
@@ -1414,3 +1429,210 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   })();
   return true;
 });
+
+// ==================== WINDOW & SESSION MANAGEMENT ====================
+
+const WIN_PROFILE_KEY = "windowProfiles";
+let windowProfiles = {};  // { windowId: profileId }
+
+const winProfileReady = chrome.storage.session.get(WIN_PROFILE_KEY).then((r) => {
+  if (r && r[WIN_PROFILE_KEY]) windowProfiles = r[WIN_PROFILE_KEY];
+});
+
+function persistWindowProfiles() {
+  chrome.storage.session.set({ [WIN_PROFILE_KEY]: windowProfiles }).catch(() => {});
+}
+
+// When a new tab is created inside a profile window, auto-assign the profile to it.
+chrome.tabs.onCreated.addListener(async (tab) => {
+  if (!tab.windowId || !tab.id) return;
+  await winProfileReady;
+  const profileId = windowProfiles[tab.windowId];
+  if (profileId) {
+    await tabProfileMapReady;
+    tabProfileMap[tab.id] = profileId;
+    persistTabProfileMap();
+  }
+});
+
+// When a tab is removed inside a profile window, clean up the tab→profile map.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await tabProfileMapReady;
+  if (tabProfileMap[tabId]) {
+    delete tabProfileMap[tabId];
+    persistTabProfileMap();
+  }
+});
+
+// When a window gains focus, switch the proxy to match that window's profile.
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  await winProfileReady;
+  const profileId = windowProfiles[windowId];
+  if (profileId) {
+    const profiles = await getProfiles();
+    const profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
+    if (profile) {
+      await applyProfileProxy(profile);
+      // Sync HTTP headers to match this profile's UA
+      const cfg = buildConfigFromProfile(profile, await getConfig());
+      await syncHeadersWithConfig(cfg);
+    }
+  } else {
+    await applyProxySettings();
+    await syncHeadersWithConfig();
+  }
+  // Refresh badge for all tabs in the focused window
+  try {
+    const tabs = await chrome.tabs.query({ windowId });
+    for (const t of tabs) if (t.id) updateBadge(t.id);
+  } catch (_) {}
+});
+
+// When a profile window is closed, auto-save its session and clean up.
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  await winProfileReady;
+  const profileId = windowProfiles[windowId];
+  if (!profileId) return;
+
+  // Auto-save session before cleanup — but we can't query tabs of a closed window,
+  // so we do a best-effort save if the window is still accessible.
+  try {
+    const tabs = await chrome.tabs.query({ windowId });
+    if (tabs.length) await saveProfileSession(profileId, windowId, tabs);
+  } catch (_) {}
+
+  delete windowProfiles[windowId];
+  persistWindowProfiles();
+
+  // Clean up tab→profile entries for this window
+  await tabProfileMapReady;
+  for (const [tabId, pid] of Object.entries(tabProfileMap)) {
+    if (pid === profileId) delete tabProfileMap[Number(tabId)];
+  }
+  persistTabProfileMap();
+});
+
+// Open a profile in a dedicated new Chrome window.
+// If the profile already has an open window, focus it instead of opening again.
+async function openProfileWindow(profileId) {
+  await winProfileReady;
+
+  // Check if window already open → just focus it
+  for (const [wid, pid] of Object.entries(windowProfiles)) {
+    if (pid === profileId) {
+      const windowId = Number(wid);
+      try { await chrome.windows.update(windowId, { focused: true }); } catch (_) {}
+      return { ok: true, windowId, existing: true };
+    }
+  }
+
+  const profiles = await getProfiles();
+  const profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
+  if (!profile) return { ok: false, error: "Profile not found" };
+
+  // Build the initial URL list from saved session, or open new tab
+  const session = profile.session || {};
+  let urls = [];
+  if (Array.isArray(session.tabs) && session.tabs.length) {
+    urls = session.tabs
+      .map((t) => t.url)
+      .filter((u) => u && (u.startsWith("http://") || u.startsWith("https://")));
+  }
+  if (!urls.length) urls = ["about:newtab"];
+
+  // Create the window
+  let win;
+  try {
+    win = await chrome.windows.create({ url: urls, type: "normal", focused: true });
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+
+  // Register window → profile
+  windowProfiles[win.id] = profileId;
+  persistWindowProfiles();
+
+  // Register all tabs → profile
+  await tabProfileMapReady;
+  const tabs = await chrome.tabs.query({ windowId: win.id });
+  for (const t of tabs) {
+    if (t.id) tabProfileMap[t.id] = profileId;
+  }
+  persistTabProfileMap();
+
+  // Apply this profile's proxy
+  if (profile.proxy && profile.proxy.enabled && profile.proxy.host) {
+    await applyProfileProxy(profile);
+  }
+
+  // Sync UA / Accept-Language headers for this profile
+  const cfg = buildConfigFromProfile(profile, await getConfig());
+  await syncHeadersWithConfig(cfg);
+
+  // Update badge for each tab
+  for (const t of tabs) if (t.id) await updateBadge(t.id);
+
+  return { ok: true, windowId: win.id, tabCount: tabs.length, restored: urls.length };
+}
+
+// Capture all open tabs from a profile's window and save them to the profile.
+async function saveProfileSession(profileId, windowId, cachedTabs) {
+  await winProfileReady;
+
+  let wId = windowId;
+  if (!wId) {
+    for (const [wid, pid] of Object.entries(windowProfiles)) {
+      if (pid === profileId) { wId = Number(wid); break; }
+    }
+  }
+  if (!wId) return { ok: false, error: "No open window for this profile" };
+
+  let tabs = cachedTabs;
+  if (!tabs) {
+    try { tabs = await chrome.tabs.query({ windowId: wId }); } catch (_) { tabs = []; }
+  }
+
+  const sessionTabs = tabs
+    .map((t) => ({
+      url: t.url || "",
+      title: t.title || "",
+      pinned: Boolean(t.pinned),
+      active: Boolean(t.active)
+    }))
+    .filter((t) => t.url && t.url.startsWith("http"));
+
+  const session = {
+    tabs: sessionTabs,
+    totalTabs: tabs.length,
+    lastSaved: Date.now(),
+    windowId: wId
+  };
+
+  await updateProfile(profileId, { session });
+  return { ok: true, session, count: sessionTabs.length };
+}
+
+// Close a profile window and save its session.
+async function closeProfileWindow(profileId) {
+  await winProfileReady;
+  for (const [wid, pid] of Object.entries(windowProfiles)) {
+    if (pid === profileId) {
+      const windowId = Number(wid);
+      await saveProfileSession(profileId, windowId);
+      try { await chrome.windows.remove(windowId); } catch (_) {}
+      return { ok: true };
+    }
+  }
+  return { ok: false, error: "No open window for this profile" };
+}
+
+// Return a map of { profileId: windowId } for all currently open profile windows.
+async function getOpenProfileWindows() {
+  await winProfileReady;
+  const result = {};
+  for (const [wid, pid] of Object.entries(windowProfiles)) {
+    result[pid] = Number(wid);
+  }
+  return result;
+}

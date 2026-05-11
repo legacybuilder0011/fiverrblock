@@ -107,6 +107,7 @@
         <button class="pm-tab active" data-tab="fingerprint">Fingerprint</button>
         <button class="pm-tab" data-tab="proxy">Proxy</button>
         <button class="pm-tab" data-tab="cookies">Cookies &amp; Storage</button>
+        <button class="pm-tab" data-tab="session">Session</button>
       </div>
 
       <!-- ========= FINGERPRINT TAB ========= -->
@@ -587,6 +588,64 @@
           </div>
         </div>
       </div><!-- /tab-cookies -->
+
+      <!-- ========= SESSION TAB ========= -->
+      <div class="pm-tab-panel" id="tab-session">
+
+        <!-- Window status card -->
+        <div class="pm-window-card" id="windowCard">
+          <div class="pm-window-status" id="windowStatus">
+            <span class="pw-dot closed" id="windowDot"></span>
+            <span id="windowStatusText">Window closed</span>
+          </div>
+          <div class="pm-window-actions">
+            <button class="pm-btn primary large" id="btnOpenWindow">Open in new window</button>
+            <button class="pm-btn-sm" id="btnSaveSession" hidden>Save session</button>
+            <button class="pm-btn-sm danger" id="btnCloseWindow" hidden>Close window</button>
+          </div>
+          <div class="pm-hint" id="windowHint">
+            Click <b>Open in new window</b> to launch a dedicated Chrome window for this profile. Your proxy will be applied automatically and all tabs will be fingerprint-isolated to this profile.
+          </div>
+        </div>
+
+        <!-- Country / Quick-setup -->
+        <div class="pm-section">
+          <div class="pm-section-title">Country Quick-Setup</div>
+          <p class="pm-hint">Pick a country to instantly set timezone, language, geolocation, and a matching fingerprint for this profile. Then add your proxy in the Proxy tab.</p>
+          <div class="pm-country-grid" id="countryGrid">
+            <button class="pm-country-btn" data-country="us">🇺🇸 United States</button>
+            <button class="pm-country-btn" data-country="gb">🇬🇧 United Kingdom</button>
+            <button class="pm-country-btn" data-country="de">🇩🇪 Germany</button>
+            <button class="pm-country-btn" data-country="nl">🇳🇱 Netherlands</button>
+            <button class="pm-country-btn" data-country="fr">🇫🇷 France</button>
+            <button class="pm-country-btn" data-country="ch">🇨🇭 Switzerland</button>
+            <button class="pm-country-btn" data-country="se">🇸🇪 Sweden</button>
+            <button class="pm-country-btn" data-country="ca">🇨🇦 Canada</button>
+            <button class="pm-country-btn" data-country="au">🇦🇺 Australia</button>
+            <button class="pm-country-btn" data-country="jp">🇯🇵 Japan</button>
+            <button class="pm-country-btn" data-country="sg">🇸🇬 Singapore</button>
+            <button class="pm-country-btn" data-country="br">🇧🇷 Brazil</button>
+            <button class="pm-country-btn" data-country="in">🇮🇳 India</button>
+            <button class="pm-country-btn" data-country="ae">🇦🇪 UAE (Dubai)</button>
+            <button class="pm-country-btn" data-country="ru">🇷🇺 Russia</button>
+            <button class="pm-country-btn" data-country="tr">🇹🇷 Turkey</button>
+          </div>
+          <div id="countryApplied" class="pm-country-applied" hidden></div>
+        </div>
+
+        <!-- Saved session tabs -->
+        <div class="pm-section">
+          <div class="pm-section-title">Saved Session</div>
+          <div id="sessionMeta" class="pm-hint" style="margin-bottom:8px;"></div>
+          <div id="sessionTabList" class="pm-session-list">
+            <div class="pm-list-empty">No session saved yet.<br>Open a window, browse, then click <b>Save session</b>.</div>
+          </div>
+          <div class="pm-btn-row" style="margin-top:10px;">
+            <button class="pm-btn-sm danger" id="btnClearSession">Clear saved session</button>
+          </div>
+        </div>
+
+      </div><!-- /tab-session -->
 
     </div><!-- /pm-form-wrap -->
   </main>
