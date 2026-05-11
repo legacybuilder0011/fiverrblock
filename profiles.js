@@ -797,6 +797,9 @@ function bindSessionEvents() {
     const panel = $("proxyLibPanel");
     if (panel) panel.hidden = !panel.hidden;
   });
+
+  // Auto-detect from own server
+  $("btnDetectProxy")?.addEventListener("click", autoDetectProxy);
 }
 
 // =========================================================
@@ -1082,8 +1085,10 @@ function renderProxyLibrary() {
         <span class="pm-proxy-lib-label">${e.label || "Unnamed"}</span>
         <span class="pm-proxy-lib-meta">${COUNTRY_NAMES[e.country] || e.country || "Any"} · ${e.scheme.toUpperCase()} · ${e.host}:${e.port}</span>
         ${e.ispName ? `<span class="pm-proxy-lib-isp">${e.ispName}${e.ispAsn ? " AS" + e.ispAsn : ""}</span>` : ""}
+        <span class="pm-proxy-lib-status" id="plib-status-${e.id}"></span>
       </div>
       <div class="pm-proxy-lib-actions">
+        <button class="pm-btn-xs" data-action="test" data-id="${e.id}">Test</button>
         <button class="pm-btn-xs" data-action="edit" data-id="${e.id}">Edit</button>
         <button class="pm-btn-xs danger" data-action="del" data-id="${e.id}">Del</button>
       </div>
@@ -1094,7 +1099,11 @@ function renderProxyLibrary() {
     const btn = ev.target.closest("[data-action]");
     if (!btn) return;
     const id = btn.dataset.id;
-    if (btn.dataset.action === "del") {
+    if (btn.dataset.action === "test") {
+      const e = proxyLibrary.find((x) => x.id === id);
+      if (!e) return;
+      await testProxyEntry(e);
+    } else if (btn.dataset.action === "del") {
       await msg("PROXY_LIB_DELETE", { id });
       proxyLibrary = proxyLibrary.filter((e) => e.id !== id);
       renderProxyLibrary();
@@ -1174,6 +1183,92 @@ function resetProxyLibForm() {
   if (saveBtn) delete saveBtn.dataset.editId;
   const cancelBtn = $("btnCancelProxyLib");
   if (cancelBtn) cancelBtn.hidden = true;
+}
+
+async function testProxyEntry(entry) {
+  const statusEl = document.getElementById(`plib-status-${entry.id}`);
+  if (statusEl) { statusEl.textContent = " testing…"; statusEl.style.color = "var(--muted)"; }
+
+  try {
+    // Ping the info endpoint on port 8888 — works regardless of auth
+    const infoUrl = `http://${entry.host}:8888/`;
+    const resp = await fetch(infoUrl, { signal: AbortSignal.timeout(6000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const info = await resp.json();
+
+    const uptime = info.uptime_sec != null ? ` · up ${Math.floor(info.uptime_sec / 60)}m` : "";
+    const active = info.active != null ? ` · ${info.active} active` : "";
+    if (statusEl) { statusEl.textContent = ` online${uptime}${active}`; statusEl.style.color = "var(--green)"; }
+    toast(`${entry.label || entry.host}: online`);
+  } catch (_) {
+    // Fallback: check if SOCKS5 port is reachable via a direct fetch to the info endpoint
+    if (statusEl) { statusEl.textContent = " unreachable"; statusEl.style.color = "var(--red)"; }
+    toast(`${entry.label || entry.host}: could not connect`);
+  }
+}
+
+async function autoDetectProxy() {
+  const ip       = ($("plib-detect-ip")?.value || "").trim();
+  const infoPort = parseInt($("plib-detect-port")?.value || "8888", 10);
+  const statusEl = $("detectStatus");
+
+  if (!ip) { toast("Enter the server IP first"); return; }
+
+  if (statusEl) statusEl.textContent = "Connecting…";
+  const btn = $("btnDetectProxy");
+  if (btn) btn.disabled = true;
+
+  try {
+    // Fetch the info endpoint from the server.
+    // Chrome extensions can fetch http:// urls with host_permissions <all_urls>.
+    const url = `http://${ip}:${infoPort}/`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const info = await resp.json();
+
+    if (info.status !== "ok") throw new Error("Server returned bad status");
+
+    // Build preset from server response
+    const country   = (info.country || "").toLowerCase();
+    const preset    = COUNTRY_PRESETS[country] || {};
+    const label     = `${COUNTRY_NAMES[country] || country.toUpperCase() || "My Server"} — ${ip}`;
+
+    const entry = {
+      label,
+      country,
+      scheme:   "socks5",
+      host:     ip,
+      port:     info.socks5_port || 1080,
+      username: "",   // user fills credentials separately for security
+      password: "",
+      ispName:  preset.ispName || "",
+      ispAsn:   preset.ispAsn  || "",
+      ispOrg:   preset.ispOrg  || "",
+      city:     preset.city    || ""
+    };
+
+    // Pre-fill the manual form so user can add credentials then save
+    setVal("plib-label",    entry.label);
+    setVal("plib-country",  entry.country || "us");
+    setVal("plib-scheme",   entry.scheme);
+    setVal("plib-host",     entry.host);
+    setVal("plib-port",     entry.port);
+    setVal("plib-ispName",  entry.ispName);
+    setVal("plib-asn",      entry.ispAsn);
+    setVal("plib-city",     entry.city);
+
+    if (statusEl) statusEl.textContent = `Detected! Country: ${COUNTRY_NAMES[country] || country || "unknown"} — fill in your username/password then click Save.`;
+    if (statusEl) statusEl.style.color = "var(--green)";
+
+    toast(`Server detected: ${ip} (${COUNTRY_NAMES[country] || country || "?"})`);
+    $("plib-username")?.focus();
+
+  } catch (err) {
+    if (statusEl) { statusEl.textContent = `Failed: ${err.message}`; statusEl.style.color = "var(--red)"; }
+    toast(`Could not reach ${ip}:${infoPort} — is the server running?`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // =========================================================

@@ -713,6 +713,10 @@ html, body {
   color: var(--accent-h);
   display: block;
 }
+.pm-proxy-lib-status {
+  font-size: 10px;
+  font-style: italic;
+}
 .pm-proxy-lib-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
 /* Scrollbar */
