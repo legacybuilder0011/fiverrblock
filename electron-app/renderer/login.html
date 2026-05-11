@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Privacy Shield — Sign In</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      -webkit-app-region: drag;
+    }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      padding: 36px 32px 32px;
+      width: 360px;
+      -webkit-app-region: no-drag;
+    }
+
+    .logo {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .logo-icon { font-size: 40px; }
+    .logo-title { font-size: 20px; font-weight: 700; color: #f1f5f9; margin-top: 6px; }
+    .logo-sub { font-size: 12px; color: #64748b; margin-top: 2px; }
+
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid #334155;
+      margin-bottom: 24px;
+    }
+    .tab {
+      flex: 1;
+      padding: 8px 0;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 500;
+      color: #64748b;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color .15s, border-color .15s;
+    }
+    .tab.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 5px; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
+    input {
+      width: 100%; padding: 10px 12px;
+      background: #0f172a; border: 1px solid #334155; border-radius: 8px;
+      color: #f1f5f9; font-size: 14px; outline: none;
+      transition: border-color .15s;
+    }
+    input:focus { border-color: #60a5fa; }
+    input::placeholder { color: #475569; }
+
+    .btn {
+      width: 100%; padding: 11px;
+      background: #2563eb; color: #fff;
+      border: none; border-radius: 8px;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+      margin-top: 4px; transition: background .15s, opacity .15s;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { opacity: .6; cursor: not-allowed; }
+
+    .error-msg {
+      background: #450a0a; border: 1px solid #7f1d1d;
+      color: #fca5a5; border-radius: 8px;
+      padding: 10px 12px; font-size: 13px;
+      margin-bottom: 14px; display: none;
+    }
+    .error-msg.show { display: block; }
+
+    .success-msg {
+      background: #052e16; border: 1px solid #14532d;
+      color: #86efac; border-radius: 8px;
+      padding: 10px 12px; font-size: 13px;
+      margin-bottom: 14px; display: none;
+    }
+    .success-msg.show { display: block; }
+
+    .hint { font-size: 11px; color: #475569; margin-top: 14px; text-align: center; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">&#128737;</div>
+    <div class="logo-title">Privacy Shield</div>
+    <div class="logo-sub">Profile Manager</div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" id="tabLogin" onclick="showTab('login')">Sign In</div>
+    <div class="tab" id="tabRegister" onclick="showTab('register')">Create Account</div>
+  </div>
+
+  <div id="msgError" class="error-msg"></div>
+  <div id="msgSuccess" class="success-msg"></div>
+
+  <!-- Login form -->
+  <div id="formLogin">
+    <div class="form-group">
+      <label>Email</label>
+      <input type="email" id="loginEmail" placeholder="you@example.com" autocomplete="email" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" id="loginPassword" placeholder="Your password" autocomplete="current-password" />
+    </div>
+    <button class="btn" id="btnLogin" onclick="doLogin()">Sign In</button>
+    <p class="hint">Don't have an account? Click "Create Account" above.</p>
+  </div>
+
+  <!-- Register form -->
+  <div id="formRegister" style="display:none">
+    <div class="form-group">
+      <label>Email</label>
+      <input type="email" id="regEmail" placeholder="you@example.com" autocomplete="email" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" id="regPassword" placeholder="At least 6 characters" autocomplete="new-password" />
+    </div>
+    <div class="form-group">
+      <label>Confirm Password</label>
+      <input type="password" id="regConfirm" placeholder="Repeat password" autocomplete="new-password" />
+    </div>
+    <button class="btn" id="btnRegister" onclick="doRegister()">Create Account</button>
+    <p class="hint">Already have an account? Click "Sign In" above.</p>
+  </div>
+</div>
+
+<script>
+function showTab(tab) {
+  document.getElementById('tabLogin').classList.toggle('active', tab === 'login');
+  document.getElementById('tabRegister').classList.toggle('active', tab === 'register');
+  document.getElementById('formLogin').style.display = tab === 'login' ? '' : 'none';
+  document.getElementById('formRegister').style.display = tab === 'register' ? '' : 'none';
+  clearMessages();
+}
+
+function showError(msg) {
+  const el = document.getElementById('msgError');
+  el.textContent = msg;
+  el.classList.add('show');
+  document.getElementById('msgSuccess').classList.remove('show');
+}
+
+function showSuccess(msg) {
+  const el = document.getElementById('msgSuccess');
+  el.textContent = msg;
+  el.classList.add('show');
+  document.getElementById('msgError').classList.remove('show');
+}
+
+function clearMessages() {
+  document.getElementById('msgError').classList.remove('show');
+  document.getElementById('msgSuccess').classList.remove('show');
+}
+
+function setLoading(btnId, loading) {
+  const btn = document.getElementById(btnId);
+  btn.disabled = loading;
+  btn.textContent = loading ? 'Please wait…' : (btnId === 'btnLogin' ? 'Sign In' : 'Create Account');
+}
+
+async function doLogin() {
+  clearMessages();
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPassword').value;
+  if (!email || !password) { showError('Please enter your email and password.'); return; }
+
+  setLoading('btnLogin', true);
+  try {
+    const r = await window.electronAPI.invoke('AUTH_LOGIN', { email, password });
+    if (!r.ok) { showError(r.error || 'Login failed.'); return; }
+    showSuccess('Signed in! Opening app…');
+    setTimeout(async () => {
+      await window.electronAPI.invoke('AUTH_OPEN_APP', {});
+    }, 400);
+  } catch (e) {
+    showError('Unexpected error: ' + e.message);
+  } finally {
+    setLoading('btnLogin', false);
+  }
+}
+
+async function doRegister() {
+  clearMessages();
+  const email = document.getElementById('regEmail').value.trim();
+  const password = document.getElementById('regPassword').value;
+  const confirm = document.getElementById('regConfirm').value;
+  if (!email || !password) { showError('Please fill in all fields.'); return; }
+  if (password !== confirm) { showError('Passwords do not match.'); return; }
+
+  setLoading('btnRegister', true);
+  try {
+    const r = await window.electronAPI.invoke('AUTH_REGISTER', { email, password });
+    if (!r.ok) { showError(r.error || 'Registration failed.'); return; }
+    showSuccess('Account created! Opening app…');
+    setTimeout(async () => {
+      await window.electronAPI.invoke('AUTH_OPEN_APP', {});
+    }, 400);
+  } catch (e) {
+    showError('Unexpected error: ' + e.message);
+  } finally {
+    setLoading('btnRegister', false);
+  }
+}
+
+// Allow Enter key in inputs
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const loginVisible = document.getElementById('formLogin').style.display !== 'none';
+  if (loginVisible) doLogin();
+  else doRegister();
+});
+</script>
+</body>
+</html>
