@@ -641,6 +641,80 @@ html, body {
 /* Profile card running indicator */
 .pm-card.running { border-left: 3px solid var(--green); }
 
+/* ===== PROXY PICKER (country quick-setup) ===== */
+.pm-proxy-picker {
+  margin-top: 12px;
+  background: var(--panel2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.pm-proxy-picker-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--accent-h);
+}
+.pm-proxy-picker-body {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.pm-proxy-picker-body .pm-sel { flex: 1; }
+
+/* ===== PROXY LIBRARY ===== */
+.pm-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.pm-proxy-lib-form {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.pm-proxy-lib-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel2);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.pm-proxy-lib-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.pm-proxy-lib-item:last-child { border-bottom: none; }
+.pm-proxy-lib-item-main { flex: 1; min-width: 0; }
+.pm-proxy-lib-label {
+  font-weight: 600;
+  font-size: 12px;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pm-proxy-lib-meta {
+  font-size: 11px;
+  color: var(--muted);
+  display: block;
+}
+.pm-proxy-lib-isp {
+  font-size: 10px;
+  color: var(--accent-h);
+  display: block;
+}
+.pm-proxy-lib-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -278,6 +278,13 @@
               <option value="ru-RU">ru-RU (Russian)</option>
               <option value="ar-SA">ar-SA (Arabic)</option>
               <option value="tr-TR">tr-TR (Turkish)</option>
+              <option value="sv-SE">sv-SE (Swedish)</option>
+              <option value="hi-IN">hi-IN (Hindi)</option>
+              <option value="ar-AE">ar-AE (Arabic, UAE)</option>
+              <option value="en-AU">en-AU (English, Australia)</option>
+              <option value="en-SG">en-SG (English, Singapore)</option>
+              <option value="en-CA">en-CA (English, Canada)</option>
+              <option value="pt-PT">pt-PT (Portuguese, Portugal)</option>
             </select>
           </div>
         </div>
@@ -663,7 +670,7 @@
         <!-- Country / Quick-setup -->
         <div class="pm-section">
           <div class="pm-section-title">Country Quick-Setup</div>
-          <p class="pm-hint">Pick a country to instantly set timezone, language, geolocation, and a matching fingerprint for this profile. Then add your proxy in the Proxy tab.</p>
+          <p class="pm-hint">Click a country to instantly set timezone, language, geolocation, OS, screen, and browser version. Then pick a saved proxy below or add one.</p>
           <div class="pm-country-grid" id="countryGrid">
             <button class="pm-country-btn" data-country="us">🇺🇸 United States</button>
             <button class="pm-country-btn" data-country="gb">🇬🇧 United Kingdom</button>
@@ -684,6 +691,98 @@
             <button class="pm-country-btn" data-country="ng">🇳🇬 Nigeria</button>
           </div>
           <div id="countryApplied" class="pm-country-applied" hidden></div>
+
+          <!-- Proxy picker for selected country -->
+          <div id="countryProxyRow" class="pm-proxy-picker" hidden>
+            <div class="pm-proxy-picker-title">
+              <span>Saved proxies for <b id="countryProxyLabel"></b></span>
+              <button type="button" class="pm-btn-xs" id="btnAddCountryProxy">+ Add proxy</button>
+            </div>
+            <div class="pm-proxy-picker-body">
+              <select id="countryProxySel" class="pm-sel"></select>
+              <button type="button" class="pm-btn-xs primary" id="btnApplyCountryProxy">Use this proxy</button>
+            </div>
+            <div id="countryProxyEmpty" class="pm-hint" hidden>No proxies saved for this country yet. Click <b>+ Add proxy</b> to save one.</div>
+          </div>
+        </div>
+
+        <!-- Proxy Library Manager -->
+        <div class="pm-section">
+          <div class="pm-section-title-row">
+            <span class="pm-section-title">Proxy Library</span>
+            <button type="button" class="pm-btn-xs" id="btnToggleProxyLib">Show / Hide</button>
+          </div>
+          <p class="pm-hint">Save your proxies here and pick them per country. Proxies are shared across all profiles.</p>
+
+          <div id="proxyLibPanel">
+            <!-- Add / edit form -->
+            <div class="pm-proxy-lib-form" id="proxyLibForm">
+              <div class="pm-row">
+                <label class="pm-label">Label</label>
+                <input type="text" id="plib-label" class="pm-input" placeholder="My US Proxy" />
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">Country</label>
+                <select id="plib-country" class="pm-sel-sm">
+                  <option value="us">🇺🇸 United States</option>
+                  <option value="gb">🇬🇧 United Kingdom</option>
+                  <option value="de">🇩🇪 Germany</option>
+                  <option value="nl">🇳🇱 Netherlands</option>
+                  <option value="fr">🇫🇷 France</option>
+                  <option value="ch">🇨🇭 Switzerland</option>
+                  <option value="se">🇸🇪 Sweden</option>
+                  <option value="ca">🇨🇦 Canada</option>
+                  <option value="au">🇦🇺 Australia</option>
+                  <option value="jp">🇯🇵 Japan</option>
+                  <option value="sg">🇸🇬 Singapore</option>
+                  <option value="br">🇧🇷 Brazil</option>
+                  <option value="in">🇮🇳 India</option>
+                  <option value="ae">🇦🇪 UAE</option>
+                  <option value="ru">🇷🇺 Russia</option>
+                  <option value="tr">🇹🇷 Turkey</option>
+                  <option value="ng">🇳🇬 Nigeria</option>
+                  <option value="">Any / Other</option>
+                </select>
+                <select id="plib-scheme" class="pm-sel-sm" style="margin-left:8px">
+                  <option value="socks5">SOCKS5</option>
+                  <option value="socks4">SOCKS4</option>
+                  <option value="http">HTTP</option>
+                  <option value="https">HTTPS</option>
+                </select>
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">Host : Port</label>
+                <input type="text" id="plib-host" class="pm-input-sm" placeholder="1.2.3.4" style="flex:2" />
+                <span style="padding:0 6px;color:var(--muted)">:</span>
+                <input type="number" id="plib-port" class="pm-input-sm" placeholder="1080" style="width:72px" />
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">User : Pass</label>
+                <input type="text" id="plib-username" class="pm-input-sm" placeholder="username" style="flex:1" />
+                <span style="padding:0 6px;color:var(--muted)">:</span>
+                <input type="text" id="plib-password" class="pm-input-sm" placeholder="password" style="flex:1" />
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">ISP / Provider</label>
+                <input type="text" id="plib-ispName" class="pm-input" placeholder="e.g. Airtel Networks Limited" />
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">City</label>
+                <input type="text" id="plib-city" class="pm-input-sm" placeholder="Lagos" style="flex:1" />
+                <label class="pm-label" style="margin-left:8px">ASN</label>
+                <input type="text" id="plib-asn" class="pm-input-sm" placeholder="36873" style="width:80px" />
+              </div>
+              <div class="pm-btn-row" style="margin-top:8px">
+                <button type="button" class="pm-btn primary" id="btnSaveProxyLib">Save to Library</button>
+                <button type="button" class="pm-btn-xs muted" id="btnCancelProxyLib" hidden>Cancel</button>
+              </div>
+            </div>
+
+            <!-- Library list -->
+            <div id="proxyLibList" class="pm-proxy-lib-list">
+              <div class="pm-list-empty">No proxies in library yet.</div>
+            </div>
+          </div>
         </div>
 
         <!-- Saved session tabs -->

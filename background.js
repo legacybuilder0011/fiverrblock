@@ -1266,6 +1266,15 @@ function getDefaultProxy() {
   return { enabled: false, scheme: "socks5", host: "", port: 1080, username: "", password: "", rotationUrl: "", bypassList: [] };
 }
 
+const PROXY_LIBRARY_KEY = "proxyLibrary_v1";
+async function getProxyLibrary() {
+  const r = await chrome.storage.local.get(PROXY_LIBRARY_KEY);
+  return Array.isArray(r[PROXY_LIBRARY_KEY]) ? r[PROXY_LIBRARY_KEY] : [];
+}
+async function saveProxyLibrary(lib) {
+  await chrome.storage.local.set({ [PROXY_LIBRARY_KEY]: lib });
+}
+
 // Cookie export/import per profile
 async function exportProfileCookies(profileId) {
   const profiles = await getProfiles();
@@ -1446,6 +1455,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       } else if (msg.type === "PROFILE_GET_WINDOWS") {
         sendResponse({ ok: true, windows: await getOpenProfileWindows() });
+
+      } else if (msg.type === "PROXY_LIB_GET") {
+        sendResponse({ ok: true, library: await getProxyLibrary() });
+
+      } else if (msg.type === "PROXY_LIB_ADD") {
+        const lib = await getProxyLibrary();
+        const entry = { id: generateProfileId(), ...msg.entry };
+        lib.push(entry);
+        await saveProxyLibrary(lib);
+        sendResponse({ ok: true, entry });
+
+      } else if (msg.type === "PROXY_LIB_UPDATE") {
+        const lib = await getProxyLibrary();
+        const idx = lib.findIndex((e) => e.id === msg.id);
+        if (idx === -1) { sendResponse({ ok: false, error: "not found" }); return; }
+        lib[idx] = { ...lib[idx], ...msg.data, id: msg.id };
+        await saveProxyLibrary(lib);
+        sendResponse({ ok: true, entry: lib[idx] });
+
+      } else if (msg.type === "PROXY_LIB_DELETE") {
+        const lib = await getProxyLibrary();
+        const next = lib.filter((e) => e.id !== msg.id);
+        await saveProxyLibrary(next);
+        sendResponse({ ok: true });
 
       } else {
         sendResponse({ ok: false, error: "unknown profile message" });

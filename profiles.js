@@ -48,6 +48,12 @@ const selected = new Set();
 // WebGL presets list loaded from background
 let webglPresets = [];
 
+// Proxy library (global, shared across profiles)
+let proxyLibrary = [];
+
+// Currently selected country code (for proxy picker)
+let selectedCountry = null;
+
 // =========================================================
 // Boot
 // =========================================================
@@ -69,6 +75,11 @@ async function init() {
 
   // Load open windows map
   await refreshOpenWindows();
+
+  // Load proxy library
+  const libRes = await msg("PROXY_LIB_GET");
+  proxyLibrary = libRes.library || [];
+  renderProxyLibrary();
 
   await loadProfiles();
   bindSidebarEvents();
@@ -770,6 +781,22 @@ function bindSessionEvents() {
   document.querySelectorAll(".pm-country-btn").forEach((btn) => {
     btn.addEventListener("click", () => applyCountryPreset(btn.dataset.country));
   });
+
+  // Proxy picker
+  $("btnApplyCountryProxy")?.addEventListener("click", applySelectedLibraryProxy);
+  $("btnAddCountryProxy")?.addEventListener("click", () => {
+    if (selectedCountry) setVal("plib-country", selectedCountry);
+    $("proxyLibForm")?.scrollIntoView({ behavior: "smooth" });
+    $("plib-host")?.focus();
+  });
+
+  // Proxy library form
+  $("btnSaveProxyLib")?.addEventListener("click", saveProxyLibEntry);
+  $("btnCancelProxyLib")?.addEventListener("click", resetProxyLibForm);
+  $("btnToggleProxyLib")?.addEventListener("click", () => {
+    const panel = $("proxyLibPanel");
+    if (panel) panel.hidden = !panel.hidden;
+  });
 }
 
 // =========================================================
@@ -899,22 +926,22 @@ function renderSessionTabs(p) {
 // Country presets — auto-fill timezone, language, geo, UA
 // =========================================================
 const COUNTRY_PRESETS = {
-  us: { name: "United States", timezone: "America/New_York", offset: 300, language: "en-US", lat: 40.7128, lng: -74.0060, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  gb: { name: "United Kingdom", timezone: "Europe/London", offset: 0, language: "en-GB", lat: 51.5074, lng: -0.1278, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  de: { name: "Germany", timezone: "Europe/Berlin", offset: -60, language: "de-DE", lat: 52.5200, lng: 13.4050, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  nl: { name: "Netherlands", timezone: "Europe/Amsterdam", offset: -60, language: "nl-NL", lat: 52.3676, lng: 4.9041, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  fr: { name: "France", timezone: "Europe/Paris", offset: -60, language: "fr-FR", lat: 48.8566, lng: 2.3522, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  ch: { name: "Switzerland", timezone: "Europe/Zurich", offset: -60, language: "de-DE", lat: 47.3769, lng: 8.5417, os: "windows", screenWidth: 2560, screenHeight: 1440 },
-  se: { name: "Sweden", timezone: "Europe/Stockholm", offset: -60, language: "en-GB", lat: 59.3293, lng: 18.0686, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  ca: { name: "Canada", timezone: "America/Toronto", offset: 300, language: "en-CA", lat: 43.6532, lng: -79.3832, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  au: { name: "Australia", timezone: "Australia/Sydney", offset: -600, language: "en-GB", lat: -33.8688, lng: 151.2093, os: "macos", screenWidth: 1440, screenHeight: 900 },
-  jp: { name: "Japan", timezone: "Asia/Tokyo", offset: -540, language: "ja-JP", lat: 35.6762, lng: 139.6503, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  sg: { name: "Singapore", timezone: "Asia/Singapore", offset: -480, language: "en-GB", lat: 1.3521, lng: 103.8198, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  br: { name: "Brazil", timezone: "America/Sao_Paulo", offset: 180, language: "pt-BR", lat: -23.5505, lng: -46.6333, os: "windows", screenWidth: 1366, screenHeight: 768 },
-  in: { name: "India", timezone: "Asia/Kolkata", offset: -330, language: "en-US", lat: 19.0760, lng: 72.8777, os: "windows", screenWidth: 1366, screenHeight: 768 },
-  ae: { name: "UAE (Dubai)", timezone: "Asia/Dubai", offset: -240, language: "en-US", lat: 25.2048, lng: 55.2708, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  ru: { name: "Russia", timezone: "Europe/Moscow", offset: -180, language: "ru-RU", lat: 55.7558, lng: 37.6173, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  tr: { name: "Turkey", timezone: "Europe/Istanbul", offset: -180, language: "tr-TR", lat: 41.0082, lng: 28.9784, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  us: { name: "United States", timezone: "America/New_York", offset: 300, language: "en-US", lat: 40.7128, lng: -74.0060, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "New York", state: "New York" },
+  gb: { name: "United Kingdom", timezone: "Europe/London", offset: 0, language: "en-GB", lat: 51.5074, lng: -0.1278, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "London", state: "England" },
+  de: { name: "Germany", timezone: "Europe/Berlin", offset: -60, language: "de-DE", lat: 52.5200, lng: 13.4050, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Berlin", state: "Berlin" },
+  nl: { name: "Netherlands", timezone: "Europe/Amsterdam", offset: -60, language: "nl-NL", lat: 52.3676, lng: 4.9041, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Amsterdam", state: "North Holland" },
+  fr: { name: "France", timezone: "Europe/Paris", offset: -60, language: "fr-FR", lat: 48.8566, lng: 2.3522, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Paris", state: "Ile-de-France" },
+  ch: { name: "Switzerland", timezone: "Europe/Zurich", offset: -60, language: "de-DE", lat: 47.3769, lng: 8.5417, os: "windows", screenWidth: 2560, screenHeight: 1440, browserVersion: "136", city: "Zurich", state: "Zurich" },
+  se: { name: "Sweden", timezone: "Europe/Stockholm", offset: -60, language: "sv-SE", lat: 59.3293, lng: 18.0686, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Stockholm", state: "Stockholm" },
+  ca: { name: "Canada", timezone: "America/Toronto", offset: 300, language: "en-CA", lat: 43.6532, lng: -79.3832, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Toronto", state: "Ontario" },
+  au: { name: "Australia", timezone: "Australia/Sydney", offset: -600, language: "en-AU", lat: -33.8688, lng: 151.2093, os: "macos", screenWidth: 1440, screenHeight: 900, browserVersion: "136", city: "Sydney", state: "New South Wales" },
+  jp: { name: "Japan", timezone: "Asia/Tokyo", offset: -540, language: "ja-JP", lat: 35.6762, lng: 139.6503, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Tokyo", state: "Tokyo" },
+  sg: { name: "Singapore", timezone: "Asia/Singapore", offset: -480, language: "en-SG", lat: 1.3521, lng: 103.8198, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Singapore", state: "Singapore" },
+  br: { name: "Brazil", timezone: "America/Sao_Paulo", offset: 180, language: "pt-BR", lat: -23.5505, lng: -46.6333, os: "windows", screenWidth: 1366, screenHeight: 768, browserVersion: "136", city: "Sao Paulo", state: "Sao Paulo" },
+  in: { name: "India", timezone: "Asia/Kolkata", offset: -330, language: "hi-IN", lat: 19.0760, lng: 72.8777, os: "windows", screenWidth: 1366, screenHeight: 768, browserVersion: "136", city: "Mumbai", state: "Maharashtra" },
+  ae: { name: "UAE (Dubai)", timezone: "Asia/Dubai", offset: -240, language: "ar-AE", lat: 25.2048, lng: 55.2708, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Dubai", state: "Dubai" },
+  ru: { name: "Russia", timezone: "Europe/Moscow", offset: -180, language: "ru-RU", lat: 55.7558, lng: 37.6173, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Moscow", state: "Moscow Oblast" },
+  tr: { name: "Turkey", timezone: "Europe/Istanbul", offset: -180, language: "tr-TR", lat: 41.0082, lng: 28.9784, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Istanbul", state: "Istanbul" },
   ng: { name: "Nigeria (Lagos)", timezone: "Africa/Lagos", offset: -60, language: "en-US", lat: 6.5244, lng: 3.3792, os: "linux", screenWidth: 1366, screenHeight: 768, browserVersion: "148", city: "Lagos", state: "Lagos State", ispName: "Airtel Networks Limited", ispAsn: "36873", ispOrg: "Airtel Networks Limited" }
 };
 
@@ -969,6 +996,184 @@ function applyCountryPreset(countryCode) {
   }
 
   toast(`${p.name} preset applied — click Save to keep it`);
+
+  // Show proxy picker for this country
+  selectedCountry = countryCode;
+  renderCountryProxies(countryCode, p.name);
+}
+
+// =========================================================
+// Proxy Library
+// =========================================================
+
+const COUNTRY_NAMES = {
+  us:"United States",gb:"United Kingdom",de:"Germany",nl:"Netherlands",fr:"France",
+  ch:"Switzerland",se:"Sweden",ca:"Canada",au:"Australia",jp:"Japan",sg:"Singapore",
+  br:"Brazil",in:"India",ae:"UAE (Dubai)",ru:"Russia",tr:"Turkey",ng:"Nigeria","":" Any"
+};
+
+function renderCountryProxies(countryCode, countryName) {
+  const row = $("countryProxyRow");
+  const label = $("countryProxyLabel");
+  const sel = $("countryProxySel");
+  const empty = $("countryProxyEmpty");
+  if (!row || !sel) return;
+
+  const matches = proxyLibrary.filter((e) => e.country === countryCode);
+
+  row.hidden = false;
+  if (label) label.textContent = countryName || COUNTRY_NAMES[countryCode] || countryCode.toUpperCase();
+
+  sel.innerHTML = "";
+  if (matches.length === 0) {
+    sel.hidden = true;
+    if (empty) empty.hidden = false;
+    const applyBtn = $("btnApplyCountryProxy");
+    if (applyBtn) applyBtn.hidden = true;
+  } else {
+    sel.hidden = false;
+    if (empty) empty.hidden = true;
+    const applyBtn = $("btnApplyCountryProxy");
+    if (applyBtn) applyBtn.hidden = false;
+    for (const e of matches) {
+      const o = document.createElement("option");
+      o.value = e.id;
+      o.textContent = `${e.label || "Unnamed"} — ${e.scheme.toUpperCase()} ${e.host}:${e.port}${e.ispName ? " (" + e.ispName + ")" : ""}`;
+      sel.appendChild(o);
+    }
+  }
+}
+
+function applySelectedLibraryProxy() {
+  const sel = $("countryProxySel");
+  if (!sel || !sel.value) return;
+  const entry = proxyLibrary.find((e) => e.id === sel.value);
+  if (!entry) return;
+
+  // Fill Proxy tab fields
+  setVal("px-enabled", "true");
+  setVal("px-scheme", entry.scheme || "socks5");
+  setVal("px-host", entry.host || "");
+  setVal("px-port", entry.port || 1080);
+  setVal("px-username", entry.username || "");
+  setVal("px-password", entry.password || "");
+
+  // Fill ISP / identity fields from this proxy's metadata
+  if (entry.ispName) setVal("fp-ispName", entry.ispName);
+  if (entry.ispAsn)  setVal("fp-ispAsn",  entry.ispAsn);
+  if (entry.ispOrg)  setVal("fp-ispOrg",  entry.ispOrg);
+  if (entry.city)    setVal("fp-city",     entry.city);
+
+  // Switch to Proxy tab so user sees it
+  document.querySelector('[data-tab="proxy"]')?.click();
+  toast(`Proxy applied: ${entry.label || entry.host}`);
+}
+
+function renderProxyLibrary() {
+  const list = $("proxyLibList");
+  if (!list) return;
+  if (!proxyLibrary.length) {
+    list.innerHTML = '<div class="pm-list-empty">No proxies in library yet.</div>';
+    return;
+  }
+  list.innerHTML = proxyLibrary.map((e) => `
+    <div class="pm-proxy-lib-item" data-id="${e.id}">
+      <div class="pm-proxy-lib-item-main">
+        <span class="pm-proxy-lib-label">${e.label || "Unnamed"}</span>
+        <span class="pm-proxy-lib-meta">${COUNTRY_NAMES[e.country] || e.country || "Any"} · ${e.scheme.toUpperCase()} · ${e.host}:${e.port}</span>
+        ${e.ispName ? `<span class="pm-proxy-lib-isp">${e.ispName}${e.ispAsn ? " AS" + e.ispAsn : ""}</span>` : ""}
+      </div>
+      <div class="pm-proxy-lib-actions">
+        <button class="pm-btn-xs" data-action="edit" data-id="${e.id}">Edit</button>
+        <button class="pm-btn-xs danger" data-action="del" data-id="${e.id}">Del</button>
+      </div>
+    </div>
+  `).join("");
+
+  list.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("[data-action]");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    if (btn.dataset.action === "del") {
+      await msg("PROXY_LIB_DELETE", { id });
+      proxyLibrary = proxyLibrary.filter((e) => e.id !== id);
+      renderProxyLibrary();
+      if (selectedCountry) {
+        const p = COUNTRY_PRESETS[selectedCountry];
+        renderCountryProxies(selectedCountry, p?.name);
+      }
+      toast("Proxy deleted");
+    } else if (btn.dataset.action === "edit") {
+      const e = proxyLibrary.find((x) => x.id === id);
+      if (!e) return;
+      setVal("plib-label",   e.label || "");
+      setVal("plib-country", e.country || "");
+      setVal("plib-scheme",  e.scheme || "socks5");
+      setVal("plib-host",    e.host || "");
+      setVal("plib-port",    e.port || 1080);
+      setVal("plib-username",e.username || "");
+      setVal("plib-password",e.password || "");
+      setVal("plib-ispName", e.ispName || "");
+      setVal("plib-asn",     e.ispAsn || "");
+      setVal("plib-city",    e.city || "");
+      const saveBtn = $("btnSaveProxyLib");
+      if (saveBtn) saveBtn.dataset.editId = id;
+      const cancelBtn = $("btnCancelProxyLib");
+      if (cancelBtn) cancelBtn.hidden = false;
+      $("proxyLibForm")?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, { capture: false });
+}
+
+async function saveProxyLibEntry() {
+  const host = $("plib-host")?.value.trim();
+  if (!host) { toast("Host is required"); return; }
+  const entry = {
+    label:    $("plib-label")?.value.trim() || host,
+    country:  $("plib-country")?.value || "",
+    scheme:   $("plib-scheme")?.value || "socks5",
+    host,
+    port:     Number($("plib-port")?.value) || 1080,
+    username: $("plib-username")?.value.trim() || "",
+    password: $("plib-password")?.value.trim() || "",
+    ispName:  $("plib-ispName")?.value.trim() || "",
+    ispAsn:   $("plib-asn")?.value.trim() || "",
+    ispOrg:   $("plib-ispName")?.value.trim() || "",
+    city:     $("plib-city")?.value.trim() || ""
+  };
+
+  const saveBtn = $("btnSaveProxyLib");
+  const editId = saveBtn?.dataset.editId;
+
+  if (editId) {
+    const r = await msg("PROXY_LIB_UPDATE", { id: editId, data: entry });
+    if (r.ok) {
+      const idx = proxyLibrary.findIndex((e) => e.id === editId);
+      if (idx !== -1) proxyLibrary[idx] = r.entry;
+      delete saveBtn.dataset.editId;
+    }
+  } else {
+    const r = await msg("PROXY_LIB_ADD", { entry });
+    if (r.ok) proxyLibrary.push(r.entry);
+  }
+
+  renderProxyLibrary();
+  if (selectedCountry) {
+    const p = COUNTRY_PRESETS[selectedCountry];
+    renderCountryProxies(selectedCountry, p?.name);
+  }
+  resetProxyLibForm();
+  toast("Proxy saved to library");
+}
+
+function resetProxyLibForm() {
+  ["plib-label","plib-host","plib-port","plib-username","plib-password","plib-ispName","plib-asn","plib-city"].forEach((id) => setVal(id, ""));
+  setVal("plib-country", "us");
+  setVal("plib-scheme", "socks5");
+  const saveBtn = $("btnSaveProxyLib");
+  if (saveBtn) delete saveBtn.dataset.editId;
+  const cancelBtn = $("btnCancelProxyLib");
+  if (cancelBtn) cancelBtn.hidden = true;
 }
 
 // =========================================================
