@@ -80,6 +80,7 @@ async function init() {
   const libRes = await msg("PROXY_LIB_GET");
   proxyLibrary = libRes.library || [];
   renderProxyLibrary();
+  renderCountryProxies(null, null); // show all proxies in picker on load
 
   await loadProfiles();
   bindSidebarEvents();
@@ -132,12 +133,13 @@ async function createProfile() {
 
 async function saveCurrentProfile() {
   if (!selectedId) return;
-  const data = collectForm();
+  let data;
+  try { data = collectForm(); } catch (e) { toast("Form error: " + e.message); return; }
   const r = await msg("PROFILE_UPDATE", { id: selectedId, data });
-  if (!r.ok) { toast("Save failed"); return; }
+  if (!r.ok) { toast("Save failed: " + (r.error || "unknown error")); return; }
   await loadProfiles();
   renderList();
-  toast("Saved");
+  toast("Profile saved");
 }
 
 async function deleteProfile(id) {
@@ -205,18 +207,23 @@ function renderList() {
     card.className = "pm-card" + (isActive ? " active" : "");
     card.dataset.id = p.id;
 
-    const proxyBadge = p.proxy?.enabled ? `<span class="chip proxy-on">Proxy</span>` : "";
+    const proxyBadge   = p.proxy?.enabled ? `<span class="chip proxy-on">Proxy</span>` : "";
     const assignedBadge = isAssigned ? `<span class="chip status-active">On Tab</span>` : "";
     const tags = (p.tags || []).slice(0, 3).map((t) => `<span class="chip status-new">${escHtml(t)}</span>`).join("");
+    const browserIcons = { chrome: "&#9689;", brave: "&#129321;", edge: "&#127919;" };
+    const browserBadge = `<span class="chip browser-chip" title="${p.browserApp || "chrome"}">${browserIcons[p.browserApp || "chrome"] || "&#9689;"} ${(p.browserApp || "Chrome").charAt(0).toUpperCase() + (p.browserApp || "chrome").slice(1)}</span>`;
+    const incogBadge   = p.windowMode === "incognito" ? `<span class="chip incog-chip">Incognito</span>` : "";
 
     card.innerHTML = `
       <input type="checkbox" class="pm-card-check" data-id="${p.id}" />
       <div class="pm-card-body">
         <div class="pm-card-name">${escHtml(p.name)}</div>
         <div class="pm-card-meta">
+          ${browserBadge}
           ${osChip(p.os)}
           ${statusChip(p.status)}
           ${proxyBadge}
+          ${incogBadge}
           ${assignedBadge}
           ${tags}
         </div>
@@ -265,6 +272,8 @@ function populateForm(p) {
   $("fp-name").value = p.name || "";
   $("fp-status").value = p.status || "new";
   $("fp-os").value = p.os || "windows";
+  setVal("fp-browserApp",  p.browserApp  || "chrome");
+  setVal("fp-windowMode",  p.windowMode  || "normal");
   $("fp-tags").value = (p.tags || []).join(", ");
   $("fp-notes").value = p.notes || "";
   updateAssignedTabInfo();
@@ -355,6 +364,8 @@ function collectForm() {
     name: $("fp-name").value.trim() || "Unnamed",
     status: $("fp-status").value,
     os: $("fp-os").value,
+    browserApp: $("fp-browserApp")?.value || "chrome",
+    windowMode: $("fp-windowMode")?.value || "normal",
     tags: $("fp-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
     notes: $("fp-notes").value,
     fingerprint: {
@@ -399,9 +410,9 @@ function collectForm() {
       blockCookies: $("fp-blockCookies").value === "true",
       blockStorage: $("fp-blockStorage").value === "true",
       browserVersion: (() => {
-        const sel = $("fp-browserVersion").value;
-        if (sel === "custom") return ($("fp-browserVersionCustom").value.trim() || "148");
-        return sel || "148";
+        const sel = $("fp-browserVersion")?.value || "148";
+        if (sel === "custom") return ($("fp-browserVersionCustom")?.value.trim() || "148");
+        return sel;
       })(),
       city: ($("fp-city")?.value || "").trim(),
       state: ($("fp-state")?.value || "").trim(),
@@ -1016,32 +1027,42 @@ const COUNTRY_NAMES = {
 };
 
 function renderCountryProxies(countryCode, countryName) {
-  const row = $("countryProxyRow");
-  const label = $("countryProxyLabel");
-  const sel = $("countryProxySel");
-  const empty = $("countryProxyEmpty");
-  if (!row || !sel) return;
+  const label  = $("countryProxyLabel");
+  const sel    = $("countryProxySel");
+  const empty  = $("countryProxyEmpty");
+  if (!sel) return;
 
-  const matches = proxyLibrary.filter((e) => e.country === countryCode);
+  // Filter: if countryCode given, show only that country; otherwise show all
+  const matches = countryCode
+    ? proxyLibrary.filter((e) => e.country === countryCode || e.country === "")
+    : proxyLibrary;
 
-  row.hidden = false;
-  if (label) label.textContent = countryName || COUNTRY_NAMES[countryCode] || countryCode.toUpperCase();
+  if (label) {
+    label.textContent = countryCode
+      ? `for ${countryName || COUNTRY_NAMES[countryCode] || countryCode.toUpperCase()}`
+      : "";
+  }
 
   sel.innerHTML = "";
   if (matches.length === 0) {
-    sel.hidden = true;
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = countryCode
+      ? `No proxies for ${COUNTRY_NAMES[countryCode] || countryCode} — add one in Proxy Library`
+      : "No proxies saved yet — add one in Proxy Library below";
+    sel.appendChild(o);
     if (empty) empty.hidden = false;
-    const applyBtn = $("btnApplyCountryProxy");
-    if (applyBtn) applyBtn.hidden = true;
   } else {
-    sel.hidden = false;
     if (empty) empty.hidden = true;
-    const applyBtn = $("btnApplyCountryProxy");
-    if (applyBtn) applyBtn.hidden = false;
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "— choose a proxy —";
+    sel.appendChild(placeholder);
     for (const e of matches) {
       const o = document.createElement("option");
       o.value = e.id;
-      o.textContent = `${e.label || "Unnamed"} — ${e.scheme.toUpperCase()} ${e.host}:${e.port}${e.ispName ? " (" + e.ispName + ")" : ""}`;
+      const flag = Object.entries(COUNTRY_NAMES).find(([k]) => k === e.country)?.[0] || "";
+      o.textContent = `${e.label || "Unnamed"} — ${e.scheme.toUpperCase()} ${e.host}:${e.port}${e.ispName ? " | " + e.ispName : ""}`;
       sel.appendChild(o);
     }
   }
@@ -1107,10 +1128,7 @@ function renderProxyLibrary() {
       await msg("PROXY_LIB_DELETE", { id });
       proxyLibrary = proxyLibrary.filter((e) => e.id !== id);
       renderProxyLibrary();
-      if (selectedCountry) {
-        const p = COUNTRY_PRESETS[selectedCountry];
-        renderCountryProxies(selectedCountry, p?.name);
-      }
+      renderCountryProxies(selectedCountry, selectedCountry ? COUNTRY_PRESETS[selectedCountry]?.name : null);
       toast("Proxy deleted");
     } else if (btn.dataset.action === "edit") {
       const e = proxyLibrary.find((x) => x.id === id);
@@ -1167,10 +1185,7 @@ async function saveProxyLibEntry() {
   }
 
   renderProxyLibrary();
-  if (selectedCountry) {
-    const p = COUNTRY_PRESETS[selectedCountry];
-    renderCountryProxies(selectedCountry, p?.name);
-  }
+  renderCountryProxies(selectedCountry, selectedCountry ? COUNTRY_PRESETS[selectedCountry]?.name : null);
   resetProxyLibForm();
   toast("Proxy saved to library");
 }

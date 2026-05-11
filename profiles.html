@@ -96,6 +96,15 @@
             <option value="macos">macOS</option>
             <option value="linux">Linux</option>
           </select>
+          <select id="fp-browserApp" class="pm-sel-sm">
+            <option value="chrome">Chrome</option>
+            <option value="brave">Brave</option>
+            <option value="edge">Edge</option>
+          </select>
+          <select id="fp-windowMode" class="pm-sel-sm">
+            <option value="normal">Normal window</option>
+            <option value="incognito">Incognito window</option>
+          </select>
           <input type="text" id="fp-tags" class="pm-tags-input" placeholder="tags, comma, separated" />
         </div>
         <textarea id="fp-notes" class="pm-notes" rows="2" placeholder="Notes…"></textarea>
@@ -692,17 +701,19 @@
           </div>
           <div id="countryApplied" class="pm-country-applied" hidden></div>
 
-          <!-- Proxy picker for selected country -->
-          <div id="countryProxyRow" class="pm-proxy-picker" hidden>
+          <!-- Proxy picker — always visible, filters by selected country -->
+          <div class="pm-proxy-picker">
             <div class="pm-proxy-picker-title">
-              <span>Saved proxies for <b id="countryProxyLabel"></b></span>
+              <span>Select proxy <span id="countryProxyLabel" style="color:var(--accent-h)"></span></span>
               <button type="button" class="pm-btn-xs" id="btnAddCountryProxy">+ Add proxy</button>
             </div>
             <div class="pm-proxy-picker-body">
-              <select id="countryProxySel" class="pm-sel"></select>
-              <button type="button" class="pm-btn-xs primary" id="btnApplyCountryProxy">Use this proxy</button>
+              <select id="countryProxySel" class="pm-sel">
+                <option value="">— No proxies saved yet —</option>
+              </select>
+              <button type="button" class="pm-btn-xs primary" id="btnApplyCountryProxy">Apply</button>
             </div>
-            <div id="countryProxyEmpty" class="pm-hint" hidden>No proxies saved for this country yet. Click <b>+ Add proxy</b> to save one.</div>
+            <div id="countryProxyEmpty" class="pm-hint" style="margin-top:4px">Go to <b>Proxy Library</b> below to add your proxies, then pick one here.</div>
           </div>
         </div>
 

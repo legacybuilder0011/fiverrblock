@@ -301,6 +301,9 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 
 // ---------- Messaging with content scripts & popup ----------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Profile and proxy-library messages are handled by their own listener below.
+  // Return false here so the port stays open for that listener to respond.
+  if (msg?.type?.startsWith("PROFILE_") || msg?.type?.startsWith("PROXY_LIB_")) return false;
   (async () => {
     try {
       if (msg?.type === "GET_CONFIG") {
@@ -1353,7 +1356,7 @@ async function applyProfileProxy(profile) {
 
 // Handle profile message types added to the central listener
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || !msg.type || !msg.type.startsWith("PROFILE_")) return false;
+  if (!msg || !msg.type || (!msg.type.startsWith("PROFILE_") && !msg.type.startsWith("PROXY_LIB_"))) return false;
   (async () => {
     try {
       if (msg.type === "PROFILE_LIST") {
@@ -1601,12 +1604,15 @@ async function openProfileWindow(profileId) {
   }
   if (!urls.length) urls = ["about:newtab"];
 
-  // Create the window
+  // Create the window (incognito if the profile requests it)
+  const incognito = profile.windowMode === "incognito";
   let win;
   try {
-    win = await chrome.windows.create({ url: urls, type: "normal", focused: true });
+    win = await chrome.windows.create({ url: urls, type: "normal", focused: true, incognito });
   } catch (err) {
-    return { ok: false, error: String(err) };
+    // Incognito may be disallowed by policy — fall back to normal
+    try { win = await chrome.windows.create({ url: urls, type: "normal", focused: true }); }
+    catch (err2) { return { ok: false, error: String(err2) }; }
   }
 
   // Register window → profile

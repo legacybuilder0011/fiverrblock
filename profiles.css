@@ -641,6 +641,10 @@ html, body {
 /* Profile card running indicator */
 .pm-card.running { border-left: 3px solid var(--green); }
 
+/* Browser + incognito chips */
+.chip.browser-chip { background: #1e3a5f; color: #93c5fd; border-color: #1e40af; }
+.chip.incog-chip   { background: #1a1a2e; color: #a78bfa; border-color: #4c1d95; }
+
 /* ===== PROXY PICKER (country quick-setup) ===== */
 .pm-proxy-picker {
   margin-top: 12px;
