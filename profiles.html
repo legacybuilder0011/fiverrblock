@@ -130,6 +130,33 @@
         </div>
 
         <div class="pm-section">
+          <div class="pm-section-title">Browser</div>
+          <div class="pm-row">
+            <label class="pm-label">Browser</label>
+            <select id="fp-browser" class="pm-sel" disabled>
+              <option value="chrome">Chrome</option>
+            </select>
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">Version</label>
+            <select id="fp-browserVersion" class="pm-sel">
+              <option value="120">120</option>
+              <option value="122">122</option>
+              <option value="124">124</option>
+              <option value="131">131</option>
+              <option value="136">136</option>
+              <option value="148">148 (latest)</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div class="pm-row" id="browserVersionCustomRow" hidden>
+            <label class="pm-label">Custom version</label>
+            <input type="text" id="fp-browserVersionCustom" class="pm-input" placeholder="e.g. 149.0.0.0" />
+          </div>
+          <div class="pm-hint">Sets the Chrome version in the auto-generated User-Agent string (applies when UA mode is Auto).</div>
+        </div>
+
+        <div class="pm-section">
           <div class="pm-section-title">Canvas</div>
           <div class="pm-row">
             <label class="pm-label">Mode</label>
@@ -493,6 +520,31 @@
           </div>
         </div>
 
+        <div class="pm-section">
+          <div class="pm-section-title">ISP / Network Identity</div>
+          <div class="pm-hint" style="margin-bottom:10px;">Reference fields only — real ISP is determined by your proxy IP. These values are stored with the profile for your records and can be shown by sites that check HTTP headers.</div>
+          <div class="pm-row">
+            <label class="pm-label">City</label>
+            <input type="text" id="fp-city" class="pm-input" placeholder="e.g. Lagos" />
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">State / Region</label>
+            <input type="text" id="fp-state" class="pm-input" placeholder="e.g. Lagos State" />
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">ISP Provider</label>
+            <input type="text" id="fp-ispName" class="pm-input" placeholder="e.g. Airtel Networks Limited" />
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">ASN</label>
+            <input type="text" id="fp-ispAsn" class="pm-input" placeholder="e.g. 36873" />
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">Organization</label>
+            <input type="text" id="fp-ispOrg" class="pm-input" placeholder="e.g. Airtel Networks Limited" />
+          </div>
+        </div>
+
       </div><!-- /tab-fingerprint -->
 
       <!-- ========= PROXY TAB ========= -->
@@ -629,6 +681,7 @@
             <button class="pm-country-btn" data-country="ae">🇦🇪 UAE (Dubai)</button>
             <button class="pm-country-btn" data-country="ru">🇷🇺 Russia</button>
             <button class="pm-country-btn" data-country="tr">🇹🇷 Turkey</button>
+            <button class="pm-country-btn" data-country="ng">🇳🇬 Nigeria</button>
           </div>
           <div id="countryApplied" class="pm-country-applied" hidden></div>
         </div>

@@ -951,36 +951,61 @@ try {
 const PROFILE_STORAGE_KEY = "profiles_v1";
 const TAB_PROFILE_MAP_KEY = "tabProfileMap";
 
+// Build a Chrome UA string from OS + version (used for profile fingerprint generation)
+function buildProfileUA(os, version) {
+  const v = String(version || "148");
+  const full = v.includes(".") ? v : v + ".0.0.0";
+  switch (os) {
+    case "macos":
+      return { ua: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`, platform: "MacIntel" };
+    case "linux":
+      return { ua: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`, platform: "Linux x86_64" };
+    default:
+      return { ua: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`, platform: "Win32" };
+  }
+}
+
 const PROFILE_UA_POOLS = {
   windows: [
     { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", platform: "Win32" },
-    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "Win32" },
     { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", platform: "Win32" },
-    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36", platform: "Win32" },
-    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", platform: "Win32" }
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36", platform: "Win32" },
+    { ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36", platform: "Win32" }
   ],
   macos: [
     { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", platform: "MacIntel" },
-    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "MacIntel" },
-    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", platform: "MacIntel" }
+    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", platform: "MacIntel" },
+    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", platform: "MacIntel" },
+    { ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36", platform: "MacIntel" }
   ],
   linux: [
     { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", platform: "Linux x86_64" },
-    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36", platform: "Linux x86_64" },
-    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", platform: "Linux x86_64" }
+    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", platform: "Linux x86_64" },
+    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", platform: "Linux x86_64" },
+    { ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36", platform: "Linux x86_64" }
   ]
 };
 
 const PROFILE_WEBGL_PRESETS = [
-  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 2080 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-  { vendor: "Google Inc. (Intel)", renderer: "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-  { vendor: "Google Inc. (Intel)", renderer: "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-  { vendor: "Google Inc. (AMD)", renderer: "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-  { vendor: "Google Inc. (AMD)", renderer: "ANGLE (AMD, AMD Radeon RX 5700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)" },
-  { vendor: "Google Inc. (Apple)", renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)" },
-  { vendor: "Google Inc. (Apple)", renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)" }
+  // Windows ANGLE (Direct3D)
+  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0, D3D11)", platform: "windows" },
+  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)", platform: "windows" },
+  { vendor: "Google Inc. (NVIDIA)", renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 2080 Direct3D11 vs_5_0 ps_5_0, D3D11)", platform: "windows" },
+  { vendor: "Google Inc. (Intel)", renderer: "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)", platform: "windows" },
+  { vendor: "Google Inc. (Intel)", renderer: "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)", platform: "windows" },
+  { vendor: "Google Inc. (AMD)", renderer: "ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)", platform: "windows" },
+  { vendor: "Google Inc. (AMD)", renderer: "ANGLE (AMD, AMD Radeon RX 5700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)", platform: "windows" },
+  // macOS Metal
+  { vendor: "Google Inc. (Apple)", renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)", platform: "macos" },
+  { vendor: "Google Inc. (Apple)", renderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)", platform: "macos" },
+  // Linux Mesa (X11 — used on Linux/X11 systems like the profile above)
+  { vendor: "Intel", renderer: "Mesa Intel(R) UHD Graphics 620 (KBL GT2)", platform: "linux" },
+  { vendor: "Intel", renderer: "Mesa Intel(R) HD Graphics 5500 (BDW GT2)", platform: "linux" },
+  { vendor: "AMD", renderer: "AMD RENOIR (LLVM 12.0.0, 128 bits)", platform: "linux" },
+  { vendor: "AMD", renderer: "AMD Radeon RX 580 Series (POLARIS10, DRM 3.41.0, 5.10.0, LLVM 12.0.0)", platform: "linux" },
+  { vendor: "Mesa/X.org", renderer: "llvmpipe (LLVM 12.0.0, 256 bits)", platform: "linux" }
 ];
 
 function generateProfileId() {
@@ -1029,10 +1054,10 @@ function buildConfigFromProfile(profile, baseConfig) {
   if (fp.userAgent === "manual" && fp.userAgentValue) {
     cfg.userAgent = fp.userAgentValue;
   } else {
-    const pool = PROFILE_UA_POOLS[profile.os || "windows"] || PROFILE_UA_POOLS.windows;
-    const seed = parseInt(profile.id.replace(/\D/g, "").slice(-6) || "0") % pool.length;
-    cfg.userAgent = pool[seed].ua;
-    cfg.platform = pool[seed].platform;
+    const bv = fp.browserVersion || "148";
+    const built = buildProfileUA(profile.os || "windows", bv);
+    cfg.userAgent = built.ua;
+    cfg.platform = built.platform;
   }
   cfg.spoofUA = true;
 
@@ -1231,7 +1256,9 @@ function getDefaultFingerprint() {
     ports: "block", blockedPorts: [3389, 5938],
     doNotTrack: false,
     webrtc: "altered", webrtcIP: "",
-    blockStorage: false, blockCookies: false
+    blockStorage: false, blockCookies: false,
+    browserVersion: "148",
+    ispName: "", ispAsn: "", ispOrg: "", city: "", state: ""
   };
 }
 

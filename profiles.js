@@ -300,6 +300,24 @@ function populateForm(p) {
   setVal("fp-blockCookies", String(Boolean(fp.blockCookies)));
   setVal("fp-blockStorage", String(Boolean(fp.blockStorage)));
 
+  // Browser + ISP
+  const bv = fp.browserVersion || "148";
+  const knownVersions = ["120", "122", "124", "131", "136", "148"];
+  if (knownVersions.includes(bv)) {
+    setVal("fp-browserVersion", bv);
+    setVal("fp-browserVersionCustom", "");
+  } else {
+    setVal("fp-browserVersion", "custom");
+    setVal("fp-browserVersionCustom", bv);
+  }
+  const bvcRow = $("browserVersionCustomRow");
+  if (bvcRow) bvcRow.hidden = knownVersions.includes(bv);
+  setVal("fp-city", fp.city || "");
+  setVal("fp-state", fp.state || "");
+  setVal("fp-ispName", fp.ispName || "");
+  setVal("fp-ispAsn", fp.ispAsn || "");
+  setVal("fp-ispOrg", fp.ispOrg || "");
+
   const px = p.proxy || {};
   setVal("px-enabled", String(Boolean(px.enabled)));
   setVal("px-scheme", px.scheme || "socks5");
@@ -368,7 +386,17 @@ function collectForm() {
       webrtc: $("fp-webrtc").value,
       webrtcIP: $("fp-webrtcIP").value.trim(),
       blockCookies: $("fp-blockCookies").value === "true",
-      blockStorage: $("fp-blockStorage").value === "true"
+      blockStorage: $("fp-blockStorage").value === "true",
+      browserVersion: (() => {
+        const sel = $("fp-browserVersion").value;
+        if (sel === "custom") return ($("fp-browserVersionCustom").value.trim() || "148");
+        return sel || "148";
+      })(),
+      city: ($("fp-city")?.value || "").trim(),
+      state: ($("fp-state")?.value || "").trim(),
+      ispName: ($("fp-ispName")?.value || "").trim(),
+      ispAsn: ($("fp-ispAsn")?.value || "").trim(),
+      ispOrg: ($("fp-ispOrg")?.value || "").trim()
     },
     proxy: {
       enabled: $("px-enabled").value === "true",
@@ -422,6 +450,9 @@ function updateConditionalRows() {
   const screenMode = $("fp-screen")?.value;
   const screenRow = $("screenManualRow");
   if (screenRow) screenRow.hidden = screenMode !== "manual";
+
+  const bvSel = $("fp-browserVersion")?.value;
+  show("browserVersionCustomRow", bvSel === "custom");
 }
 
 function updateUAPreview() {
@@ -429,16 +460,18 @@ function updateUAPreview() {
   const os = $("fp-os")?.value || "windows";
   const preview = $("uaPreview");
   if (!preview) return;
-  if (mode === "manual") {
-    preview.textContent = "";
-    return;
-  }
-  const samples = {
-    windows: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    macos: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    linux: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  if (mode === "manual") { preview.textContent = ""; return; }
+  const bvSel = $("fp-browserVersion")?.value;
+  const bv = bvSel === "custom"
+    ? ($("fp-browserVersionCustom")?.value.trim() || "148")
+    : (bvSel || "148");
+  const full = bv.includes(".") ? bv : bv + ".0.0.0";
+  const osTemplates = {
+    windows: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`,
+    macos: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`,
+    linux: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`
   };
-  preview.textContent = "Auto: " + (samples[os] || samples.windows);
+  preview.textContent = "Auto: " + (osTemplates[os] || osTemplates.windows);
 }
 
 // =========================================================
@@ -677,11 +710,15 @@ function bindFormEvents() {
   });
 
   // Conditional row toggles
-  const condTriggers = ["fp-userAgent", "fp-webglInfo", "fp-timezone", "fp-language", "fp-geolocation", "fp-deviceName", "fp-ports", "fp-webrtc", "fp-mediaDevices", "fp-screen", "fp-os"];
+  const condTriggers = ["fp-userAgent", "fp-webglInfo", "fp-timezone", "fp-language", "fp-geolocation", "fp-deviceName", "fp-ports", "fp-webrtc", "fp-mediaDevices", "fp-screen", "fp-os", "fp-browserVersion"];
   for (const id of condTriggers) {
     const el = $(id);
     if (el) el.addEventListener("change", () => { updateConditionalRows(); updateUAPreview(); });
   }
+
+  // Browser version custom input — live-update UA preview
+  const bvcInput = $("fp-browserVersionCustom");
+  if (bvcInput) bvcInput.addEventListener("input", updateUAPreview);
 
   // Screen preset
   $("screenPresetSel").addEventListener("change", (e) => {
@@ -877,7 +914,8 @@ const COUNTRY_PRESETS = {
   in: { name: "India", timezone: "Asia/Kolkata", offset: -330, language: "en-US", lat: 19.0760, lng: 72.8777, os: "windows", screenWidth: 1366, screenHeight: 768 },
   ae: { name: "UAE (Dubai)", timezone: "Asia/Dubai", offset: -240, language: "en-US", lat: 25.2048, lng: 55.2708, os: "windows", screenWidth: 1920, screenHeight: 1080 },
   ru: { name: "Russia", timezone: "Europe/Moscow", offset: -180, language: "ru-RU", lat: 55.7558, lng: 37.6173, os: "windows", screenWidth: 1920, screenHeight: 1080 },
-  tr: { name: "Turkey", timezone: "Europe/Istanbul", offset: -180, language: "tr-TR", lat: 41.0082, lng: 28.9784, os: "windows", screenWidth: 1920, screenHeight: 1080 }
+  tr: { name: "Turkey", timezone: "Europe/Istanbul", offset: -180, language: "tr-TR", lat: 41.0082, lng: 28.9784, os: "windows", screenWidth: 1920, screenHeight: 1080 },
+  ng: { name: "Nigeria (Lagos)", timezone: "Africa/Lagos", offset: -60, language: "en-US", lat: 6.5244, lng: 3.3792, os: "linux", screenWidth: 1366, screenHeight: 768, browserVersion: "148", city: "Lagos", state: "Lagos State", ispName: "Airtel Networks Limited", ispAsn: "36873", ispOrg: "Airtel Networks Limited" }
 };
 
 function applyCountryPreset(countryCode) {
@@ -899,6 +937,20 @@ function applyCountryPreset(countryCode) {
   setVal("fp-screenWidth", p.screenWidth);
   setVal("fp-screenHeight", p.screenHeight);
   setVal("fp-userAgent", "auto");
+
+  // Browser version (preset-specific or default)
+  if (p.browserVersion) {
+    setVal("fp-browserVersion", p.browserVersion);
+    const bvcRow = $("browserVersionCustomRow");
+    if (bvcRow) bvcRow.hidden = true;
+  }
+
+  // ISP / Location identity
+  if (p.city !== undefined) setVal("fp-city", p.city);
+  if (p.state !== undefined) setVal("fp-state", p.state);
+  if (p.ispName !== undefined) setVal("fp-ispName", p.ispName);
+  if (p.ispAsn !== undefined) setVal("fp-ispAsn", p.ispAsn);
+  if (p.ispOrg !== undefined) setVal("fp-ispOrg", p.ispOrg);
 
   // Update OS-related UI
   updateConditionalRows();
