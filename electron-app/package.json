@@ -1,0 +1,52 @@
+{
+  "name": "privacy-shield",
+  "version": "1.0.0",
+  "description": "Privacy Shield — Browser Identity Manager Desktop App",
+  "author": "Privacy Shield",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.privacyshield.app",
+    "productName": "Privacy Shield",
+    "icon": "icons/icon256.png",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**",
+      "renderer/**",
+      "icons/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.4"
+  }
+}

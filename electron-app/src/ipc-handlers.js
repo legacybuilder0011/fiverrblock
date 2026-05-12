@@ -205,19 +205,51 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("AUTH_REGISTER", async (_ev, { email, password } = {}) => {
-    const result = authStore.register(email, password);
+    const result = await authStore.register(email, password);
+    if (result.ok) await postLoginSync();
     return result;
   });
 
   ipcMain.handle("AUTH_LOGIN", async (_ev, { email, password } = {}) => {
-    const result = authStore.login(email, password);
+    const result = await authStore.login(email, password);
+    if (result.ok) await postLoginSync();
     return result;
   });
 
   ipcMain.handle("AUTH_LOGOUT", async () => {
-    authStore.logout();
+    await authStore.logout();
     return { ok: true };
   });
+
+  // ── Cloud sync ────────────────────────────────────────────────────────────────
+
+  ipcMain.handle("CLOUD_SYNC_NOW", async () => {
+    return await postLoginSync();
+  });
+}
+
+// On login/register, pull any cloud data into the per-user local dir, then
+// push anything that exists locally only (first-time login on this PC).
+async function postLoginSync() {
+  try {
+    const cloud = require("./cloud-sync");
+    const localProfiles = store.getProfiles();
+    const localProxies  = store.getProxyLibrary();
+
+    // Push local-only data first (covers "first sync on a fresh PC won't lose data")
+    if (localProfiles.length) await cloud.pushAllProfiles(localProfiles);
+    if (localProxies.length)  await cloud.pushAllProxies(localProxies);
+
+    // Pull merged set from cloud (server is authoritative after merge)
+    const remoteProfiles = await cloud.pullProfiles();
+    const remoteProxies  = await cloud.pullProxies();
+    if (remoteProfiles.ok) store.saveProfiles(remoteProfiles.profiles || []);
+    if (remoteProxies.ok)  store.saveProxyLibrary(remoteProxies.proxies || []);
+
+    return { ok: true, profileCount: (remoteProfiles.profiles || []).length, proxyCount: (remoteProxies.proxies || []).length };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
 }
 
 // ── Profile window management ──────────────────────────────────────────────────

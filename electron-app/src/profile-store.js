@@ -113,6 +113,21 @@ function getDefaultProxy() {
 
 // ── CRUD operations ────────────────────────────────────────────────────────────
 
+function syncProfileBg(profile) {
+  // Fire-and-forget cloud sync — never block local writes on the network
+  try {
+    const cloud = require("./cloud-sync");
+    cloud.pushProfile(profile).catch(() => {});
+  } catch (_) {}
+}
+
+function syncDeleteProfileBg(id) {
+  try {
+    const cloud = require("./cloud-sync");
+    cloud.deleteProfileRemote(id).catch(() => {});
+  } catch (_) {}
+}
+
 function createProfile(data) {
   const profiles = getProfiles();
   const now = Date.now();
@@ -136,6 +151,7 @@ function createProfile(data) {
   };
   profiles.push(profile);
   saveProfiles(profiles);
+  syncProfileBg(profile);
   return profile;
 }
 
@@ -148,6 +164,7 @@ function updateProfile(id, data) {
   if (data.fingerprint) profiles[idx].fingerprint = { ...existing.fingerprint, ...data.fingerprint };
   if (data.proxy) profiles[idx].proxy = { ...existing.proxy, ...data.proxy };
   saveProfiles(profiles);
+  syncProfileBg(profiles[idx]);
   return profiles[idx];
 }
 
@@ -155,9 +172,13 @@ function deleteProfile(id, hard = false) {
   let profiles = getProfiles();
   if (hard) {
     profiles = profiles.filter((p) => p.id !== id);
+    syncDeleteProfileBg(id);
   } else {
     const idx = profiles.findIndex((p) => p.id === id);
-    if (idx !== -1) profiles[idx].deletedAt = Date.now();
+    if (idx !== -1) {
+      profiles[idx].deletedAt = Date.now();
+      syncProfileBg(profiles[idx]);
+    }
   }
   saveProfiles(profiles);
 }
@@ -175,6 +196,7 @@ function duplicateProfile(id) {
   copy.deletedAt = null;
   profiles.push(copy);
   saveProfiles(profiles);
+  syncProfileBg(copy);
   return copy;
 }
 
@@ -184,11 +206,19 @@ function restoreProfile(id) {
 
 // ── Proxy library CRUD ─────────────────────────────────────────────────────────
 
+function syncProxyLibBg() {
+  try {
+    const cloud = require("./cloud-sync");
+    cloud.pushAllProxies(getProxyLibrary()).catch(() => {});
+  } catch (_) {}
+}
+
 function addProxyEntry(entry) {
   const lib = getProxyLibrary();
   const newEntry = { id: generateId(), ...entry };
   lib.push(newEntry);
   saveProxyLibrary(lib);
+  syncProxyLibBg();
   return newEntry;
 }
 
@@ -198,12 +228,17 @@ function updateProxyEntry(id, data) {
   if (idx === -1) return null;
   lib[idx] = { ...lib[idx], ...data, id };
   saveProxyLibrary(lib);
+  syncProxyLibBg();
   return lib[idx];
 }
 
 function deleteProxyEntry(id) {
   const lib = getProxyLibrary().filter((e) => e.id !== id);
   saveProxyLibrary(lib);
+  try {
+    const cloud = require("./cloud-sync");
+    cloud.deleteProxyRemote(id).catch(() => {});
+  } catch (_) {}
 }
 
 // ── WebGL presets (same as extension) ──────────────────────────────────────────
