@@ -18,10 +18,16 @@ async function configureSessionProxy(sess, proxy) {
     await sess.setProxy({ mode: "direct" });
     return;
   }
+  const port = parseInt(proxy.port, 10);
+  if (!port || port < 1 || port > 65535) {
+    // Bad port — fall back to direct rather than throwing
+    await sess.setProxy({ mode: "direct" });
+    return;
+  }
   const scheme = proxy.scheme || "socks5";
   // Credentials must NOT go in the proxy URL — Chromium's proxy rules parser rejects them
   // and returns ERR_NO_SUPPORTED_PROXIES. Auth is handled via the session's 'login' event.
-  const proxyRules = `${scheme}://${proxy.host}:${proxy.port}`;
+  const proxyRules = `${scheme}://${proxy.host}:${port}`;
   await sess.setProxy({
     proxyRules,
     proxyBypassRules: (proxy.bypassList || ["localhost", "127.0.0.1"]).join(",")

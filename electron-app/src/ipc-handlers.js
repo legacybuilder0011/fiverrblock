@@ -45,9 +45,11 @@ function registerIpcHandlers() {
   ipcMain.handle("PROFILE_UPDATE", async (_ev, { id, data = {} } = {}) => {
     const profile = store.updateProfile(id, data);
     if (profile && profileWindows.has(id)) {
-      // If the profile's browser window is open, update its session config
-      const sess = sessionMgr.getSessionForProfile(id);
-      await sessionMgr.setupProfileSession(profile);
+      // If the profile's browser window is open, update its session config.
+      // Bad proxy config must NOT crash the app — keep the old session.
+      try {
+        await sessionMgr.setupProfileSession(profile);
+      } catch (_) { /* ignore — old session keeps working */ }
     }
     return { ok: Boolean(profile), profile };
   });
@@ -225,9 +227,14 @@ async function openProfileWindow(profileId) {
   const profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
   if (!profile) return { ok: false, error: "Profile not found" };
 
-  // Setup Electron session for this profile (proxy + fingerprint)
+  // Setup Electron session for this profile (proxy + fingerprint).
+  // If the proxy config is bad, surface the error to the user — DO NOT crash.
   const sess = sessionMgr.getSessionForProfile(profileId);
-  await sessionMgr.setupProfileSession(profile);
+  try {
+    await sessionMgr.setupProfileSession(profile);
+  } catch (err) {
+    return { ok: false, error: "Proxy setup failed: " + (err.message || err) };
+  }
 
   // Build initial URLs from saved session
   let urls = [];

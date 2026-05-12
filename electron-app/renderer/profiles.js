@@ -160,7 +160,8 @@ async function saveCurrentProfile() {
 
 async function deleteProfile(id) {
   if (!confirm("Delete this profile?")) return;
-  await msg("PROFILE_DELETE", { id });
+  const r = await msg("PROFILE_DELETE", { id });
+  if (!r.ok) { toast("Delete failed"); return; }
   profiles = profiles.filter((p) => p.id !== id);
   if (selectedId === id) {
     selectedId = null;
@@ -169,7 +170,6 @@ async function deleteProfile(id) {
   }
   renderList();
   toast("Deleted");
-  loadProfiles().then(() => renderList()).catch(() => {});
 }
 
 async function duplicateProfile(id) {
@@ -278,10 +278,15 @@ function escHtml(s) {
 // =========================================================
 // Profile selection & form
 // =========================================================
-function selectProfile(id) {
+async function selectProfile(id) {
   selectedId = id;
-  const p = profiles.find((p) => p.id === id);
-  if (!p) return;
+  let p = profiles.find((p) => p.id === id);
+  if (!p) {
+    // Local cache miss — re-fetch from disk before giving up
+    await loadProfiles();
+    p = profiles.find((p) => p.id === id);
+    if (!p) return;
+  }
   $("emptyState").hidden = true;
   $("formWrap").hidden = false;
   populateForm(p);
@@ -300,7 +305,7 @@ function populateForm(p) {
   updateAssignedTabInfo();
 
   const fp = p.fingerprint || {};
-  setVal("fp-browser", fp.browser || profile.browserApp || "chrome");
+  setVal("fp-browser", fp.browser || p.browserApp || "chrome");
   updateBrowserVersionOptions();
   setVal("fp-userAgent", fp.userAgent || "auto");
   setVal("fp-userAgentValue", fp.userAgentValue || "");

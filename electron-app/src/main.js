@@ -4,15 +4,16 @@ const { app, BrowserWindow, Menu, Tray, nativeImage, dialog } = require("electro
 const path = require("path");
 const fs = require("fs");
 
-// Catch hard crashes and write to log file on Desktop
-process.on("uncaughtException", (err) => {
+// Log errors silently — do NOT exit the app. A bad proxy or transient
+// error should never close the whole app.
+function logError(err) {
   try {
     const logPath = path.join(require("os").homedir(), "Desktop", "privacy-shield-error.txt");
-    fs.writeFileSync(logPath, String(err?.stack || err), "utf8");
+    fs.appendFileSync(logPath, new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8");
   } catch (_) {}
-  try { dialog.showErrorBox("Privacy Shield Error", String(err?.message || err)); } catch (_) {}
-  app.exit(1);
-});
+}
+process.on("uncaughtException", logError);
+process.on("unhandledRejection", logError);
 
 const { registerIpcHandlers, openProfileWindow } = require("./ipc-handlers");
 const store = require("./profile-store");
