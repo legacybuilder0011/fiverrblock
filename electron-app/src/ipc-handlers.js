@@ -327,30 +327,66 @@ async function testProxy(host, port, scheme, username, password) {
 
   const proxyRules = `${scheme || "socks5"}://${host}:${port}`;
   await tempSess.setProxy({ proxyRules });
-  if (username && password) {
-    tempSess.on("login", (_req, authInfo, callback) => {
-      if (authInfo.isProxy) callback(username, password);
-      else callback("", "");
-    });
-  }
 
+  // Try HTTP first (faster, no TLS handshake), fall back to HTTPS
+  const TEST_URLS = [
+    "http://api.ipify.org/?format=json",
+    "http://checkip.amazonaws.com/",
+    "https://api.ipify.org/?format=json"
+  ];
+
+  for (const testUrl of TEST_URLS) {
+    const result = await tryTestUrl(testUrl, tempSess, username, password);
+    if (result.ok) return result;
+    if (result.fatal) break; // no point retrying other URLs
+  }
+  return { ok: false, error: "Proxy unreachable — check host, port, and credentials" };
+}
+
+function tryTestUrl(url, session, username, password) {
   return new Promise((resolve) => {
-    const req = net.request({ url: "https://api.ipify.org/?format=json", session: tempSess, useSessionCookies: false });
+    const req = net.request({ url, session, useSessionCookies: false });
+
+    // For net.request (main process), proxy auth fires on the request — NOT on session
+    if (username && password) {
+      req.on("login", (authInfo, callback) => {
+        if (authInfo.isProxy) callback(username, password);
+        else callback("", "");
+      });
+    }
+
     let body = "";
     req.on("response", (res) => {
       clearTimeout(timer);
       res.on("data", (d) => { body += d.toString(); });
       res.on("end", () => {
         try {
-          const json = JSON.parse(body);
-          resolve({ ok: true, ip: json.ip });
+          const text = body.trim();
+          // ip-only response (checkip.amazonaws.com returns plain text)
+          if (/^\d{1,3}(\.\d{1,3}){3}$/.test(text)) {
+            resolve({ ok: true, ip: text });
+            return;
+          }
+          const json = JSON.parse(text);
+          const ip = json.ip || json.origin || json.query;
+          if (ip) resolve({ ok: true, ip });
+          else resolve({ ok: false, error: "No IP in response" });
         } catch (_) {
-          resolve({ ok: false, error: "Bad response: " + body.slice(0, 100) });
+          resolve({ ok: false, error: "Bad response" });
         }
       });
     });
-    req.on("error", (err) => { clearTimeout(timer); resolve({ ok: false, error: String(err.message || err) }); });
-    const timer = setTimeout(() => { try { req.abort(); } catch (_) {} resolve({ ok: false, error: "Timeout — proxy unreachable" }); }, 12000);
+    req.on("error", (err) => {
+      clearTimeout(timer);
+      const msg = String(err.message || err);
+      // ERR_NO_SUPPORTED_PROXIES = bad proxy format, no point trying more URLs
+      const fatal = msg.includes("ERR_NO_SUPPORTED_PROXIES") || msg.includes("ERR_PROXY_CONNECTION_FAILED");
+      resolve({ ok: false, error: msg, fatal });
+    });
+    const timer = setTimeout(() => {
+      try { req.abort(); } catch (_) {}
+      resolve({ ok: false, error: "timeout" });
+    }, 10000);
     req.end();
   });
 }
