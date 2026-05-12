@@ -877,6 +877,31 @@ function bindFormEvents() {
 // =========================================================
 function bindSessionEvents() {
   $("btnOpenWindow")?.addEventListener("click", () => selectedId && openProfileWindow(selectedId));
+
+  // Test fingerprint — opens profile pointing to a fingerprint-detection site
+  $("btnTestFingerprint")?.addEventListener("click", async () => {
+    if (!selectedId) { toast("Select a profile first"); return; }
+    toast("Opening fingerprint test…");
+    await msg("PROFILE_OPEN_WINDOW", { profileId: selectedId, url: "https://pixelscan.net/" });
+  });
+
+  // Bulk create modal
+  $("btnBulkCreate")?.addEventListener("click", () => { $("bulkModal").hidden = false; });
+  $("btnBulkCancel")?.addEventListener("click", () => { $("bulkModal").hidden = true; });
+  $("btnBulkGo")?.addEventListener("click", async () => {
+    const btn = $("btnBulkGo");
+    btn.disabled = true; btn.textContent = "Creating…";
+    const count = parseInt($("bulkCount").value, 10) || 10;
+    const country = $("bulkCountry").value;
+    const assignProxies = $("bulkProxies").value === "1";
+    const r = await msg("PROFILE_BULK_CREATE", { count, country, assignProxies });
+    btn.disabled = false; btn.textContent = "Create";
+    if (!r.ok) { toast("Bulk create failed: " + (r.error || "unknown")); return; }
+    $("bulkModal").hidden = true;
+    await loadProfiles();
+    renderList();
+    toast(`Created ${r.created} profiles`);
+  });
   $("btnSaveSession")?.addEventListener("click", () => selectedId && saveSession(selectedId));
   $("btnCloseWindow")?.addEventListener("click", () => selectedId && closeProfileWindow(selectedId));
   $("btnClearSession")?.addEventListener("click", () => selectedId && clearSession(selectedId));

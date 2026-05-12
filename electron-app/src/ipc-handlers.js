@@ -146,8 +146,13 @@ function registerIpcHandlers() {
 
   // ── Window management ─────────────────────────────────────────────────────────
 
-  ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId } = {}) => {
-    return openProfileWindow(profileId);
+  ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url } = {}) => {
+    return openProfileWindow(profileId, url);
+  });
+
+  // Bulk profile generation
+  ipcMain.handle("PROFILE_BULK_CREATE", async (_ev, { count, country, assignProxies } = {}) => {
+    return bulkCreateProfiles(count, country, assignProxies);
   });
 
   ipcMain.handle("PROFILE_CLOSE_WINDOW", async (_ev, { profileId } = {}) => {
@@ -254,10 +259,11 @@ async function postLoginSync() {
 
 // ── Profile window management ──────────────────────────────────────────────────
 
-async function openProfileWindow(profileId) {
-  // If already open, focus it
+async function openProfileWindow(profileId, customUrl) {
+  // If already open and a custom URL was requested, navigate the existing window
   const existing = profileWindows.get(profileId);
   if (existing && !existing.isDestroyed()) {
+    if (customUrl) existing.loadURL(customUrl);
     existing.focus();
     return { ok: true, windowId: existing.id, existing: true };
   }
@@ -277,8 +283,8 @@ async function openProfileWindow(profileId) {
 
   // Build initial URLs from saved session. Default to local start page —
   // it ALWAYS loads (no proxy needed), so the window is never blank.
-  let initialUrl = startPageUrl();
-  if (profile.session && Array.isArray(profile.session.tabs) && profile.session.tabs.length) {
+  let initialUrl = customUrl || startPageUrl();
+  if (!customUrl && profile.session && Array.isArray(profile.session.tabs) && profile.session.tabs.length) {
     const saved = profile.session.tabs
       .map((t) => t.url)
       .filter((u) => u && (u.startsWith("http://") || u.startsWith("https://")));
@@ -348,8 +354,67 @@ async function openProfileWindow(profileId) {
 
   notifyManagerWindows("WINDOWS_CHANGED");
 
-  return { ok: true, windowId: win.id, tabCount: 1, restored: urls.length };
+  return { ok: true, windowId: win.id, tabCount: 1 };
 }
+
+// ── Bulk profile generator ───────────────────────────────────────────────────
+async function bulkCreateProfiles(count, countryCode, assignProxies) {
+  const n = Math.max(1, Math.min(100, parseInt(count, 10) || 10));
+  const COUNTRIES = ["us","gb","de","nl","fr","ca","au","jp","sg","br","in","ae","tr","se","ch"];
+  const proxyLib = assignProxies ? store.getProxyLibrary() : [];
+  const created = [];
+
+  for (let i = 0; i < n; i++) {
+    const country = countryCode === "random" || !countryCode
+      ? COUNTRIES[Math.floor(Math.random() * COUNTRIES.length)]
+      : countryCode;
+    const data = randomProfileData(country, i + 1);
+
+    if (assignProxies && proxyLib.length) {
+      // Try to find a proxy matching the country, otherwise pick any
+      const match = proxyLib.find((p) => p.country === country) || proxyLib[i % proxyLib.length];
+      if (match) {
+        data.proxy = {
+          enabled: true,
+          scheme: match.scheme || "socks5",
+          host: match.host, port: match.port,
+          username: match.username || "", password: match.password || "",
+          bypassList: ["localhost", "127.0.0.1"]
+        };
+      }
+    }
+    const profile = store.createProfile(data);
+    created.push(profile);
+  }
+  return { ok: true, created: created.length, profiles: created };
+}
+
+function randomProfileData(country, idx) {
+  const COUNTRY_TZ = { us:"America/New_York", gb:"Europe/London", de:"Europe/Berlin", nl:"Europe/Amsterdam", fr:"Europe/Paris", ca:"America/Toronto", au:"Australia/Sydney", jp:"Asia/Tokyo", sg:"Asia/Singapore", br:"America/Sao_Paulo", in:"Asia/Kolkata", ae:"Asia/Dubai", tr:"Europe/Istanbul", se:"Europe/Stockholm", ch:"Europe/Zurich" };
+  const COUNTRY_LANG = { us:"en-US", gb:"en-GB", de:"de-DE", nl:"nl-NL", fr:"fr-FR", ca:"en-CA", au:"en-AU", jp:"ja-JP", sg:"en-SG", br:"pt-BR", in:"hi-IN", ae:"ar-AE", tr:"tr-TR", se:"sv-SE", ch:"de-DE" };
+  const SCREENS = [[1920,1080],[1366,768],[1536,864],[1440,900],[2560,1440],[1600,900]];
+  const OS = country === "au" ? "macos" : "windows";
+  const screen = SCREENS[Math.floor(Math.random() * SCREENS.length)];
+  const cores = [2,4,6,8,12,16][Math.floor(Math.random() * 6)];
+  const ram = [4,8,16,32][Math.floor(Math.random() * 4)];
+
+  const fp = store.getDefaultFingerprint();
+  fp.timezone = "manual"; fp.timezoneValue = COUNTRY_TZ[country] || "UTC";
+  fp.language = "manual"; fp.languageValue = COUNTRY_LANG[country] || "en-US";
+  fp.screen = "manual";   fp.screenWidth = screen[0]; fp.screenHeight = screen[1];
+  fp.cpuCores = "manual"; fp.cpuCoresValue = cores;
+  fp.ram = "manual";      fp.ramValue = ram;
+  fp.browserVersion = String(140 + Math.floor(Math.random() * 9));
+
+  return {
+    name: `${country.toUpperCase()} Profile ${idx}`,
+    os: OS,
+    browserApp: "chrome",
+    status: "new",
+    fingerprint: fp
+  };
+}
+
 
 async function saveWindowSession(profileId, win) {
   if (!win || win.isDestroyed()) return 0;

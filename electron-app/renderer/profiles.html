@@ -16,6 +16,7 @@
         <span class="pm-logo-text">Profile Manager</span>
       </div>
       <button class="pm-btn primary" id="btnNewProfile">+ New Profile</button>
+      <button class="pm-btn-xs" id="btnBulkCreate" style="margin-top:4px">Bulk create…</button>
     </div>
 
     <div class="pm-search-wrap">
@@ -678,6 +679,7 @@
           </div>
           <div class="pm-window-actions">
             <button class="pm-btn primary large" id="btnOpenWindow">Open in new window</button>
+            <button class="pm-btn-sm" id="btnTestFingerprint">Test fingerprint</button>
             <button class="pm-btn-sm" id="btnSaveSession" hidden>Save session</button>
             <button class="pm-btn-sm danger" id="btnCloseWindow" hidden>Close window</button>
           </div>
@@ -847,6 +849,47 @@
 
 <!-- Toast notification -->
 <div class="pm-toast" id="toast"></div>
+
+<!-- Bulk create modal -->
+<div id="bulkModal" class="pm-modal-backdrop" hidden>
+  <div class="pm-modal">
+    <h3 class="pm-modal-title">Bulk create profiles</h3>
+    <div class="pm-row"><label class="pm-label">How many</label>
+      <input type="number" id="bulkCount" class="pm-input-sm" min="1" max="100" value="10" />
+    </div>
+    <div class="pm-row"><label class="pm-label">Country</label>
+      <select id="bulkCountry" class="pm-sel">
+        <option value="random">Random mix</option>
+        <option value="us">United States</option>
+        <option value="gb">United Kingdom</option>
+        <option value="de">Germany</option>
+        <option value="nl">Netherlands</option>
+        <option value="fr">France</option>
+        <option value="ca">Canada</option>
+        <option value="au">Australia</option>
+        <option value="jp">Japan</option>
+        <option value="sg">Singapore</option>
+        <option value="br">Brazil</option>
+        <option value="in">India</option>
+        <option value="ae">UAE</option>
+        <option value="tr">Turkey</option>
+        <option value="se">Sweden</option>
+        <option value="ch">Switzerland</option>
+      </select>
+    </div>
+    <div class="pm-row"><label class="pm-label">Assign proxies</label>
+      <select id="bulkProxies" class="pm-sel">
+        <option value="0">No (set later)</option>
+        <option value="1">Yes, from proxy library</option>
+      </select>
+    </div>
+    <p class="pm-hint" style="margin-top:8px">Each profile gets a unique fingerprint (UA, timezone, language, screen, CPU, RAM) matched to the country.</p>
+    <div class="pm-btn-row" style="margin-top:12px;justify-content:flex-end">
+      <button class="pm-btn-sm" id="btnBulkCancel">Cancel</button>
+      <button class="pm-btn primary" id="btnBulkGo">Create</button>
+    </div>
+  </div>
+</div>
 
 <script src="profiles.js"></script>
 </body>
