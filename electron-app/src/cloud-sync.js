@@ -4,7 +4,6 @@
 // All user data (profiles, proxies, open-profiles state) syncs to Supabase
 // so the same account works on any PC. Auth is also done via Supabase.
 
-const { createClient } = require("@supabase/supabase-js");
 const fs = require("fs");
 const path = require("path");
 const { app } = require("electron");
@@ -25,8 +24,13 @@ function writeJson(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
 }
 
-// Single Supabase client. We persist the session in a JSON file so it survives app restarts.
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+// Defensive Supabase load — if the package is missing or fails to init,
+// the app should still work (without cloud sync). All sync functions
+// short-circuit when `supabase` is null.
+let supabase = null;
+try {
+  const { createClient } = require("@supabase/supabase-js");
+  supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
@@ -48,11 +52,18 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
       }
     }
   }
-});
+  });
+} catch (err) {
+  console.error("Cloud sync disabled — Supabase failed to load:", err.message || err);
+  supabase = null;
+}
+
+function cloudReady() { return supabase != null; }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 async function register(email, password) {
+  if (!cloudReady()) return { ok: false, error: "Cloud not available — try again or update the app" };
   try {
     const { data, error } = await supabase.auth.signUp({ email, password });
     if (error) return { ok: false, error: error.message };
@@ -64,6 +75,7 @@ async function register(email, password) {
 }
 
 async function login(email, password) {
+  if (!cloudReady()) return { ok: false, error: "Cloud not available" };
   try {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { ok: false, error: error.message };
@@ -74,11 +86,12 @@ async function login(email, password) {
 }
 
 async function logout() {
-  try { await supabase.auth.signOut(); } catch (_) {}
+  if (cloudReady()) { try { await supabase.auth.signOut(); } catch (_) {} }
   try { fs.unlinkSync(SESSION_FILE); } catch (_) {}
 }
 
 async function getSession() {
+  if (!cloudReady()) return null;
   try {
     const { data } = await supabase.auth.getSession();
     if (!data.session) return null;
@@ -106,6 +119,7 @@ function getCurrentUserId() {
 // ── Data sync — profiles ─────────────────────────────────────────────────────
 
 async function pullProfiles() {
+  if (!cloudReady()) return { ok: false, error: "cloud not available", profiles: [] };
   try {
     const { data, error } = await supabase
       .from("profiles")
@@ -119,6 +133,7 @@ async function pullProfiles() {
 }
 
 async function pushProfile(profile) {
+  if (!cloudReady()) return { ok: false };
   try {
     const userId = getCurrentUserId();
     if (!userId || !profile || !profile.id) return { ok: false, error: "not logged in" };
@@ -136,6 +151,7 @@ async function pushProfile(profile) {
 }
 
 async function pushAllProfiles(profiles) {
+  if (!cloudReady()) return { ok: false };
   try {
     const userId = getCurrentUserId();
     if (!userId || !profiles || !profiles.length) return { ok: true, count: 0 };
@@ -156,6 +172,7 @@ async function pushAllProfiles(profiles) {
 }
 
 async function deleteProfileRemote(profileId) {
+  if (!cloudReady()) return { ok: false };
   try {
     const userId = getCurrentUserId();
     if (!userId) return { ok: false, error: "not logged in" };
@@ -174,6 +191,7 @@ async function deleteProfileRemote(profileId) {
 // ── Data sync — proxies ──────────────────────────────────────────────────────
 
 async function pullProxies() {
+  if (!cloudReady()) return { ok: false, proxies: [] };
   try {
     const { data, error } = await supabase
       .from("proxies")
@@ -186,6 +204,7 @@ async function pullProxies() {
 }
 
 async function pushAllProxies(proxies) {
+  if (!cloudReady()) return { ok: false };
   try {
     const userId = getCurrentUserId();
     if (!userId || !proxies || !proxies.length) return { ok: true, count: 0 };
@@ -206,6 +225,7 @@ async function pushAllProxies(proxies) {
 }
 
 async function deleteProxyRemote(proxyId) {
+  if (!cloudReady()) return { ok: false };
   try {
     const userId = getCurrentUserId();
     if (!userId) return { ok: false, error: "not logged in" };

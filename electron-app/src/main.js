@@ -4,20 +4,37 @@ const { app, BrowserWindow, Menu, Tray, nativeImage, dialog } = require("electro
 const path = require("path");
 const fs = require("fs");
 
-// Log errors silently — do NOT exit the app. A bad proxy or transient
-// error should never close the whole app.
+// Log errors to a file. Don't exit the app — but DO surface critical
+// startup errors so the user knows something went wrong instead of
+// silently failing to open.
+const LOG_PATH = path.join(require("os").homedir(), "Desktop", "privacy-shield-error.txt");
 function logError(err) {
   try {
-    const logPath = path.join(require("os").homedir(), "Desktop", "privacy-shield-error.txt");
-    fs.appendFileSync(logPath, new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8");
+    fs.appendFileSync(LOG_PATH, new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8");
   } catch (_) {}
 }
-process.on("uncaughtException", logError);
+let appReady = false;
+process.on("uncaughtException", (err) => {
+  logError(err);
+  // Before the app is ready, errors prevent the window from opening at all.
+  // Show a dialog so the user knows + can read the message.
+  if (!appReady) {
+    try { dialog.showErrorBox("Privacy Shield startup error", String(err?.message || err) + "\n\nDetails written to: " + LOG_PATH); } catch (_) {}
+  }
+});
 process.on("unhandledRejection", logError);
 
-const { registerIpcHandlers, openProfileWindow } = require("./ipc-handlers");
-const store = require("./profile-store");
-const authStore = require("./auth-store");
+// Wrap critical requires so a missing/broken module is surfaced clearly.
+let registerIpcHandlers, openProfileWindow, store, authStore;
+try {
+  ({ registerIpcHandlers, openProfileWindow } = require("./ipc-handlers"));
+  store = require("./profile-store");
+  authStore = require("./auth-store");
+} catch (err) {
+  logError(err);
+  try { dialog.showErrorBox("Privacy Shield failed to load", String(err?.message || err) + "\n\nDetails written to: " + LOG_PATH); } catch (_) {}
+  process.exit(1);
+}
 
 let mainWindow = null;
 let loginWindow = null;
@@ -45,6 +62,7 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(async () => {
+  appReady = true;
   registerIpcHandlers();
 
   // After successful auth, open the profile manager and close the login window

@@ -135,22 +135,54 @@ async function loadProfiles() {
   profiles = r.profiles || [];
 }
 
-async function createProfile() {
-  const r = await msg("PROFILE_CREATE", { data: { name: "New Profile " + (profiles.length + 1) } });
-  if (!r.ok) { toast("Failed to create profile: " + (r.error || "unknown")); return; }
-  // Push immediately so the list updates without waiting for a round-trip
-  profiles.push(r.profile);
+let creatingNew = false;
+
+function startNewProfile() {
+  // Open an empty setup form WITHOUT saving until the user clicks "Create profile".
+  creatingNew = true;
+  selectedId = null;
+  $("emptyState").hidden = true;
+  $("formWrap").hidden = false;
+  // Build a synthetic placeholder so populateForm can fill defaults
+  const placeholder = {
+    id: "__new__",
+    name: "New Profile " + (profiles.length + 1),
+    status: "new",
+    os: "windows",
+    browserApp: "chrome",
+    windowMode: "normal",
+    tags: [],
+    notes: "",
+    fingerprint: {},
+    proxy: { enabled: false, scheme: "socks5", host: "", port: 1080, username: "", password: "", bypassList: [] },
+    cookies: [],
+    session: null
+  };
+  populateForm(placeholder);
+  // Update the save button label
+  const saveBtn = $("btnSave");
+  if (saveBtn) saveBtn.textContent = "Create profile";
   renderList();
-  selectProfile(r.profile.id);
-  toast("Profile created");
-  // Sync in background to pick up any server-side changes
-  loadProfiles().then(() => renderList()).catch(() => {});
 }
 
 async function saveCurrentProfile() {
-  if (!selectedId) { toast("Select a profile first"); return; }
   let data;
   try { data = collectForm(); } catch (e) { toast("Form error: " + e.message); return; }
+
+  if (creatingNew) {
+    const r = await msg("PROFILE_CREATE", { data });
+    if (!r.ok) { toast("Create failed: " + (r.error || "unknown")); return; }
+    profiles.push(r.profile);
+    creatingNew = false;
+    selectedId = r.profile.id;
+    const saveBtn = $("btnSave");
+    if (saveBtn) saveBtn.textContent = "Save";
+    renderList();
+    toast("Profile created");
+    return;
+  }
+
+  if (!selectedId) { toast("Select a profile first"); return; }
   const r = await msg("PROFILE_UPDATE", { id: selectedId, data });
   if (!r.ok) { toast("Save failed: " + (r.error || "unknown error")); return; }
   await loadProfiles();
@@ -250,7 +282,9 @@ function renderList() {
         </div>
       </div>
       <div class="pm-card-actions">
-        <button class="pm-btn-xs${isRunning ? " success" : " primary"}" data-action="open" data-id="${p.id}" title="${isRunning ? "Focus window" : "Open browser window"}">${isRunning ? "Focus" : "Open"}</button>
+        ${isRunning
+          ? `<button class="pm-btn-xs danger" data-action="stop" data-id="${p.id}" title="Stop and save the session">Stop</button>`
+          : `<button class="pm-btn-xs success" data-action="start" data-id="${p.id}" title="Start browser with this profile">Start</button>`}
         <button class="pm-btn-xs" data-action="dup" data-id="${p.id}" title="Duplicate">Dup</button>
         <button class="pm-btn-xs danger" data-action="del" data-id="${p.id}" title="Delete">Del</button>
       </div>
@@ -279,6 +313,9 @@ function escHtml(s) {
 // Profile selection & form
 // =========================================================
 async function selectProfile(id) {
+  creatingNew = false;
+  const saveBtn = $("btnSave");
+  if (saveBtn) saveBtn.textContent = "Save";
   selectedId = id;
   let p = profiles.find((p) => p.id === id);
   if (!p) {
@@ -728,8 +765,8 @@ async function testProxy() {
 // Event binding
 // =========================================================
 function bindSidebarEvents() {
-  $("btnNewProfile").addEventListener("click", createProfile);
-  $("btnNewProfileEmpty").addEventListener("click", createProfile);
+  $("btnNewProfile").addEventListener("click", startNewProfile);
+  $("btnNewProfileEmpty")?.addEventListener("click", startNewProfile);
 
   $("searchInput").addEventListener("input", renderList);
   $("filterStatus").addEventListener("change", renderList);
@@ -745,7 +782,8 @@ function bindSidebarEvents() {
     if (action === "del") { e.stopPropagation(); deleteProfile(id); return; }
     if (action === "dup") { e.stopPropagation(); duplicateProfile(id); return; }
     if (action === "apply") { e.stopPropagation(); assignToTab(id); return; }
-    if (action === "open") { e.stopPropagation(); openProfileWindow(id); return; }
+    if (action === "open" || action === "start") { e.stopPropagation(); openProfileWindow(id); return; }
+    if (action === "stop") { e.stopPropagation(); stopProfile(id); return; }
 
     // Checkbox
     if (e.target.classList.contains("pm-card-check")) {
@@ -947,19 +985,28 @@ function isProfileRunning(profileId) {
 
 async function openProfileWindow(profileId) {
   const btn = $("btnOpenWindow");
-  if (btn) { btn.textContent = "Opening…"; btn.disabled = true; }
+  if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
   const r = await msg("PROFILE_OPEN_WINDOW", { profileId });
   if (!r.ok) {
-    toast("Failed to open window: " + (r.error || "unknown"));
+    toast("Failed to start: " + (r.error || "unknown"));
   } else if (r.existing) {
-    toast("Window already open — brought to front");
+    toast("Already running — focused");
   } else {
-    toast(`Window opened with ${r.restored || 1} tab(s)`);
+    toast("Started — browser is now running");
   }
   await refreshOpenWindows();
   renderList();
   updateSessionTab();
-  if (btn) { btn.textContent = "Open in new window"; btn.disabled = false; }
+  if (btn) { btn.textContent = "Start"; btn.disabled = false; }
+}
+
+async function stopProfile(profileId) {
+  const r = await msg("PROFILE_CLOSE_WINDOW", { profileId });
+  if (!r.ok) { toast("Stop failed: " + (r.error || "no open window")); return; }
+  toast("Stopped — session saved");
+  await refreshOpenWindows();
+  renderList();
+  updateSessionTab();
 }
 
 async function saveSession(profileId) {
