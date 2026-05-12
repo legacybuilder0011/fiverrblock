@@ -603,12 +603,13 @@
             </div>
             <div class="pm-row">
               <label class="pm-label">Username</label>
-              <input type="text" id="px-username" class="pm-input" placeholder="(optional)" autocomplete="off" />
+              <input type="text" id="px-username" class="pm-input" placeholder="from your proxy provider" autocomplete="off" />
             </div>
             <div class="pm-row">
               <label class="pm-label">Password</label>
-              <input type="password" id="px-password" class="pm-input" placeholder="(optional)" autocomplete="off" />
+              <input type="password" id="px-password" class="pm-input" placeholder="from your proxy provider" autocomplete="off" />
             </div>
+            <div class="pm-hint" style="padding:0 0 8px 4px">Most bought proxies require username and password — leave blank only for public/free proxies.</div>
             <div class="pm-row">
               <label class="pm-label">Rotation URL</label>
               <input type="text" id="px-rotationUrl" class="pm-input" placeholder="https://… (for mobile proxies)" />
@@ -732,25 +733,27 @@
             <span class="pm-section-title">Proxy Library</span>
             <button type="button" class="pm-btn-xs" id="btnToggleProxyLib">Show / Hide</button>
           </div>
-          <p class="pm-hint">Save your proxy servers here. Use <b>Auto-detect</b> to import from your own Privacy Shield proxy server with one click.</p>
+          <p class="pm-hint">Save your proxy servers here so you can quickly apply them to any profile.</p>
 
           <div id="proxyLibPanel">
 
-            <!-- Auto-detect from your own server -->
-            <div class="pm-proxy-lib-form" style="margin-bottom:10px">
-              <div class="pm-section-title" style="font-size:11px;margin-bottom:8px;color:var(--accent-h)">Import from your own proxy server</div>
-              <div class="pm-row">
-                <label class="pm-label">Server IP</label>
-                <input type="text" id="plib-detect-ip" class="pm-input-sm" placeholder="1.2.3.4" style="flex:2" />
-                <label class="pm-label" style="margin-left:6px">Info port</label>
-                <input type="number" id="plib-detect-port" class="pm-input-sm" value="8888" style="width:72px" />
+            <!-- Auto-detect from your own server (advanced — hidden by default) -->
+            <details style="margin-bottom:10px">
+              <summary class="pm-hint" style="cursor:pointer;color:var(--muted)">Advanced: Auto-detect from your own Privacy Shield server</summary>
+              <div class="pm-proxy-lib-form" style="margin-top:8px">
+                <div class="pm-hint" style="margin-bottom:8px">Only for users running the Privacy Shield server software. Not for regular bought proxies — enter those manually below.</div>
+                <div class="pm-row">
+                  <label class="pm-label">Server IP</label>
+                  <input type="text" id="plib-detect-ip" class="pm-input-sm" placeholder="1.2.3.4" style="flex:2" />
+                  <label class="pm-label" style="margin-left:6px">Info port</label>
+                  <input type="number" id="plib-detect-port" class="pm-input-sm" value="8888" style="width:72px" />
+                </div>
+                <div class="pm-btn-row" style="margin-top:6px">
+                  <button type="button" class="pm-btn-sm primary" id="btnDetectProxy">Auto-detect &amp; import</button>
+                  <span id="detectStatus" class="pm-hint" style="margin-left:10px"></span>
+                </div>
               </div>
-              <div class="pm-btn-row" style="margin-top:6px">
-                <button type="button" class="pm-btn-sm primary" id="btnDetectProxy">Auto-detect &amp; import</button>
-                <span id="detectStatus" class="pm-hint" style="margin-left:10px"></span>
-              </div>
-              <div class="pm-hint" style="margin-top:6px">The server must be running the Privacy Shield proxy server (<code>install.sh</code>). It will read the country, ISP info, and credentials automatically.</div>
-            </div>
+            </details>
 
             <!-- Manual add / edit form -->
             <div class="pm-proxy-lib-form" id="proxyLibForm">

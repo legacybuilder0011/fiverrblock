@@ -342,25 +342,34 @@ async function testProxy(host, port, scheme, username, password) {
     "https://api.ipify.org/?format=json"
   ];
 
+  let lastError = "";
   for (const testUrl of TEST_URLS) {
     const result = await tryTestUrl(testUrl, tempSess, username, password);
     if (result.ok) return result;
-    if (result.fatal) break; // no point retrying other URLs
+    lastError = result.error || lastError;
+    if (result.fatal) break;
   }
-  return { ok: false, error: "Proxy unreachable — check host, port, and credentials" };
+  // Return the specific error from the test attempts instead of a generic message
+  return { ok: false, error: lastError || "Proxy unreachable — check host, port, and credentials" };
 }
 
 function tryTestUrl(url, session, username, password) {
   return new Promise((resolve) => {
     const req = net.request({ url, session, useSessionCookies: false });
 
-    // For net.request (main process), proxy auth fires on the request — NOT on session
-    if (username && password) {
-      req.on("login", (authInfo, callback) => {
-        if (authInfo.isProxy) callback(username, password);
-        else callback("", "");
-      });
-    }
+    // For net.request (main process), proxy auth fires on the request — NOT on session.
+    // Always install the handler — if the proxy demands auth but no credentials were
+    // given, surface a clear "auth required" message instead of a generic timeout.
+    let authChallenged = false;
+    req.on("login", (authInfo, callback) => {
+      if (authInfo.isProxy) {
+        authChallenged = true;
+        if (username || password) callback(username || "", password || "");
+        else callback();   // no credentials → abort with auth-required error
+      } else {
+        callback("", "");
+      }
+    });
 
     let body = "";
     req.on("response", (res) => {
@@ -385,14 +394,28 @@ function tryTestUrl(url, session, username, password) {
     });
     req.on("error", (err) => {
       clearTimeout(timer);
-      const msg = String(err.message || err);
-      // ERR_NO_SUPPORTED_PROXIES = bad proxy format, no point trying more URLs
-      const fatal = msg.includes("ERR_NO_SUPPORTED_PROXIES") || msg.includes("ERR_PROXY_CONNECTION_FAILED");
+      let msg = String(err.message || err);
+      // Replace cryptic Chromium codes with plain-English messages
+      if (authChallenged && !username && !password) {
+        msg = "Proxy requires username and password — fill them in";
+      } else if (msg.includes("ERR_PROXY_AUTH") || msg.includes("ERR_TUNNEL_CONNECTION_FAILED")) {
+        msg = "Proxy auth failed — wrong username or password";
+      } else if (msg.includes("ERR_NO_SUPPORTED_PROXIES")) {
+        msg = "Proxy type not supported — try HTTP or SOCKS5";
+      } else if (msg.includes("ERR_PROXY_CONNECTION_FAILED") || msg.includes("ERR_CONNECTION_REFUSED")) {
+        msg = "Cannot reach proxy — host or port is wrong";
+      } else if (msg.includes("ERR_TIMED_OUT")) {
+        msg = "Proxy timed out — server is down or blocked";
+      }
+      const fatal = msg.includes("not supported") || msg.includes("Cannot reach");
       resolve({ ok: false, error: msg, fatal });
     });
     const timer = setTimeout(() => {
       try { req.abort(); } catch (_) {}
-      resolve({ ok: false, error: "timeout" });
+      const msg = authChallenged && !username && !password
+        ? "Proxy requires username and password — fill them in"
+        : "Timed out — proxy is slow or unreachable";
+      resolve({ ok: false, error: msg });
     }, 10000);
     req.end();
   });
