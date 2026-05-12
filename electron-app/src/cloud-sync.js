@@ -30,31 +30,39 @@ function writeJson(file, data) {
 let supabase = null;
 try {
   const { createClient } = require("@supabase/supabase-js");
+  const WS = require("ws");
   supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: false,
-    storage: {
-      getItem: (key) => {
-        const data = readJson(SESSION_FILE, {});
-        return data[key] || null;
-      },
-      setItem: (key, value) => {
-        const data = readJson(SESSION_FILE, {});
-        data[key] = value;
-        writeJson(SESSION_FILE, data);
-      },
-      removeItem: (key) => {
-        const data = readJson(SESSION_FILE, {});
-        delete data[key];
-        writeJson(SESSION_FILE, data);
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: false,
+      storage: {
+        getItem: (key) => {
+          const data = readJson(SESSION_FILE, {});
+          return data[key] || null;
+        },
+        setItem: (key, value) => {
+          const data = readJson(SESSION_FILE, {});
+          data[key] = value;
+          writeJson(SESSION_FILE, data);
+        },
+        removeItem: (key) => {
+          const data = readJson(SESSION_FILE, {});
+          delete data[key];
+          writeJson(SESSION_FILE, data);
+        }
       }
-    }
-  }
+    },
+    realtime: { transport: WS }
   });
 } catch (err) {
-  console.error("Cloud sync disabled — Supabase failed to load:", err.message || err);
+  const msg = "Cloud sync disabled — Supabase failed to load: " + (err.message || err);
+  console.error(msg);
+  try {
+    const os = require("os");
+    fs.appendFileSync(path.join(os.homedir(), "Desktop", "privacy-shield-error.txt"),
+      new Date().toISOString() + " [cloud-sync] " + msg + "\n", "utf8");
+  } catch (_) {}
   supabase = null;
 }
 
@@ -63,7 +71,7 @@ function cloudReady() { return supabase != null; }
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
 async function register(email, password) {
-  if (!cloudReady()) return { ok: false, error: "Cloud not available — try again or update the app" };
+  if (!cloudReady()) return { ok: false, error: "Cloud not available — check Desktop/privacy-shield-error.txt for details" };
   try {
     const { data, error } = await supabase.auth.signUp({ email, password });
     if (error) return { ok: false, error: error.message };
