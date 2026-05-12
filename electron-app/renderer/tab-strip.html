@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Tabs</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #1a2130;
+    color: #e2e8f0;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+    user-select: none;
+  }
+  #tabs-row {
+    display: flex; align-items: flex-end;
+    background: #0c0f14;
+    height: 38px;
+    padding-left: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  #tabs-row::-webkit-scrollbar { display: none; }
+  .tab {
+    display: flex; align-items: center;
+    height: 34px;
+    padding: 0 12px 0 14px;
+    margin-right: 2px;
+    background: #1a2130;
+    border-radius: 8px 8px 0 0;
+    border: 1px solid #252d3a;
+    border-bottom: none;
+    color: #94a3b8;
+    min-width: 120px;
+    max-width: 220px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background .12s;
+  }
+  .tab:hover { background: #232b3a; color: #e2e8f0; }
+  .tab.active { background: #1f2840; color: #f1f5f9; border-color: #3b82f6; }
+  .tab-title {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    margin-right: 8px;
+  }
+  .tab-close {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    color: #64748b; font-size: 14px;
+    line-height: 1;
+  }
+  .tab-close:hover { background: #ef4444; color: #fff; }
+  #new-tab {
+    height: 34px; width: 34px;
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 22px;
+    cursor: pointer;
+    border-radius: 6px;
+    margin-left: 4px;
+  }
+  #new-tab:hover { background: #232b3a; color: #f1f5f9; }
+  #url-row {
+    display: flex; align-items: center;
+    background: #1a2130;
+    border-bottom: 1px solid #252d3a;
+    height: 40px;
+    padding: 0 8px;
+    gap: 6px;
+  }
+  .nav-btn {
+    width: 30px; height: 30px;
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    font-size: 16px;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .nav-btn:hover:not(:disabled) { background: #232b3a; color: #f1f5f9; }
+  .nav-btn:disabled { opacity: 0.35; cursor: default; }
+  #url-input {
+    flex: 1;
+    height: 30px;
+    background: #0f172a;
+    border: 1px solid #252d3a;
+    border-radius: 16px;
+    color: #f1f5f9;
+    padding: 0 14px;
+    font-size: 13px;
+    outline: none;
+  }
+  #url-input:focus { border-color: #3b82f6; }
+</style>
+</head>
+<body>
+<div id="tabs-row">
+  <button id="new-tab" title="New tab (Ctrl+T)">+</button>
+</div>
+<div id="url-row">
+  <button class="nav-btn" id="btn-back" title="Back">&larr;</button>
+  <button class="nav-btn" id="btn-fwd" title="Forward">&rarr;</button>
+  <button class="nav-btn" id="btn-reload" title="Reload">&#8634;</button>
+  <input type="text" id="url-input" placeholder="Enter URL or search..." />
+  <button class="nav-btn" id="btn-home" title="Home">&#8962;</button>
+</div>
+<script src="tab-strip.js"></script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 "use strict";
 
-const { ipcMain, BrowserWindow, net } = require("electron");
+const { ipcMain, BrowserWindow, WebContentsView, net } = require("electron");
 const path = require("path");
 const store = require("./profile-store");
 const sessionMgr = require("./session-manager");
@@ -9,6 +9,9 @@ const authStore = require("./auth-store");
 const FINGERPRINT_PRELOAD = path.join(__dirname, "preload-fingerprint.js");
 const RENDERER_PRELOAD = path.join(__dirname, "renderer-preload.js");
 const BROWSER_START_HTML = path.join(__dirname, "..", "renderer", "browser-start.html");
+const TAB_STRIP_HTML     = path.join(__dirname, "..", "renderer", "tab-strip.html");
+
+const TAB_STRIP_HEIGHT = 78; // tabs row (38) + url row (40)
 
 function startPageUrl(errorMsg, failedUrl) {
   const fileUrl = "file:///" + BROWSER_START_HTML.replace(/\\/g, "/");
@@ -18,12 +21,20 @@ function startPageUrl(errorMsg, failedUrl) {
 
 // profileId → BrowserWindow reference for profile browser windows
 const profileWindows = new Map();
+// windowId → { profileId, tabs: [{id, view, ...}], activeTabId }
+const windowTabState = new Map();
+// webContentsId → profileId (so the fingerprint preload can find its profile)
+const webContentsProfileMap = new Map();
+let nextTabId = 1;
 
-// Sync handler so the fingerprint preload can get the profile config for its window
+// Sync handler so the fingerprint preload can get the profile config for its tab.
+// Looks up the profile via webContents.id (which works for WebContentsView, unlike fromWebContents → BrowserWindow).
 ipcMain.on("GET_PROFILE_CONFIG", (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win) { event.returnValue = null; return; }
-  const profileId = sessionMgr.getProfileForWindow(win.id);
+  const profileId = webContentsProfileMap.get(event.sender.id)
+    || (() => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      return win ? sessionMgr.getProfileForWindow(win.id) : null;
+    })();
   if (!profileId) { event.returnValue = null; return; }
   const profiles = store.getProfiles();
   const profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
@@ -231,6 +242,80 @@ function registerIpcHandlers() {
   ipcMain.handle("CLOUD_SYNC_NOW", async () => {
     return await postLoginSync();
   });
+
+  // ── Tab management ────────────────────────────────────────────────────────────
+
+  function getCallerWindowId(ev) {
+    const win = BrowserWindow.fromWebContents(ev.sender);
+    return win ? win.id : null;
+  }
+
+  ipcMain.handle("TAB_NEW", async (ev, { url } = {}) => {
+    const winId = getCallerWindowId(ev);
+    if (winId == null) return { ok: false };
+    const id = addTab(winId, url || startPageUrl());
+    return { ok: Boolean(id), tabId: id };
+  });
+
+  ipcMain.handle("TAB_CLOSE", async (ev, { tabId } = {}) => {
+    const winId = getCallerWindowId(ev);
+    if (winId == null) return { ok: false };
+    closeTab(winId, tabId);
+    return { ok: true };
+  });
+
+  ipcMain.handle("TAB_ACTIVATE", async (ev, { tabId } = {}) => {
+    const winId = getCallerWindowId(ev);
+    if (winId == null) return { ok: false };
+    activateTab(winId, tabId);
+    return { ok: true };
+  });
+
+  ipcMain.handle("TAB_NAVIGATE", async (ev, { url } = {}) => {
+    const winId = getCallerWindowId(ev);
+    const active = winId != null ? getActiveTab(winId) : null;
+    if (!active) return { ok: false };
+    const target = url === "home" ? startPageUrl() : url;
+    active.view.webContents.loadURL(target);
+    return { ok: true };
+  });
+
+  ipcMain.handle("TAB_BACK", async (ev) => {
+    const active = getActiveTab(getCallerWindowId(ev));
+    if (active && active.view.webContents.navigationHistory.canGoBack()) active.view.webContents.navigationHistory.goBack();
+    return { ok: true };
+  });
+
+  ipcMain.handle("TAB_FORWARD", async (ev) => {
+    const active = getActiveTab(getCallerWindowId(ev));
+    if (active && active.view.webContents.navigationHistory.canGoForward()) active.view.webContents.navigationHistory.goForward();
+    return { ok: true };
+  });
+
+  ipcMain.handle("TAB_RELOAD", async (ev) => {
+    const active = getActiveTab(getCallerWindowId(ev));
+    if (active) active.view.webContents.reload();
+    return { ok: true };
+  });
+
+  ipcMain.handle("TAB_GET_STATE", async (ev) => {
+    const winId = getCallerWindowId(ev);
+    const state = winId != null ? windowTabState.get(winId) : null;
+    if (!state) return { tabs: [], activeTabId: null };
+    return {
+      activeTabId: state.activeTabId,
+      tabs: state.tabs.map((t) => {
+        const wc = t.view.webContents;
+        return {
+          id: t.id,
+          title: !wc.isDestroyed() ? (wc.getTitle() || t.url || "New tab") : t.title,
+          url: !wc.isDestroyed() ? wc.getURL() : t.url,
+          canBack: !wc.isDestroyed() ? wc.navigationHistory.canGoBack() : false,
+          canForward: !wc.isDestroyed() ? wc.navigationHistory.canGoForward() : false
+        };
+      })
+    };
+  });
 }
 
 // On login/register, pull any cloud data into the per-user local dir, then
@@ -260,10 +345,10 @@ async function postLoginSync() {
 // ── Profile window management ──────────────────────────────────────────────────
 
 async function openProfileWindow(profileId, customUrl) {
-  // If already open and a custom URL was requested, navigate the existing window
+  // If already open, focus or open a new tab for the requested URL
   const existing = profileWindows.get(profileId);
   if (existing && !existing.isDestroyed()) {
-    if (customUrl) existing.loadURL(customUrl);
+    if (customUrl) addTab(existing.id, customUrl);
     existing.focus();
     return { ok: true, windowId: existing.id, existing: true };
   }
@@ -272,8 +357,6 @@ async function openProfileWindow(profileId, customUrl) {
   const profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
   if (!profile) return { ok: false, error: "Profile not found" };
 
-  // Setup Electron session for this profile (proxy + fingerprint).
-  // If the proxy config is bad, surface the error to the user — DO NOT crash.
   const sess = sessionMgr.getSessionForProfile(profileId);
   try {
     await sessionMgr.setupProfileSession(profile);
@@ -281,17 +364,8 @@ async function openProfileWindow(profileId, customUrl) {
     return { ok: false, error: "Proxy setup failed: " + (err.message || err) };
   }
 
-  // Build initial URLs from saved session. Default to local start page —
-  // it ALWAYS loads (no proxy needed), so the window is never blank.
-  let initialUrl = customUrl || startPageUrl();
-  if (!customUrl && profile.session && Array.isArray(profile.session.tabs) && profile.session.tabs.length) {
-    const saved = profile.session.tabs
-      .map((t) => t.url)
-      .filter((u) => u && (u.startsWith("http://") || u.startsWith("https://")));
-    if (saved.length) initialUrl = saved[0];
-  }
-
-  // Offset each profile window so they don't stack on top of each other / the manager
+  // The BrowserWindow itself hosts the tab strip UI (with the safe preload).
+  // Each tab is a separate WebContentsView with the fingerprint preload + profile session.
   const offset = profileWindows.size * 30;
   const win = new BrowserWindow({
     width: 1280,
@@ -299,6 +373,89 @@ async function openProfileWindow(profileId, customUrl) {
     x: 80 + offset,
     y: 60 + offset,
     title: profile.name,
+    backgroundColor: "#0c0f14",
+    webPreferences: {
+      preload: RENDERER_PRELOAD,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+  win.setMenuBarVisibility(false);
+  win.loadFile(TAB_STRIP_HTML);
+
+  // Init the tab state for this window
+  windowTabState.set(win.id, { profileId, tabs: [], activeTabId: null });
+
+  profileWindows.set(profileId, win);
+  sessionMgr.registerWindow(win.id, profileId);
+  store.saveOpenProfiles([...profileWindows.keys()]);
+
+  // Open the first tab once the tab strip is loaded
+  win.webContents.once("did-finish-load", () => {
+    // Determine initial URL(s)
+    const urls = [];
+    if (customUrl) {
+      urls.push(customUrl);
+    } else if (profile.session && Array.isArray(profile.session.tabs) && profile.session.tabs.length) {
+      for (const t of profile.session.tabs) {
+        if (t.url && (t.url.startsWith("http://") || t.url.startsWith("https://"))) urls.push(t.url);
+      }
+    }
+    if (!urls.length) urls.push(startPageUrl());
+    for (const u of urls) addTab(win.id, u);
+  });
+
+  // Resize active tab view when window resizes
+  win.on("resize", () => layoutActiveTab(win.id));
+  win.on("enter-full-screen", () => layoutActiveTab(win.id));
+  win.on("leave-full-screen", () => layoutActiveTab(win.id));
+
+  win.on("close", async () => {
+    // Save URLs of all tabs as the session
+    const state = windowTabState.get(win.id);
+    if (state) {
+      const tabs = state.tabs.map((t) => ({
+        url: !t.view.webContents.isDestroyed() ? t.view.webContents.getURL() : "",
+        title: !t.view.webContents.isDestroyed() ? t.view.webContents.getTitle() : ""
+      })).filter((t) => t.url && (t.url.startsWith("http://") || t.url.startsWith("https://")));
+      if (tabs.length) {
+        store.updateProfile(profileId, { session: { tabs, lastSaved: Date.now() } });
+      }
+    }
+  });
+
+  win.on("closed", () => {
+    // Clean up tab views + maps
+    const state = windowTabState.get(win.id);
+    if (state) {
+      for (const t of state.tabs) {
+        try { webContentsProfileMap.delete(t.view.webContents.id); } catch (_) {}
+      }
+      windowTabState.delete(win.id);
+    }
+    profileWindows.delete(profileId);
+    sessionMgr.unregisterWindow(win.id);
+    store.saveOpenProfiles([...profileWindows.keys()]);
+    notifyManagerWindows("WINDOWS_CHANGED");
+  });
+
+  notifyManagerWindows("WINDOWS_CHANGED");
+
+  return { ok: true, windowId: win.id, tabCount: 1 };
+}
+
+// ── Tab management ───────────────────────────────────────────────────────────
+
+function addTab(windowId, url) {
+  const state = windowTabState.get(windowId);
+  if (!state) return null;
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed()) return null;
+  const profileId = state.profileId;
+  const sess = sessionMgr.getSessionForProfile(profileId);
+
+  const view = new WebContentsView({
     webPreferences: {
       session: sess,
       preload: FINGERPRINT_PRELOAD,
@@ -308,53 +465,109 @@ async function openProfileWindow(profileId, customUrl) {
     }
   });
 
-  win.loadURL(initialUrl);
+  const tabId = "t_" + (nextTabId++);
+  webContentsProfileMap.set(view.webContents.id, profileId);
 
-  // Register window→profile mapping
-  profileWindows.set(profileId, win);
-  sessionMgr.registerWindow(win.id, profileId);
-  store.saveOpenProfiles([...profileWindows.keys()]);
+  const tabEntry = { id: tabId, view, title: "New tab", url };
+  state.tabs.push(tabEntry);
 
-  // Auto-save session and update open-profiles list when window closes
-  win.on("close", async () => {
-    await saveWindowSession(profileId, win);
-  });
+  // Reload tab strip on tab/page events
+  const wc = view.webContents;
+  wc.on("page-title-updated", (_e, title) => { tabEntry.title = title; emitTabState(windowId); });
+  wc.on("did-navigate", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
+  wc.on("did-navigate-in-page", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
+  wc.setWindowOpenHandler(({ url: u }) => { addTab(windowId, u); return { action: "deny" }; });
 
-  win.on("closed", () => {
-    profileWindows.delete(profileId);
-    sessionMgr.unregisterWindow(win.id);
-    store.saveOpenProfiles([...profileWindows.keys()]);
-    notifyManagerWindows("WINDOWS_CHANGED");
-  });
-
-  // ── Crash recovery (limit attempts) ─────────────────────────────────────────
-  let crashAttempts = 0;
-  win.webContents.on("render-process-gone", () => {
-    if (win.isDestroyed()) return;
-    crashAttempts++;
-    if (crashAttempts > 2) {
-      // Give up reloading — show error page instead of looping
-      win.loadURL(startPageUrl("Renderer crashed repeatedly", ""));
-      return;
-    }
-    setTimeout(() => { if (!win.isDestroyed()) win.reload(); }, 2000);
-  });
-
-  // When a page fails to load (bad proxy, no internet, etc.), show the local
-  // start page with a clear error message instead of looping reloads.
-  win.webContents.on("did-fail-load", (_ev, errorCode, errorDescription, validatedURL, isMainFrame) => {
-    if (win.isDestroyed()) return;
+  wc.on("did-fail-load", (_e, code, desc, validatedURL, isMainFrame) => {
     if (!isMainFrame) return;
-    if (errorCode === -3) return; // ERR_ABORTED — user navigated away
-    // Don't recurse on the start page itself
+    if (code === -3) return;
     if (validatedURL && validatedURL.startsWith("file://")) return;
-    const errMsg = errorDescription || "Page failed to load";
-    win.loadURL(startPageUrl(errMsg, validatedURL || ""));
+    wc.loadURL(startPageUrl(desc || "Page failed to load", validatedURL || ""));
   });
 
-  notifyManagerWindows("WINDOWS_CHANGED");
+  win.contentView.addChildView(view);
+  activateTab(windowId, tabId);
+  wc.loadURL(url || startPageUrl());
 
-  return { ok: true, windowId: win.id, tabCount: 1 };
+  emitTabState(windowId);
+  return tabId;
+}
+
+function activateTab(windowId, tabId) {
+  const state = windowTabState.get(windowId);
+  if (!state) return;
+  state.activeTabId = tabId;
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed()) return;
+  // Hide all, then position active
+  for (const t of state.tabs) {
+    t.view.setVisible(t.id === tabId);
+  }
+  layoutActiveTab(windowId);
+  emitTabState(windowId);
+}
+
+function layoutActiveTab(windowId) {
+  const state = windowTabState.get(windowId);
+  if (!state) return;
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed()) return;
+  const [w, h] = win.getContentSize();
+  for (const t of state.tabs) {
+    if (t.id === state.activeTabId) {
+      t.view.setBounds({ x: 0, y: TAB_STRIP_HEIGHT, width: w, height: Math.max(0, h - TAB_STRIP_HEIGHT) });
+    }
+  }
+}
+
+function closeTab(windowId, tabId) {
+  const state = windowTabState.get(windowId);
+  if (!state) return;
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed()) return;
+  const idx = state.tabs.findIndex((t) => t.id === tabId);
+  if (idx === -1) return;
+  const tab = state.tabs[idx];
+  try { webContentsProfileMap.delete(tab.view.webContents.id); } catch (_) {}
+  try { win.contentView.removeChildView(tab.view); } catch (_) {}
+  try { tab.view.webContents.close(); } catch (_) {}
+  state.tabs.splice(idx, 1);
+
+  if (state.tabs.length === 0) {
+    win.close();
+    return;
+  }
+  // Activate adjacent tab if we closed the active one
+  if (state.activeTabId === tabId) {
+    const next = state.tabs[Math.min(idx, state.tabs.length - 1)];
+    activateTab(windowId, next.id);
+  } else {
+    emitTabState(windowId);
+  }
+}
+
+function getActiveTab(windowId) {
+  const state = windowTabState.get(windowId);
+  if (!state) return null;
+  return state.tabs.find((t) => t.id === state.activeTabId) || null;
+}
+
+function emitTabState(windowId) {
+  const state = windowTabState.get(windowId);
+  if (!state) return;
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed()) return;
+  const tabs = state.tabs.map((t) => {
+    const wc = t.view.webContents;
+    return {
+      id: t.id,
+      title: !wc.isDestroyed() ? (wc.getTitle() || t.url || "New tab") : t.title,
+      url: !wc.isDestroyed() ? wc.getURL() : t.url,
+      canBack: !wc.isDestroyed() ? wc.navigationHistory.canGoBack() : false,
+      canForward: !wc.isDestroyed() ? wc.navigationHistory.canGoForward() : false
+    };
+  });
+  win.webContents.send("MAIN_EVENT", { type: "TAB_STATE", tabs, activeTabId: state.activeTabId });
 }
 
 // ── Bulk profile generator ───────────────────────────────────────────────────
@@ -419,17 +632,19 @@ function randomProfileData(country, idx) {
 async function saveWindowSession(profileId, win) {
   if (!win || win.isDestroyed()) return 0;
   try {
-    const url = win.webContents.getURL();
-    const title = win.webContents.getTitle();
-    const session = {
-      tabs: [{ url, title, active: true }],
-      lastSaved: Date.now()
-    };
-    store.updateProfile(profileId, { session });
-    return 1;
-  } catch (_) {
-    return 0;
-  }
+    const state = windowTabState.get(win.id);
+    if (!state) return 0;
+    const tabs = state.tabs.map((t) => {
+      const wc = t.view.webContents;
+      if (wc.isDestroyed()) return null;
+      const url = wc.getURL();
+      if (!url || !(url.startsWith("http://") || url.startsWith("https://"))) return null;
+      return { url, title: wc.getTitle(), active: t.id === state.activeTabId };
+    }).filter(Boolean);
+    if (!tabs.length) return 0;
+    store.updateProfile(profileId, { session: { tabs, lastSaved: Date.now() } });
+    return tabs.length;
+  } catch (_) { return 0; }
 }
 
 function notifyManagerWindows(type) {
