@@ -41,7 +41,7 @@
     </div>
 
     <div class="pm-bulk-bar" id="bulkBar" hidden>
-      <span id="bulkCount" class="pm-bulk-count"></span>
+      <span id="selectedCount" class="pm-bulk-count"></span>
       <button class="pm-btn-xs" id="bulkExport">Export</button>
       <button class="pm-btn-xs danger" id="bulkDelete">Delete</button>
       <button class="pm-btn-xs muted" id="bulkClear">Clear</button>
@@ -884,6 +884,7 @@
       </select>
     </div>
     <p class="pm-hint" style="margin-top:8px">Each profile gets a unique fingerprint (UA, timezone, language, screen, CPU, RAM) matched to the country.</p>
+    <div id="bulkError" style="display:none;margin-top:10px;padding:10px 12px;background:#450a0a;border:1px solid #7f1d1d;color:#fca5a5;border-radius:8px;font-size:13px"></div>
     <div class="pm-btn-row" style="margin-top:12px;justify-content:flex-end">
       <button class="pm-btn-sm" id="btnBulkCancel">Cancel</button>
       <button class="pm-btn primary" id="btnBulkGo">Create</button>

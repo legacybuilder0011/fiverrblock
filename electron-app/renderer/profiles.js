@@ -661,7 +661,7 @@ function updateAssignedTabInfo() {
 // =========================================================
 function updateBulkBar() {
   const bar = $("bulkBar");
-  const count = $("bulkCount");
+  const count = $("selectedCount");
   bar.hidden = selected.size === 0;
   count.textContent = `${selected.size} selected`;
 }
@@ -924,17 +924,23 @@ function bindSessionEvents() {
   });
 
   // Bulk create modal
-  $("btnBulkCreate")?.addEventListener("click", () => { $("bulkModal").hidden = false; });
+  $("btnBulkCreate")?.addEventListener("click", () => { $("bulkError").style.display = "none"; $("bulkModal").hidden = false; });
   $("btnBulkCancel")?.addEventListener("click", () => { $("bulkModal").hidden = true; });
   $("btnBulkGo")?.addEventListener("click", async () => {
     const btn = $("btnBulkGo");
+    const errBox = $("bulkError");
+    errBox.style.display = "none";
     btn.disabled = true; btn.textContent = "Creating…";
     const count = parseInt($("bulkCount").value, 10) || 10;
     const country = $("bulkCountry").value;
     const assignProxies = $("bulkProxies").value === "1";
     const r = await msg("PROFILE_BULK_CREATE", { count, country, assignProxies });
     btn.disabled = false; btn.textContent = "Create";
-    if (!r.ok) { toast("Bulk create failed: " + (r.error || "unknown")); return; }
+    if (!r.ok) {
+      errBox.textContent = "Error: " + (r.error || "unknown — check Desktop/privacy-shield-error.txt");
+      errBox.style.display = "block";
+      return;
+    }
     $("bulkModal").hidden = true;
     await loadProfiles();
     renderList();

@@ -2,9 +2,20 @@
 
 const { ipcMain, BrowserWindow, WebContentsView, net } = require("electron");
 const path = require("path");
+const fs = require("fs");
+const os = require("os");
 const store = require("./profile-store");
 const sessionMgr = require("./session-manager");
 const authStore = require("./auth-store");
+
+function logError(err) {
+  try {
+    fs.appendFileSync(
+      path.join(os.homedir(), "Desktop", "privacy-shield-error.txt"),
+      new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8"
+    );
+  } catch (_) {}
+}
 
 const FINGERPRINT_PRELOAD = path.join(__dirname, "preload-fingerprint.js");
 const RENDERER_PRELOAD = path.join(__dirname, "renderer-preload.js");
@@ -163,7 +174,12 @@ function registerIpcHandlers() {
 
   // Bulk profile generation
   ipcMain.handle("PROFILE_BULK_CREATE", async (_ev, { count, country, assignProxies } = {}) => {
-    return bulkCreateProfiles(count, country, assignProxies);
+    try {
+      return await bulkCreateProfiles(count, country, assignProxies);
+    } catch (err) {
+      logError(err);
+      return { ok: false, error: err.message || String(err) };
+    }
   });
 
   ipcMain.handle("PROFILE_CLOSE_WINDOW", async (_ev, { profileId } = {}) => {
