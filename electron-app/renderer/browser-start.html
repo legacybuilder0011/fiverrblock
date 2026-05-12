@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>New Tab</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .logo { font-size: 48px; margin-bottom: 8px; }
+  h1 { font-size: 22px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #64748b; margin-bottom: 28px; }
+  .url-box {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    max-width: 600px;
+    margin-bottom: 32px;
+  }
+  input[type="text"] {
+    flex: 1;
+    padding: 14px 18px;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    color: #f1f5f9;
+    font-size: 15px;
+    outline: none;
+  }
+  input[type="text"]:focus { border-color: #60a5fa; }
+  button {
+    padding: 14px 26px;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { background: #1d4ed8; }
+  .shortcuts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    width: 100%;
+    max-width: 600px;
+  }
+  .shortcut {
+    padding: 18px 12px;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    color: #e2e8f0;
+    text-decoration: none;
+    font-size: 14px;
+  }
+  .shortcut:hover { background: #293548; border-color: #60a5fa; }
+  .shortcut-icon { font-size: 22px; margin-bottom: 6px; }
+  .error-banner {
+    background: #450a0a;
+    border: 1px solid #7f1d1d;
+    color: #fca5a5;
+    padding: 12px 18px;
+    border-radius: 10px;
+    max-width: 600px;
+    width: 100%;
+    margin-bottom: 24px;
+    font-size: 13px;
+    display: none;
+  }
+  .error-banner.show { display: block; }
+  .info-row { margin-top: 32px; font-size: 12px; color: #475569; }
+</style>
+</head>
+<body>
+<div class="logo">&#128737;</div>
+<h1>Privacy Shield Browser</h1>
+<p class="subtitle">Your isolated browsing profile is active</p>
+
+<div id="errorBanner" class="error-banner"></div>
+
+<div class="url-box">
+  <input type="text" id="urlInput" placeholder="Enter URL or search..." autofocus />
+  <button onclick="go()">Go</button>
+</div>
+
+<div class="shortcuts">
+  <a class="shortcut" href="https://www.google.com"><div class="shortcut-icon">&#128269;</div>Google</a>
+  <a class="shortcut" href="https://www.fiverr.com"><div class="shortcut-icon">&#128188;</div>Fiverr</a>
+  <a class="shortcut" href="https://www.youtube.com"><div class="shortcut-icon">&#127909;</div>YouTube</a>
+  <a class="shortcut" href="https://twitter.com"><div class="shortcut-icon">&#128038;</div>Twitter</a>
+  <a class="shortcut" href="https://www.facebook.com"><div class="shortcut-icon">&#128240;</div>Facebook</a>
+  <a class="shortcut" href="https://www.instagram.com"><div class="shortcut-icon">&#128247;</div>Instagram</a>
+  <a class="shortcut" href="https://www.linkedin.com"><div class="shortcut-icon">&#128188;</div>LinkedIn</a>
+  <a class="shortcut" href="https://chat.openai.com"><div class="shortcut-icon">&#129302;</div>ChatGPT</a>
+</div>
+
+<p class="info-row">Fingerprint isolation is active. All cookies, storage, and sessions are stored separately from your other profiles.</p>
+
+<script>
+function go() {
+  const v = document.getElementById('urlInput').value.trim();
+  if (!v) return;
+  let url = v;
+  if (!/^https?:\/\//i.test(v)) {
+    if (v.includes('.') && !v.includes(' ')) url = 'https://' + v;
+    else url = 'https://www.google.com/search?q=' + encodeURIComponent(v);
+  }
+  window.location.href = url;
+}
+
+document.getElementById('urlInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') go();
+});
+
+// Show error message if query param ?error= is present
+const params = new URLSearchParams(window.location.search);
+const err = params.get('error');
+const failedUrl = params.get('url');
+if (err) {
+  const banner = document.getElementById('errorBanner');
+  let msg = 'Failed to load' + (failedUrl ? ' ' + failedUrl : '') + ': ' + err;
+  if (err.toLowerCase().includes('proxy') || err.includes('ERR_PROXY') || err.includes('ERR_TUNNEL')) {
+    msg += '. Check your proxy username/password in the Profile Manager.';
+  } else if (err.includes('ERR_TIMED_OUT') || err.includes('ERR_CONNECTION')) {
+    msg += '. Check your internet connection and proxy settings.';
+  }
+  banner.textContent = msg;
+  banner.classList.add('show');
+}
+</script>
+</body>
+</html>

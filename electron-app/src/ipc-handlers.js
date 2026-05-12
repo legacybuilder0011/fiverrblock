@@ -8,6 +8,13 @@ const authStore = require("./auth-store");
 
 const FINGERPRINT_PRELOAD = path.join(__dirname, "preload-fingerprint.js");
 const RENDERER_PRELOAD = path.join(__dirname, "renderer-preload.js");
+const BROWSER_START_HTML = path.join(__dirname, "..", "renderer", "browser-start.html");
+
+function startPageUrl(errorMsg, failedUrl) {
+  const fileUrl = "file:///" + BROWSER_START_HTML.replace(/\\/g, "/");
+  if (!errorMsg) return fileUrl;
+  return fileUrl + "?error=" + encodeURIComponent(errorMsg) + (failedUrl ? "&url=" + encodeURIComponent(failedUrl) : "");
+}
 
 // profileId → BrowserWindow reference for profile browser windows
 const profileWindows = new Map();
@@ -236,14 +243,15 @@ async function openProfileWindow(profileId) {
     return { ok: false, error: "Proxy setup failed: " + (err.message || err) };
   }
 
-  // Build initial URLs from saved session
-  let urls = [];
+  // Build initial URLs from saved session. Default to local start page —
+  // it ALWAYS loads (no proxy needed), so the window is never blank.
+  let initialUrl = startPageUrl();
   if (profile.session && Array.isArray(profile.session.tabs) && profile.session.tabs.length) {
-    urls = profile.session.tabs
+    const saved = profile.session.tabs
       .map((t) => t.url)
       .filter((u) => u && (u.startsWith("http://") || u.startsWith("https://")));
+    if (saved.length) initialUrl = saved[0];
   }
-  if (!urls.length) urls = ["https://www.google.com"];
 
   // Offset each profile window so they don't stack on top of each other / the manager
   const offset = profileWindows.size * 30;
@@ -262,7 +270,7 @@ async function openProfileWindow(profileId) {
     }
   });
 
-  win.loadURL(urls[0]);
+  win.loadURL(initialUrl);
 
   // Register window→profile mapping
   profileWindows.set(profileId, win);
@@ -281,17 +289,29 @@ async function openProfileWindow(profileId) {
     notifyManagerWindows("WINDOWS_CHANGED");
   });
 
-  // ── Auto-reload on crash ────────────────────────────────────────────────────
-  win.webContents.on("render-process-gone", (_ev, details) => {
+  // ── Crash recovery (limit attempts) ─────────────────────────────────────────
+  let crashAttempts = 0;
+  win.webContents.on("render-process-gone", () => {
     if (win.isDestroyed()) return;
+    crashAttempts++;
+    if (crashAttempts > 2) {
+      // Give up reloading — show error page instead of looping
+      win.loadURL(startPageUrl("Renderer crashed repeatedly", ""));
+      return;
+    }
     setTimeout(() => { if (!win.isDestroyed()) win.reload(); }, 2000);
   });
 
-  // Auto-reload when page fails to load (e.g. network dropped then came back)
-  win.webContents.on("did-fail-load", (_ev, errorCode) => {
+  // When a page fails to load (bad proxy, no internet, etc.), show the local
+  // start page with a clear error message instead of looping reloads.
+  win.webContents.on("did-fail-load", (_ev, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (win.isDestroyed()) return;
-    if (errorCode === -3) return; // ERR_ABORTED — user navigated away, ignore
-    setTimeout(() => { if (!win.isDestroyed()) win.reload(); }, 4000);
+    if (!isMainFrame) return;
+    if (errorCode === -3) return; // ERR_ABORTED — user navigated away
+    // Don't recurse on the start page itself
+    if (validatedURL && validatedURL.startsWith("file://")) return;
+    const errMsg = errorDescription || "Page failed to load";
+    win.loadURL(startPageUrl(errMsg, validatedURL || ""));
   });
 
   notifyManagerWindows("WINDOWS_CHANGED");
