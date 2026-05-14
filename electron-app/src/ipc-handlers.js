@@ -1,6 +1,6 @@
 "use strict";
 
-const { ipcMain, BrowserWindow, WebContentsView, net } = require("electron");
+const { ipcMain, BrowserWindow, WebContentsView, net, nativeImage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -24,6 +24,38 @@ const BROWSER_START_HTML = path.join(__dirname, "..", "renderer", "browser-start
 const TAB_STRIP_HTML     = path.join(__dirname, "..", "renderer", "tab-strip.html");
 
 const TAB_STRIP_HEIGHT = 78; // tabs row (38) + url row (40)
+
+function profileInitials(name) {
+  const words = String(name || "Profile").trim().split(/\s+/).filter(Boolean);
+  const chars = words.length > 1
+    ? words.slice(0, 2).map((word) => word[0]).join("")
+    : String(words[0] || "P").slice(0, 2);
+  return chars.toUpperCase().replace(/[^A-Z0-9]/g, "") || "P";
+}
+
+function profileAccentColor(profile) {
+  const palette = ["#2563eb", "#0891b2", "#16a34a", "#ca8a04", "#dc2626", "#7c3aed", "#0f766e", "#be123c"];
+  const seed = String(profile?.id || profile?.name || "profile");
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+  return palette[Math.abs(hash) % palette.length];
+}
+
+function createProfileIcon(profile) {
+  try {
+    const initials = profileInitials(profile?.name);
+    const color = profileAccentColor(profile);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+      <rect width="256" height="256" rx="56" fill="#0c0f14"/>
+      <rect x="18" y="18" width="220" height="220" rx="44" fill="${color}"/>
+      <path d="M64 81c0-13 11-24 24-24h80c13 0 24 11 24 24v94c0 13-11 24-24 24H88c-13 0-24-11-24-24V81z" fill="rgba(255,255,255,.16)"/>
+      <text x="128" y="148" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="76" font-weight="700" fill="#ffffff">${initials}</text>
+    </svg>`;
+    return nativeImage.createFromDataURL("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg));
+  } catch (_) {
+    return undefined;
+  }
+}
 
 function startPageUrl(errorMsg, failedUrl) {
   const fileUrl = "file:///" + BROWSER_START_HTML.replace(/\\/g, "/");
@@ -760,6 +792,7 @@ async function openProfileWindow(profileId, customUrl) {
   const isMobileProfile = fp.deviceClass === "mobile" || profile.os === "android";
   const winWidth = isMobileProfile ? Math.max(390, Math.min(520, Number(fp.screenWidth) || 412) + 24) : 1280;
   const winHeight = isMobileProfile ? Math.max(720, Math.min(980, Number(fp.screenHeight) || 915) + TAB_STRIP_HEIGHT + 16) : 800;
+  const profileIcon = createProfileIcon(profile);
   const win = new BrowserWindow({
     show: false,
     width: winWidth,
@@ -767,6 +800,7 @@ async function openProfileWindow(profileId, customUrl) {
     x: 80 + offset,
     y: 60 + offset,
     title: `Privacy Shield Browser - ${profile.name}`,
+    icon: profileIcon,
     backgroundColor: "#0c0f14",
     webPreferences: {
       preload: RENDERER_PRELOAD,
@@ -776,6 +810,14 @@ async function openProfileWindow(profileId, customUrl) {
     }
   });
   win.setMenuBarVisibility(false);
+  try {
+    if (typeof win.setAppDetails === "function") {
+      win.setAppDetails({
+        appId: `com.privacyshield.profile.${String(profile.id || "").replace(/[^a-zA-Z0-9.-]/g, "").slice(0, 48) || "profile"}`,
+        relaunchDisplayName: `Privacy Shield - ${profile.name || "Profile"}`
+      });
+    }
+  } catch (_) {}
 
   // Init the tab state for this window
   windowTabState.set(win.id, { profileId, tabs: [], activeTabId: null });

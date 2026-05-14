@@ -28,6 +28,10 @@ HOW IT WORKS
     dedicated browser window with that profile's settings applied.
   - Each profile window is completely isolated — separate cookies,
     localStorage, and proxy. Fingerprint is injected before any page script.
+  - Profile windows use Privacy Shield's bundled Chromium runtime, not your
+    regular Chrome, Brave, Edge, or Firefox installation.
+  - Each running profile has its own window title and generated taskbar icon
+    so multiple profiles can be identified while running at the same time.
   - Android mobile browser profiles use mobile viewport, touch, UA client
     hints, screen, DPR, WebGL, timezone, language, geolocation, and sensor
     emulation in the profile browser window.

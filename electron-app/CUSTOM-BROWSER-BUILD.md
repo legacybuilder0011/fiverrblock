@@ -5,6 +5,7 @@ Privacy Shield Browser is a branded Electron browser shell built on Chromium. It
 ## What This Build Customizes
 
 - App identity: product name, window titles, start page, and tab strip branding.
+- Profile identity: each started profile opens in Privacy Shield's own bundled Chromium runtime, with a profile-specific window title and generated taskbar icon.
 - Session isolation: every profile uses its own persistent Electron session partition.
 - Storage isolation: cookies, cache, service workers, localStorage, IndexedDB, and auth cache can be cleared per profile.
 - Network routing: each profile can use direct routing, the computer's current VPN, or a saved VPS/proxy route.
@@ -18,6 +19,8 @@ Privacy Shield Browser is a branded Electron browser shell built on Chromium. It
 - It does not hide automation controls.
 - It does not patch Chromium/Blink to falsify `navigator.webdriver`.
 - It does not remove headless or automation command-line switches.
+- It does not include C++-level Chromium engine patches or an AI-generated daily fingerprint service.
+- It does not ship a Firefox/Gecko engine. Firefox and Safari profile choices are browser identity templates only; active profile windows run on Electron's bundled Chromium.
 - It does not provide residential proxies.
 - It does not create or host real Android cloud phones by itself. Real phones must come from an external provider; Privacy Shield stores the records and opens the provider console.
 
