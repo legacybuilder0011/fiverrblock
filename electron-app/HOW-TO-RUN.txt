@@ -31,6 +31,12 @@ HOW IT WORKS
     and proxy settings. Fingerprint config is injected before page scripts.
   - Profile windows use Privacy Shield's bundled Chromium runtime, not your
     regular Chrome, Brave, Edge, or Firefox installation.
+  - The Browser field controls the profile's browser identity and window skin.
+    For example, a Chrome profile opens with a Chrome-styled toolbar and Chrome
+    user-agent/client-hint identity, still inside Privacy Shield's isolated
+    Chromium runtime.
+  - Use the Extensions button in the profile browser toolbar to load an
+    unpacked extension folder into that profile's isolated session.
   - Each running profile has its own window title and generated taskbar icon
     so multiple profiles can be identified while running at the same time.
   - Use the Engine & Identity Audit panel in the Fingerprint tab to check

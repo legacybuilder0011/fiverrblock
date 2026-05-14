@@ -6,16 +6,40 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
-    background: #1a2130;
-    color: #e2e8f0;
+    --frame-bg: #f1f3f4;
+    --tabs-bg: #dee1e6;
+    --tab-bg: #e8eaed;
+    --tab-active-bg: #ffffff;
+    --tab-border: #c9ccd1;
+    --toolbar-bg: #ffffff;
+    --toolbar-border: #d8dce2;
+    --control-bg: #f1f3f4;
+    --control-hover: #e8eaed;
+    --text: #202124;
+    --muted: #5f6368;
+    --accent: #1a73e8;
+    --brand-bg: #e8f0fe;
+    --brand-text: #174ea6;
+    background: var(--frame-bg);
+    color: var(--text);
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;
     overflow: hidden;
     user-select: none;
   }
+  body.browser-privacy {
+    --frame-bg: #1a2130; --tabs-bg: #0c0f14; --tab-bg: #1a2130; --tab-active-bg: #1f2840;
+    --tab-border: #252d3a; --toolbar-bg: #1a2130; --toolbar-border: #252d3a; --control-bg: #0f172a;
+    --control-hover: #232b3a; --text: #e2e8f0; --muted: #94a3b8; --accent: #3b82f6; --brand-bg: #0f172a; --brand-text: #dbeafe;
+  }
+  body.browser-edge { --accent: #0078d4; --brand-bg: #e5f4ff; --brand-text: #005a9e; }
+  body.browser-brave { --accent: #fb542b; --brand-bg: #fff1eb; --brand-text: #a33b17; }
+  body.browser-firefox { --accent: #7a36ff; --brand-bg: #f1e9ff; --brand-text: #4b1d95; }
+  body.browser-safari { --accent: #007aff; --brand-bg: #e8f2ff; --brand-text: #0050a4; }
+  body.os-macos #window-dots { display: flex; }
   #tabs-row {
     display: flex; align-items: flex-end;
-    background: #0c0f14;
+    background: var(--tabs-bg);
     height: 38px;
     padding-left: 4px;
     overflow-x: auto;
@@ -28,19 +52,19 @@
     height: 34px;
     padding: 0 12px 0 14px;
     margin-right: 2px;
-    background: #1a2130;
+    background: var(--tab-bg);
     border-radius: 8px 8px 0 0;
-    border: 1px solid #252d3a;
+    border: 1px solid var(--tab-border);
     border-bottom: none;
-    color: #94a3b8;
+    color: var(--muted);
     min-width: 120px;
     max-width: 220px;
     cursor: pointer;
     flex-shrink: 0;
     transition: background .12s;
   }
-  .tab:hover { background: #232b3a; color: #e2e8f0; }
-  .tab.active { background: #1f2840; color: #f1f5f9; border-color: #3b82f6; }
+  .tab:hover { background: var(--control-hover); color: var(--text); }
+  .tab.active { background: var(--tab-active-bg); color: var(--text); border-color: var(--accent); }
   .tab-title {
     flex: 1;
     white-space: nowrap;
@@ -53,7 +77,7 @@
     width: 18px; height: 18px;
     border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    color: #64748b; font-size: 14px;
+    color: var(--muted); font-size: 14px;
     line-height: 1;
   }
   .tab-close:hover { background: #ef4444; color: #fff; }
@@ -61,31 +85,41 @@
     height: 34px; width: 34px;
     background: transparent;
     border: none;
-    color: #94a3b8;
+    color: var(--muted);
     font-size: 22px;
     cursor: pointer;
     border-radius: 6px;
     margin-left: 4px;
   }
-  #new-tab:hover { background: #232b3a; color: #f1f5f9; }
+  #new-tab:hover { background: var(--control-hover); color: var(--text); }
   #url-row {
     display: flex; align-items: center;
-    background: #1a2130;
-    border-bottom: 1px solid #252d3a;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--toolbar-border);
     height: 40px;
     padding: 0 8px;
     gap: 6px;
   }
+  #window-dots {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 0 4px;
+  }
+  #window-dots span { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  #window-dots span:nth-child(1) { background: #ff5f57; }
+  #window-dots span:nth-child(2) { background: #ffbd2e; }
+  #window-dots span:nth-child(3) { background: #28c840; }
   #brand-chip {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     height: 30px;
     padding: 0 10px;
-    border: 1px solid #263247;
+    border: 1px solid var(--toolbar-border);
     border-radius: 15px;
-    background: #0f172a;
-    color: #dbeafe;
+    background: var(--brand-bg);
+    color: var(--brand-text);
     font-weight: 700;
     letter-spacing: 0;
     white-space: nowrap;
@@ -97,7 +131,7 @@
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background: #2563eb;
+    background: var(--accent);
     color: #fff;
     font-size: 10px;
   }
@@ -105,25 +139,25 @@
     width: 30px; height: 30px;
     background: transparent;
     border: none;
-    color: #94a3b8;
+    color: var(--muted);
     font-size: 16px;
     cursor: pointer;
     border-radius: 6px;
   }
-  .nav-btn:hover:not(:disabled) { background: #232b3a; color: #f1f5f9; }
+  .nav-btn:hover:not(:disabled) { background: var(--control-hover); color: var(--text); }
   .nav-btn:disabled { opacity: 0.35; cursor: default; }
   #url-input {
     flex: 1;
     height: 30px;
-    background: #0f172a;
-    border: 1px solid #252d3a;
+    background: var(--control-bg);
+    border: 1px solid var(--toolbar-border);
     border-radius: 16px;
-    color: #f1f5f9;
+    color: var(--text);
     padding: 0 14px;
     font-size: 13px;
     outline: none;
   }
-  #url-input:focus { border-color: #3b82f6; }
+  #url-input:focus { border-color: var(--accent); }
   #profile-pill {
     max-width: 260px;
     height: 30px;
@@ -131,10 +165,10 @@
     align-items: center;
     gap: 6px;
     padding: 0 10px;
-    border: 1px solid #263247;
+    border: 1px solid var(--toolbar-border);
     border-radius: 15px;
-    background: #101827;
-    color: #cbd5e1;
+    background: var(--control-bg);
+    color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -145,6 +179,46 @@
     border-radius: 50%;
     background: #22c55e;
     flex: 0 0 auto;
+  }
+  #extensions-wrap { position: relative; }
+  #extensions-panel {
+    position: absolute;
+    right: 0;
+    top: 36px;
+    width: 280px;
+    max-height: 320px;
+    overflow: auto;
+    background: var(--toolbar-bg);
+    border: 1px solid var(--toolbar-border);
+    box-shadow: 0 14px 30px rgba(15, 23, 42, .18);
+    border-radius: 8px;
+    padding: 10px;
+    z-index: 50;
+  }
+  .panel-title { font-weight: 700; margin-bottom: 8px; color: var(--text); }
+  .panel-hint { color: var(--muted); font-size: 11px; line-height: 1.35; margin-bottom: 8px; }
+  .panel-btn {
+    width: 100%;
+    height: 30px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .ext-item { margin-top: 8px; padding: 8px; border: 1px solid var(--toolbar-border); border-radius: 6px; color: var(--text); }
+  .ext-path { color: var(--muted); font-size: 11px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #device-chip {
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 10px;
+    border: 1px solid var(--toolbar-border);
+    border-radius: 15px;
+    background: var(--control-bg);
+    color: var(--muted);
+    white-space: nowrap;
   }
   @media (max-width: 640px) {
     #brand-text { display: none; }
@@ -158,11 +232,22 @@
   <button id="new-tab" title="New tab (Ctrl+T)">+</button>
 </div>
 <div id="url-row">
-  <div id="brand-chip" title="Privacy Shield Browser"><span id="brand-mark">PS</span><span id="brand-text">Privacy Shield</span></div>
+  <div id="window-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+  <div id="brand-chip" title="Selected browser identity"><span id="brand-mark">PS</span><span id="brand-text">Privacy Shield</span></div>
   <button class="nav-btn" id="btn-back" title="Back">&larr;</button>
   <button class="nav-btn" id="btn-fwd" title="Forward">&rarr;</button>
   <button class="nav-btn" id="btn-reload" title="Reload">&#8634;</button>
   <input type="text" id="url-input" placeholder="Enter URL or search..." />
+  <div id="extensions-wrap">
+    <button class="nav-btn" id="btn-extensions" title="Extensions">&#9881;</button>
+    <div id="extensions-panel" hidden>
+      <div class="panel-title">Extensions</div>
+      <div class="panel-hint">Load an unpacked extension folder for this profile session.</div>
+      <button class="panel-btn" id="btn-load-extension">Load unpacked...</button>
+      <div id="extensions-list"></div>
+    </div>
+  </div>
+  <div id="device-chip" title="Emulated device">Device</div>
   <div id="profile-pill" title="Profile identity"><span class="pill-dot"></span><span id="profile-pill-text">Profile</span></div>
   <button class="nav-btn" id="btn-home" title="Home">&#8962;</button>
 </div>

@@ -1,6 +1,7 @@
 "use strict";
 
 const { session: electronSession } = require("electron");
+const fs = require("fs");
 const store = require("./profile-store");
 
 // windowId → profileId  (for profile browser windows)
@@ -234,6 +235,21 @@ async function flushSessionNetworkState(sess) {
   try { await sess.clearAuthCache(); } catch (_) {}
 }
 
+async function loadProfileExtensions(sess, profile) {
+  const extensions = Array.isArray(profile?.extensions) ? profile.extensions : [];
+  if (!extensions.length || typeof sess.loadExtension !== "function") return;
+  const loaded = new Set((typeof sess.getAllExtensions === "function" ? sess.getAllExtensions() : []).map((ext) => ext.path || ext.id));
+  for (const entry of extensions) {
+    const dir = typeof entry === "string" ? entry : entry?.path;
+    if (!dir || loaded.has(dir) || !fs.existsSync(dir)) continue;
+    try {
+      const ext = await sess.loadExtension(dir, { allowFileAccess: true });
+      loaded.add(dir);
+      if (ext?.id) loaded.add(ext.id);
+    } catch (_) {}
+  }
+}
+
 async function setupProfileSession(profile) {
   if (!profile) return;
   const sess = getSessionForProfile(profile.id);
@@ -254,6 +270,7 @@ async function setupProfileSession(profile) {
 
   installWebRequestHooks(sess, config || {});
   installPermissionPolicy(sess, profile, config || {});
+  await loadProfileExtensions(sess, profile);
 
   if (config?.blockCookies) {
     await sess.clearStorageData({ storages: ["cookies"] }).catch(() => {});

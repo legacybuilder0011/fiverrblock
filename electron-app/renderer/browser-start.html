@@ -99,9 +99,9 @@
 </style>
 </head>
 <body>
-<div class="logo">PS</div>
-<h1>Privacy Shield Browser</h1>
-<p class="subtitle">Branded Chromium shell for isolated profile testing</p>
+<div class="logo" id="brandLogo">PS</div>
+<h1 id="brandTitle">Privacy Shield Browser</h1>
+<p class="subtitle" id="brandSubtitle">Branded Chromium shell for isolated profile testing</p>
 
 <div id="errorBanner" class="error-banner"></div>
 
@@ -154,6 +154,33 @@ if (err) {
   banner.textContent = msg;
   banner.classList.add('show');
 }
+
+(function applyProfileBranding() {
+  const meta = window.__privacyShieldProfile || {};
+  const labels = {
+    privacy: "Privacy Shield",
+    chrome: "Google Chrome",
+    brave: "Brave",
+    edge: "Microsoft Edge",
+    firefox: "Firefox",
+    safari: "Safari"
+  };
+  const initials = { privacy: "PS", chrome: "C", brave: "B", edge: "E", firefox: "F", safari: "S" };
+  const browser = meta.browser || "privacy";
+  const title = labels[browser] || "Chromium";
+  const device = meta.deviceClass === "mobile"
+    ? (meta.mobileModel ? "Android " + meta.mobileModel : "Android")
+    : (meta.os || "Desktop");
+  document.title = title + " - New Tab";
+  document.getElementById("brandLogo").textContent = initials[browser] || "B";
+  document.getElementById("brandTitle").textContent = title;
+  document.getElementById("brandSubtitle").textContent = [
+    meta.profileName || "Profile",
+    device,
+    meta.screen || "",
+    meta.timezone || ""
+  ].filter(Boolean).join(" - ");
+})();
 </script>
 </body>
 </html>

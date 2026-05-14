@@ -417,6 +417,7 @@ function createProfile(data) {
     deletedAt: null,
     fingerprint: data.fingerprint || getDefaultFingerprint(),
     proxy: data.proxy || getDefaultProxy(),
+    extensions: Array.isArray(data.extensions) ? data.extensions : [],
     cookies: data.cookies || [],
     localStorageData: data.localStorageData || {},
     session: data.session || null

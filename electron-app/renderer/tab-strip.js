@@ -8,6 +8,14 @@ const btnBack  = document.getElementById("btn-back");
 const btnFwd   = document.getElementById("btn-fwd");
 const btnReload = document.getElementById("btn-reload");
 const btnHome  = document.getElementById("btn-home");
+const btnExtensions = document.getElementById("btn-extensions");
+const extensionsPanel = document.getElementById("extensions-panel");
+const btnLoadExtension = document.getElementById("btn-load-extension");
+const extensionsList = document.getElementById("extensions-list");
+const brandMark = document.getElementById("brand-mark");
+const brandText = document.getElementById("brand-text");
+const brandChip = document.getElementById("brand-chip");
+const deviceChip = document.getElementById("device-chip");
 const profilePillText = document.getElementById("profile-pill-text");
 const profilePill = document.getElementById("profile-pill");
 
@@ -57,8 +65,31 @@ function escapeHtml(s) {
 
 function renderMeta() {
   if (!profilePillText || !browserMeta) return;
+  const browser = browserMeta.browser || "privacy";
+  const os = browserMeta.os || "windows";
+  document.body.className = `browser-${browser} os-${os} device-${browserMeta.deviceClass || "desktop"}`;
+  if (brandText) brandText.textContent = browserMeta.browserLabel || browserMeta.appName || "Browser";
+  if (brandMark) brandMark.textContent = browserInitials(browser, browserMeta.browserLabel || browserMeta.appName);
+  if (brandChip) {
+    brandChip.title = [
+      `${browserMeta.browserLabel || "Browser"} identity`,
+      `Runtime: ${browserMeta.runtimeName || "Privacy Shield Chromium"}`,
+      "The selected browser changes the profile identity and browser shell skin."
+    ].join("\n");
+  }
   const location = [browserMeta.city, browserMeta.countryCode ? browserMeta.countryCode.toUpperCase() : ""].filter(Boolean).join(", ");
-  const device = browserMeta.deviceClass === "mobile" ? "Android" : (browserMeta.os || "desktop");
+  const device = browserMeta.deviceClass === "mobile"
+    ? (browserMeta.mobileModel ? `Android ${browserMeta.mobileModel}` : "Android")
+    : (browserMeta.osLabel || browserMeta.os || "desktop");
+  if (deviceChip) {
+    const screen = browserMeta.screen ? ` ${browserMeta.screen}` : "";
+    deviceChip.textContent = `${device}${screen}`;
+    deviceChip.title = [
+      `OS: ${browserMeta.osLabel || browserMeta.os || ""}`,
+      browserMeta.screen ? `Screen: ${browserMeta.screen}` : "",
+      browserMeta.dpr ? `DPR: ${browserMeta.dpr}` : ""
+    ].filter(Boolean).join("\n");
+  }
   const text = `${browserMeta.profileName || "Profile"} - ${device} - ${browserMeta.networkLabel || "Direct"}${location ? " - " + location : ""}`;
   profilePillText.textContent = text;
   if (profilePill) {
@@ -72,6 +103,16 @@ function renderMeta() {
       browserMeta.language ? `Language: ${browserMeta.language}` : ""
     ].filter(Boolean).join("\n");
   }
+  if (btnExtensions) {
+    const n = Number(browserMeta.extensionCount) || 0;
+    btnExtensions.title = `Extensions${n ? " (" + n + " loaded)" : ""}`;
+  }
+}
+
+function browserInitials(browser, label) {
+  const map = { privacy: "PS", chrome: "C", brave: "B", edge: "E", firefox: "F", safari: "S" };
+  if (map[browser]) return map[browser];
+  return String(label || "B").trim().slice(0, 2).toUpperCase();
 }
 
 // ── Receive state updates from main ──────────────────────────────────────────
@@ -92,6 +133,49 @@ btnBack.addEventListener("click",   () => api.invoke("TAB_BACK", {}));
 btnFwd.addEventListener("click",    () => api.invoke("TAB_FORWARD", {}));
 btnReload.addEventListener("click", () => api.invoke("TAB_RELOAD", {}));
 btnHome.addEventListener("click",   () => api.invoke("TAB_NAVIGATE", { url: "home" }));
+
+async function refreshExtensions() {
+  if (!extensionsList) return;
+  extensionsList.textContent = "Loading...";
+  const r = await api.invoke("BROWSER_LIST_EXTENSIONS", {});
+  if (!r.ok) {
+    extensionsList.textContent = r.error || "Could not load extensions";
+    return;
+  }
+  const items = (r.saved && r.saved.length ? r.saved : r.extensions) || [];
+  if (!items.length) {
+    extensionsList.innerHTML = '<div class="panel-hint">No extensions loaded for this profile yet.</div>';
+    return;
+  }
+  extensionsList.innerHTML = items.map((ext) => `
+    <div class="ext-item">
+      <div>${escapeHtml(ext.name || ext.id || "Extension")}</div>
+      <div class="ext-path">${escapeHtml(ext.path || "")}</div>
+    </div>
+  `).join("");
+}
+
+btnExtensions?.addEventListener("click", async (e) => {
+  e.stopPropagation();
+  if (!extensionsPanel) return;
+  extensionsPanel.hidden = !extensionsPanel.hidden;
+  if (!extensionsPanel.hidden) await refreshExtensions();
+});
+
+btnLoadExtension?.addEventListener("click", async () => {
+  const r = await api.invoke("BROWSER_LOAD_EXTENSION", {});
+  if (r.canceled) return;
+  if (!r.ok) {
+    if (extensionsList) extensionsList.textContent = r.error || "Extension load failed";
+    return;
+  }
+  await refreshExtensions();
+});
+
+document.addEventListener("click", (e) => {
+  if (!extensionsPanel || extensionsPanel.hidden) return;
+  if (!e.target.closest("#extensions-wrap")) extensionsPanel.hidden = true;
+});
 
 urlInput.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;

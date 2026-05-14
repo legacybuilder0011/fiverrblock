@@ -1,6 +1,6 @@
 "use strict";
 
-const { ipcMain, BrowserWindow, WebContentsView, net, nativeImage } = require("electron");
+const { ipcMain, BrowserWindow, WebContentsView, net, nativeImage, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -588,6 +588,55 @@ function registerIpcHandlers() {
     const state = winId != null ? windowTabState.get(winId) : null;
     return { ok: Boolean(state), meta: state ? getProfileBrowserMeta(state.profileId) : null };
   });
+
+  ipcMain.handle("BROWSER_LOAD_EXTENSION", async (ev) => {
+    const winId = getCallerWindowId(ev);
+    const state = winId != null ? windowTabState.get(winId) : null;
+    const win = winId != null ? BrowserWindow.fromId(winId) : null;
+    if (!state) return { ok: false, error: "Profile browser window not found" };
+
+    const picked = await dialog.showOpenDialog(win || undefined, {
+      title: "Load unpacked extension folder",
+      properties: ["openDirectory"]
+    });
+    if (picked.canceled || !picked.filePaths?.[0]) return { ok: false, canceled: true };
+
+    const extensionPath = picked.filePaths[0];
+    const sess = sessionMgr.getSessionForProfile(state.profileId);
+    try {
+      const loaded = await sess.loadExtension(extensionPath, { allowFileAccess: true });
+      const profile = store.getProfiles().find((p) => p.id === state.profileId && !p.deletedAt);
+      if (profile) {
+        const existing = Array.isArray(profile.extensions) ? profile.extensions : [];
+        const next = existing.filter((item) => item.path !== extensionPath && item.id !== loaded.id);
+        next.push({
+          id: loaded.id,
+          name: loaded.name || path.basename(extensionPath),
+          path: extensionPath,
+          loadedAt: Date.now()
+        });
+        store.updateProfile(state.profileId, { extensions: next });
+      }
+      emitTabState(winId);
+      return { ok: true, extension: loaded };
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+
+  ipcMain.handle("BROWSER_LIST_EXTENSIONS", async (ev) => {
+    const winId = getCallerWindowId(ev);
+    const state = winId != null ? windowTabState.get(winId) : null;
+    if (!state) return { ok: false, error: "Profile browser window not found" };
+    const sess = sessionMgr.getSessionForProfile(state.profileId);
+    const loaded = typeof sess.getAllExtensions === "function" ? sess.getAllExtensions() : [];
+    const profile = store.getProfiles().find((p) => p.id === state.profileId && !p.deletedAt);
+    return {
+      ok: true,
+      extensions: loaded.map((ext) => ({ id: ext.id, name: ext.name, path: ext.path })),
+      saved: Array.isArray(profile?.extensions) ? profile.extensions : []
+    };
+  });
 }
 
 // On login/register, pull any cloud data into the per-user local dir, then
@@ -622,8 +671,24 @@ function getProfileBrowserMeta(profileId) {
   const fp = profile.fingerprint || {};
   const proxy = profile.proxy || {};
   const mode = proxy.networkMode || (proxy.enabled ? "proxy" : "direct");
+  const browser = fp.browser || profile.browserApp || "chrome";
+  const browserLabels = {
+    privacy: "Privacy Shield",
+    chrome: "Google Chrome",
+    brave: "Brave",
+    edge: "Microsoft Edge",
+    firefox: "Firefox",
+    safari: "Safari"
+  };
+  const osLabels = {
+    windows: "Windows",
+    macos: "macOS",
+    linux: "Linux",
+    android: "Android"
+  };
   return {
-    appName: "Privacy Shield Browser",
+    appName: browserLabels[browser] || "Chromium",
+    runtimeName: "Privacy Shield Chromium",
     profileId: profile.id,
     profileName: profile.name || "Profile",
     country: fp.country || "",
@@ -631,7 +696,13 @@ function getProfileBrowserMeta(profileId) {
     city: fp.city || "",
     deviceClass: fp.deviceClass || (profile.os === "android" ? "mobile" : "desktop"),
     os: profile.os || "windows",
-    browser: fp.browser || profile.browserApp || "chrome",
+    osLabel: osLabels[profile.os || "windows"] || "Windows",
+    browser,
+    browserLabel: browserLabels[browser] || "Chromium",
+    screen: fp.screenWidth && fp.screenHeight ? `${fp.screenWidth}x${fp.screenHeight}` : "",
+    dpr: fp.devicePixelRatio || 1,
+    mobileModel: fp.mobileModel || "",
+    extensionCount: Array.isArray(profile.extensions) ? profile.extensions.length : 0,
     networkMode: mode,
     networkLabel: mode === "proxy" ? "VPS/proxy" : mode === "vpn" ? "VPN" : "Direct",
     proxyHost: mode === "proxy" && proxy.host ? `${proxy.host}:${proxy.port || ""}` : "",
@@ -722,12 +793,16 @@ async function applyTabEmulation(webContents, profile) {
   if (config.userAgent) {
     try { webContents.setUserAgent(config.userAgent); } catch (_) {}
   }
-  if (!config._mobile && !config._viewportMobile && !config._touchEmulation) return;
 
   const screen = config.screen || {};
-  const width = Math.max(320, Math.min(1200, Number(screen.width) || 412));
-  const height = Math.max(480, Math.min(1600, Number(screen.height) || 915));
-  const dpr = Math.max(1, Math.min(4, Number(config._devicePixelRatio) || 2.625));
+  const isMobile = Boolean(config._mobile || config._viewportMobile || config._touchEmulation);
+  const width = isMobile
+    ? Math.max(320, Math.min(1200, Number(screen.width) || 412))
+    : Math.max(1024, Math.min(3840, Number(screen.width) || 1366));
+  const height = isMobile
+    ? Math.max(480, Math.min(1600, Number(screen.height) || 915))
+    : Math.max(640, Math.min(2160, Number(screen.height) || 768));
+  const dpr = Math.max(1, Math.min(4, Number(config._devicePixelRatio) || (isMobile ? 2.625 : 1)));
   const send = async (method, params) => {
     try {
       await webContents.debugger.sendCommand(method, params);
@@ -747,24 +822,26 @@ async function applyTabEmulation(webContents, profile) {
     width,
     height,
     deviceScaleFactor: dpr,
-    mobile: true,
+    mobile: isMobile,
     screenWidth: width,
     screenHeight: height,
     positionX: 0,
     positionY: 0,
     scale: 1
   });
-  await send("Emulation.setTouchEmulationEnabled", {
-    enabled: true,
-    maxTouchPoints: Math.max(1, Number(config._maxTouchPoints) || 5)
-  });
-  await send("Emulation.setEmitTouchEventsForMouse", {
-    enabled: true,
-    configuration: "mobile"
-  });
+  if (isMobile || config._touchEmulation) {
+    await send("Emulation.setTouchEmulationEnabled", {
+      enabled: true,
+      maxTouchPoints: Math.max(1, Number(config._maxTouchPoints) || 5)
+    });
+    await send("Emulation.setEmitTouchEventsForMouse", {
+      enabled: true,
+      configuration: isMobile ? "mobile" : "desktop"
+    });
+  }
   await send("Emulation.setUserAgentOverride", {
     userAgent: config.userAgent,
-    platform: "Android",
+    platform: config.platform || (isMobile ? "Linux armv8l" : "Win32"),
     userAgentMetadata: buildUserAgentMetadata(config)
   });
   if (config.geo) {
@@ -803,6 +880,8 @@ async function openProfileWindow(profileId, customUrl) {
   const isMobileProfile = fp.deviceClass === "mobile" || profile.os === "android";
   const winWidth = isMobileProfile ? Math.max(390, Math.min(520, Number(fp.screenWidth) || 412) + 24) : 1280;
   const winHeight = isMobileProfile ? Math.max(720, Math.min(980, Number(fp.screenHeight) || 915) + TAB_STRIP_HEIGHT + 16) : 800;
+  const meta = getProfileBrowserMeta(profileId) || {};
+  const windowTitle = `${meta.browserLabel || "Browser"} - ${profile.name}`;
   const profileIcon = createProfileIcon(profile);
   const win = new BrowserWindow({
     show: false,
@@ -810,7 +889,7 @@ async function openProfileWindow(profileId, customUrl) {
     height: winHeight,
     x: 80 + offset,
     y: 60 + offset,
-    title: `Privacy Shield Browser - ${profile.name}`,
+    title: windowTitle,
     icon: profileIcon,
     backgroundColor: "#0c0f14",
     webPreferences: {
@@ -820,12 +899,16 @@ async function openProfileWindow(profileId, customUrl) {
       sandbox: false
     }
   });
+  win.webContents.on("page-title-updated", (event) => {
+    event.preventDefault();
+    try { win.setTitle(windowTitle); } catch (_) {}
+  });
   win.setMenuBarVisibility(false);
   try {
     if (typeof win.setAppDetails === "function") {
       win.setAppDetails({
         appId: `com.privacyshield.profile.${String(profile.id || "").replace(/[^a-zA-Z0-9.-]/g, "").slice(0, 48) || "profile"}`,
-        relaunchDisplayName: `Privacy Shield - ${profile.name || "Profile"}`
+        relaunchDisplayName: `${meta.browserLabel || "Browser"} - ${profile.name || "Profile"}`
       });
     }
   } catch (_) {}

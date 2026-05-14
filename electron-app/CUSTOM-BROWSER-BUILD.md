@@ -5,9 +5,10 @@ Privacy Shield Browser is a branded Electron browser shell built on Chromium. It
 ## What This Build Customizes
 
 - App identity: product name, window titles, start page, and tab strip branding.
-- Profile identity: each started profile opens in Privacy Shield's own bundled Chromium runtime, with a profile-specific window title and generated taskbar icon.
+- Profile identity: each started profile opens in Privacy Shield's own bundled Chromium runtime, with a profile-specific window title, generated taskbar icon, and browser-skinned toolbar based on the selected Chrome/Edge/Brave/etc. profile setting.
 - Session isolation: every profile uses its own persistent Electron session partition, so cookies, cache, IndexedDB, service workers, auth cache, and localStorage are separated by profile id.
 - Storage isolation: cookies, cache, service workers, localStorage, IndexedDB, and auth cache can be cleared per profile.
+- Extension loading: profile browser windows include an Extensions toolbar button for loading unpacked extension folders into that profile's isolated Electron session.
 - Network routing: each profile can use direct routing, the computer's current VPN, or a saved VPS/proxy route.
 - Leak reduction: Chromium is started with WebRTC non-proxied UDP disabled and local IP hiding enabled.
 - Coherent identities: generated desktop and Android browser profiles keep a per-profile fingerprint seed plus user agent, UA client hints, OS, screen, DPR, touch points, GPU, font profile, CPU/RAM, timezone, language, and geolocation internally consistent.
@@ -20,6 +21,7 @@ Privacy Shield Browser is a branded Electron browser shell built on Chromium. It
 - It does not hide automation controls.
 - It does not patch Chromium/Blink to falsify `navigator.webdriver`.
 - It does not remove headless or automation command-line switches.
+- It does not install Chrome Web Store extensions directly; use unpacked extension folders.
 - It does not include C++-level Chromium engine patches or an AI-generated daily fingerprint service.
 - It does not ship a Firefox/Gecko engine. Firefox and Safari profile choices are browser identity templates only; active profile windows run on Electron's bundled Chromium.
 - It does not provide residential proxies.

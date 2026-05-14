@@ -46,6 +46,24 @@
     }
   } catch (_) {}
 
+  try {
+    Object.defineProperty(window, "__privacyShieldProfile", {
+      value: Object.freeze({
+        profileId: config._profileId || "",
+        profileName: config._profileName || "Profile",
+        browser: config._browserApp || "chrome",
+        os: config._uaOS || "Windows",
+        deviceClass: config._deviceClass || "desktop",
+        mobileModel: config._mobileModel || "",
+        screen: config.screen ? `${config.screen.width || ""}x${config.screen.height || ""}` : "",
+        timezone: config.timezone || "",
+        language: config.language || ""
+      }),
+      configurable: false,
+      enumerable: false
+    });
+  } catch (_) {}
+
   if (!config.enabled) return;
 
   // ── Deterministic noise ──────────────────────────────────────────────────────
