@@ -204,6 +204,17 @@ function registerIpcHandlers() {
     ok: true, presets: store.PROFILE_WEBGL_PRESETS
   }));
 
+  ipcMain.handle("ENGINE_CAPABILITIES", async () => ({
+    ok: true,
+    capabilities: store.getEngineCapabilities()
+  }));
+
+  ipcMain.handle("PROFILE_AUDIT", async (_ev, { profileId, profile } = {}) => {
+    const target = profile || store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    if (!target) return { ok: false, error: "Profile not found" };
+    return { ok: true, audit: store.validateProfileConsistency(target) };
+  });
+
   // ── Window management ─────────────────────────────────────────────────────────
 
   ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url } = {}) => {

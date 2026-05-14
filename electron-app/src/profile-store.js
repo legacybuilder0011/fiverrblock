@@ -1231,6 +1231,114 @@ function buildConfigFromProfile(profile) {
   return cfg;
 }
 
+function getEngineCapabilities() {
+  return {
+    actualEngine: "Electron Chromium",
+    actualEngineId: "electron-chromium",
+    profileIsolation: true,
+    perProfileSessionPartition: true,
+    bundledBrowserRuntime: true,
+    nativeEngines: ["chromium"],
+    identityTemplates: ["privacy", "chrome", "brave", "edge", "firefox", "safari"],
+    chromiumCppPatches: false,
+    aiDailyFingerprints: false,
+    firefoxGeckoRuntime: false,
+    notes: [
+      "Profile windows run on Privacy Shield's bundled Electron Chromium runtime.",
+      "Firefox and Safari selections are identity templates, not separate Gecko/WebKit runtimes.",
+      "Fingerprint data is generated locally from coherent templates, not from a daily AI-tested real-device service.",
+      "No Chromium/Blink C++ patches are included in this Electron build."
+    ]
+  };
+}
+
+function validateProfileConsistency(profile = {}) {
+  const fp = profile.fingerprint || {};
+  const osName = profile.os || "windows";
+  const browser = fp.browser || profile.browserApp || "chrome";
+  const deviceClass = fp.deviceClass || (osName === "android" ? "mobile" : "desktop");
+  const issues = [];
+  const warnings = [];
+  const passes = [];
+  const addPass = (msg) => passes.push({ level: "pass", message: msg });
+  const addWarn = (msg) => warnings.push({ level: "warn", message: msg });
+  const addIssue = (msg) => issues.push({ level: "issue", message: msg });
+
+  if (osName === "android") {
+    if (deviceClass !== "mobile") addIssue("Android profiles should use mobile device class.");
+    else addPass("Android profile uses mobile device class.");
+    if (!fp.mobileModel) addWarn("Android mobile model is empty.");
+    else addPass(`Android model is set to ${fp.mobileModel}.`);
+    if (!fp.platformVersion) addWarn("Android platform version is empty.");
+    if (!fp.androidBuild) addWarn("Android build string is empty.");
+    if ((Number(fp.maxTouchPoints) || 0) < 1) addIssue("Android profiles should expose touch points.");
+    else addPass(`Touch points are set to ${Number(fp.maxTouchPoints) || 0}.`);
+    if (!fp.touchEmulation) addWarn("Touch emulation metadata is off.");
+    if (!fp.sensorEmulation) addWarn("Sensor emulation metadata is off.");
+    if (!String(fp.screenOrientation || "").startsWith("portrait")) addWarn("Android profiles usually use portrait-primary orientation.");
+    if (!["chrome", "privacy", "brave", "edge"].includes(browser)) addWarn(`${browserLabelForAudit(browser)} is not a native Android runtime in this app; Chromium will be used with a compatible identity template.`);
+  } else {
+    if (deviceClass === "mobile") addWarn("Non-Android profile is marked mobile.");
+    else addPass("Desktop OS uses desktop device class.");
+    if ((Number(fp.maxTouchPoints) || 0) > 0) addWarn("Desktop profile has touch points enabled.");
+  }
+
+  if (browser === "safari" && osName !== "macos") {
+    addIssue("Safari identity should only be used with macOS.");
+  }
+  if (browser === "firefox") {
+    addWarn("Firefox is currently an identity template only; the launched runtime is still Electron Chromium.");
+  }
+  if (browser === "safari") {
+    addWarn("Safari is currently an identity template only; the launched runtime is still Electron Chromium.");
+  }
+
+  const screenWidth = Number(fp.screenWidth) || 0;
+  const screenHeight = Number(fp.screenHeight) || 0;
+  const dpr = Number(fp.devicePixelRatio) || 1;
+  if (screenWidth <= 0 || screenHeight <= 0) addIssue("Screen width and height must be set.");
+  else addPass(`Screen is ${screenWidth}x${screenHeight} at DPR ${dpr}.`);
+  if (osName === "android" && screenWidth > screenHeight) addWarn("Android mobile screen is landscape-sized; portrait screens are more typical.");
+  if (dpr < 1 || dpr > 4) addWarn("Device pixel ratio is outside the usual 1-4 range.");
+
+  if (fp.timezone === "manual" && fp.timezoneValue) addPass(`Timezone is set to ${fp.timezoneValue}.`);
+  else addWarn("Timezone is not manually pinned for this profile.");
+  if (fp.language === "manual" && fp.languageValue) addPass(`Language is set to ${fp.languageValue}.`);
+  else addWarn("Language is not manually pinned for this profile.");
+  if (fp.geolocation === "manual") addPass("Geolocation is manually pinned.");
+  else addWarn("Geolocation is not manually pinned for this profile.");
+  if (fp.webglVendor && fp.webglRenderer) addPass("WebGL vendor and renderer are set.");
+  else addWarn("WebGL vendor or renderer is missing.");
+
+  return {
+    ok: issues.length === 0,
+    score: Math.max(0, Math.min(100, 100 - issues.length * 25 - warnings.length * 8)),
+    engine: getEngineCapabilities(),
+    profile: {
+      id: profile.id || "",
+      name: profile.name || "",
+      os: osName,
+      browser,
+      deviceClass,
+      actualRuntime: "Electron Chromium"
+    },
+    issues,
+    warnings,
+    passes
+  };
+}
+
+function browserLabelForAudit(browser) {
+  return {
+    privacy: "Privacy Shield",
+    chrome: "Chrome",
+    brave: "Brave",
+    edge: "Edge",
+    firefox: "Firefox",
+    safari: "Safari"
+  }[browser] || browser || "Browser";
+}
+
 module.exports = {
   getProfiles,
   saveProfiles,
@@ -1262,6 +1370,8 @@ module.exports = {
   buildConfigFromProfile,
   buildCountryIdentity,
   buildCountryProfileData,
+  getEngineCapabilities,
+  validateProfileConsistency,
   getOpenProfiles,
   saveOpenProfiles,
   PROFILE_WEBGL_PRESETS

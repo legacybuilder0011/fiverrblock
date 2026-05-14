@@ -304,6 +304,45 @@
         case "PROFILE_WEBGL_PRESETS":
           result = { ok: true, presets: webglPresets };
           break;
+        case "ENGINE_CAPABILITIES":
+          result = {
+            ok: true,
+            capabilities: {
+              actualEngine: "Browser preview",
+              nativeEngines: ["chromium-preview"],
+              chromiumCppPatches: false,
+              aiDailyFingerprints: false,
+              firefoxGeckoRuntime: false
+            }
+          };
+          break;
+        case "PROFILE_AUDIT": {
+          const profile = data.profile || state.profiles.find((p) => p.id === data.profileId);
+          const fp = profile?.fingerprint || {};
+          const issues = [];
+          const warnings = [];
+          const passes = [];
+          if (!profile) {
+            result = { ok: false, error: "Profile not found" };
+            break;
+          }
+          if (profile.os === "android" && fp.deviceClass !== "mobile") issues.push({ level: "issue", message: "Android profiles should use mobile device class." });
+          if ((fp.browser || profile.browserApp) === "firefox") warnings.push({ level: "warn", message: "Firefox is an identity template only in this build." });
+          if ((fp.browser || profile.browserApp) === "safari") warnings.push({ level: "warn", message: "Safari is an identity template only in this build." });
+          passes.push({ level: "pass", message: "Preview audit completed." });
+          result = {
+            ok: true,
+            audit: {
+              ok: issues.length === 0,
+              score: Math.max(0, 100 - issues.length * 25 - warnings.length * 8),
+              profile: { actualRuntime: "Browser preview" },
+              issues,
+              warnings,
+              passes
+            }
+          };
+          break;
+        }
         case "PROFILE_LIST":
           result = {
             ok: true,

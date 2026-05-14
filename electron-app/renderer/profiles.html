@@ -134,6 +134,34 @@
       <div class="pm-tab-panel active" id="tab-fingerprint">
 
         <div class="pm-section">
+          <div class="pm-section-title-row">
+            <span class="pm-section-title">Engine &amp; Identity Audit</span>
+            <button type="button" class="pm-btn-xs primary" id="btnAuditProfile">Audit profile</button>
+          </div>
+          <div class="pm-engine-grid">
+            <div>
+              <span class="pm-engine-label">Runtime</span>
+              <span class="pm-engine-value">Privacy Shield bundled Chromium</span>
+            </div>
+            <div>
+              <span class="pm-engine-label">Native engines</span>
+              <span class="pm-engine-value">Chromium only</span>
+            </div>
+            <div>
+              <span class="pm-engine-label">Firefox / Safari</span>
+              <span class="pm-engine-value">Identity templates</span>
+            </div>
+            <div>
+              <span class="pm-engine-label">C++ / AI fingerprint service</span>
+              <span class="pm-engine-value">Not included</span>
+            </div>
+          </div>
+          <div id="profileAuditResult" class="pm-audit-result">
+            Save or select a profile, then run the audit to check OS, browser, mobile, screen, language, timezone, and runtime consistency.
+          </div>
+        </div>
+
+        <div class="pm-section">
           <div class="pm-section-title">User Agent</div>
           <div class="pm-row">
             <label class="pm-label">Mode</label>

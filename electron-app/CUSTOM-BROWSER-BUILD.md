@@ -13,6 +13,7 @@ Privacy Shield Browser is a branded Electron browser shell built on Chromium. It
 - Coherent identities: generated desktop and Android browser profiles keep user agent, UA client hints, OS, screen, DPR, touch points, GPU, CPU/RAM, timezone, language, and geolocation internally consistent.
 - Mobile browser emulation: Android profiles enable mobile viewport metrics, touch emulation, coarse-pointer media queries, Android UA client hints, vibration API, and motion/orientation sensor events.
 - Android Cloud Phones manager: provider-hosted Android devices can be registered with Android version, model, IMEI or hardware fingerprint, status, notes, and a remote console URL.
+- Fingerprint consistency audit: the manager can check selected profile settings for OS, browser template, device class, screen, touch, language, timezone, geolocation, WebGL, and runtime consistency.
 
 ## What This Build Does Not Customize
 

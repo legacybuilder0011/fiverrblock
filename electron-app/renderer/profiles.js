@@ -600,6 +600,46 @@ function collectForm() {
   };
 }
 
+async function auditCurrentProfile() {
+  const box = $("profileAuditResult");
+  if (!box) return;
+  let data;
+  try {
+    data = collectForm();
+  } catch (err) {
+    box.className = "pm-audit-result issue";
+    box.textContent = "Form error: " + (err.message || err);
+    return;
+  }
+  const candidate = {
+    id: selectedId || "__new__",
+    ...data
+  };
+  box.className = "pm-audit-result";
+  box.textContent = "Running audit...";
+  const r = await msg("PROFILE_AUDIT", { profile: candidate });
+  if (!r.ok) {
+    box.className = "pm-audit-result issue";
+    box.textContent = r.error || "Audit failed";
+    return;
+  }
+  renderProfileAudit(r.audit);
+}
+
+function renderProfileAudit(audit) {
+  const box = $("profileAuditResult");
+  if (!box || !audit) return;
+  const level = audit.issues?.length ? "issue" : audit.warnings?.length ? "warn" : "ok";
+  box.className = "pm-audit-result " + level;
+  const rows = [];
+  rows.push(`<span class="pm-audit-line ${audit.ok ? "pass" : "warn"}">Score: ${Number(audit.score) || 0}/100. Runtime: ${escHtml(audit.profile?.actualRuntime || "Electron Chromium")}.</span>`);
+  rows.push(`<span class="pm-audit-line warn">Engine note: Firefox/Safari are identity templates only; profile windows run on bundled Chromium.</span>`);
+  for (const item of [...(audit.issues || []), ...(audit.warnings || []), ...(audit.passes || []).slice(0, 6)]) {
+    rows.push(`<span class="pm-audit-line ${item.level}">${escHtml(item.message)}</span>`);
+  }
+  box.innerHTML = rows.join("");
+}
+
 // =========================================================
 // Conditional row visibility
 // =========================================================
@@ -1081,6 +1121,7 @@ function bindFormEvents() {
     updateConditionalRows();
   });
   $("btnCaptureVpn")?.addEventListener("click", captureCurrentVpnLocation);
+  $("btnAuditProfile")?.addEventListener("click", auditCurrentProfile);
 
   // Browser version custom input — live-update UA preview
   const bvcInput = $("fp-browserVersionCustom");
