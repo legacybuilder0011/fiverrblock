@@ -49,7 +49,18 @@
   if (!config.enabled) return;
 
   // ── Deterministic noise ──────────────────────────────────────────────────────
-  const NOISE_SEED = (Math.random() * 0x7FFFFFFF) >>> 0;
+  function seedToInt(value) {
+    const text = String(value || "");
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+  }
+  const NOISE_SEED = config._fingerprintSeed
+    ? seedToInt(config._fingerprintSeed)
+    : ((Math.random() * 0x7FFFFFFF) >>> 0);
   function stableNoise(index) {
     let h = (index + NOISE_SEED) | 0;
     h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);

@@ -364,7 +364,7 @@ function getDefaultFingerprint() {
     fonts: "real",
     mediaDevices: "real", cameras: 1, microphones: 1, speakers: 1,
     deviceName: "off", deviceNameValue: "",
-    hardwareId: "", fontProfile: "windows", installedFonts: [],
+    fingerprintSeed: "", hardwareId: "", fontProfile: "windows", installedFonts: [],
     colorDepth: 24, pixelDepth: 24, devicePixelRatio: 1,
     deviceClass: "desktop", mobileModel: "", mobileManufacturer: "", platformVersion: "", androidBuild: "",
     architecture: "x86", bitness: "64", maxTouchPoints: 0, screenOrientation: "landscape-primary",
@@ -421,6 +421,7 @@ function createProfile(data) {
     localStorageData: data.localStorageData || {},
     session: data.session || null
   };
+  profile.fingerprint = normalizeProfileFingerprint(profile, { randomizeDefaultGpu: true });
   profiles.push(profile);
   saveProfiles(profiles);
   syncProfileBg(profile);
@@ -435,6 +436,7 @@ function updateProfile(id, data) {
   profiles[idx] = { ...existing, ...data, id, updatedAt: Date.now() };
   if (data.fingerprint) profiles[idx].fingerprint = { ...existing.fingerprint, ...data.fingerprint };
   if (data.proxy) profiles[idx].proxy = { ...existing.proxy, ...data.proxy };
+  profiles[idx].fingerprint = normalizeProfileFingerprint(profiles[idx], { randomizeDefaultGpu: false });
   saveProfiles(profiles);
   syncProfileBg(profiles[idx]);
   return profiles[idx];
@@ -466,6 +468,7 @@ function duplicateProfile(id) {
   copy.createdAt = now;
   copy.updatedAt = now;
   copy.deletedAt = null;
+  copy.fingerprint = normalizeProfileFingerprint(copy, { regenerateIdentity: true, randomizeDefaultGpu: true });
   profiles.push(copy);
   saveProfiles(profiles);
   syncProfileBg(copy);
@@ -883,6 +886,56 @@ function randomWebglForOs(osName) {
   return randomChoice(matches.length ? matches : PROFILE_WEBGL_PRESETS);
 }
 
+function isDefaultGpuFingerprint(fingerprint = {}) {
+  const defaultFp = getDefaultFingerprint();
+  return !fingerprint.webglVendor
+    || !fingerprint.webglRenderer
+    || (fingerprint.webglVendor === defaultFp.webglVendor && fingerprint.webglRenderer === defaultFp.webglRenderer);
+}
+
+function normalizeProfileFingerprint(profile = {}, options = {}) {
+  const osName = profile.os || "windows";
+  const fp = { ...getDefaultFingerprint(), ...(profile.fingerprint || {}) };
+  const regenerateIdentity = Boolean(options.regenerateIdentity);
+
+  if (regenerateIdentity || !fp.fingerprintSeed) {
+    fp.fingerprintSeed = crypto.randomBytes(8).toString("hex");
+  }
+  if (regenerateIdentity || !fp.hardwareId) {
+    fp.hardwareId = randomHardwareId(osName);
+  }
+  if (!fp.browser) {
+    fp.browser = profile.browserApp || "chrome";
+  }
+  if (!fp.fontProfile || (osName === "android" && fp.fontProfile !== "android")) {
+    fp.fontProfile = osName;
+  }
+  if (!Array.isArray(fp.installedFonts) || !fp.installedFonts.length || fp.fontProfile !== (profile.fingerprint || {}).fontProfile) {
+    fp.installedFonts = resolvedFontListForProfile(fp, osName);
+  }
+  if (options.randomizeDefaultGpu && isDefaultGpuFingerprint(fp)) {
+    const webgl = randomWebglForOs(osName);
+    fp.webglInfo = "manual";
+    fp.webglVendor = webgl.vendor;
+    fp.webglRenderer = webgl.renderer;
+  }
+  if (regenerateIdentity && fp.deviceName === "manual") {
+    fp.deviceNameValue = randomDeviceName(osName);
+  }
+  if (osName === "android") {
+    fp.deviceClass = "mobile";
+    fp.architecture = "arm";
+    fp.maxTouchPoints = Number(fp.maxTouchPoints) || 5;
+    fp.screenOrientation = fp.screenOrientation || "portrait-primary";
+    fp.touchEmulation = true;
+    fp.sensorEmulation = true;
+    fp.viewportMobile = true;
+    fp.pointerType = "coarse";
+    fp.hoverType = "none";
+  }
+  return fp;
+}
+
 function buildCountryIdentity(countryCode = "us", options = {}) {
   const code = String(countryCode || "us").toLowerCase();
   const country = COUNTRY_IDENTITY_DATA[code] || COUNTRY_IDENTITY_DATA.us;
@@ -1174,6 +1227,7 @@ function buildConfigFromProfile(profile) {
     _blockedPorts: Array.isArray(fp.blockedPorts) ? fp.blockedPorts : [3389, 5938],
     _webrtcMode: fp.webrtc || "altered",
     _webrtcIP: fp.webrtcIP || "",
+    _fingerprintSeed: fp.fingerprintSeed || profile.id || "",
     _browserApp: fp.browser || profile.browserApp || "chrome",
     _countryCode: fp.countryCode || "",
     _country: fp.country || "",
@@ -1269,6 +1323,7 @@ function getEngineCapabilities() {
     profileIsolation: true,
     perProfileSessionPartition: true,
     bundledBrowserRuntime: true,
+    storageIsolation: ["cookies", "cache", "localStorage", "IndexedDB", "serviceWorkers", "authCache"],
     nativeEngines: ["chromium"],
     identityTemplates: ["privacy", "chrome", "brave", "edge", "firefox", "safari"],
     chromiumCppPatches: false,
@@ -1283,11 +1338,17 @@ function getEngineCapabilities() {
   };
 }
 
+function getProfileSessionPartition(profileId) {
+  const safeId = String(profileId || "default").replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `persist:privacy-shield-profile-${safeId}`;
+}
+
 function validateProfileConsistency(profile = {}) {
   const fp = profile.fingerprint || {};
   const osName = profile.os || "windows";
   const browser = fp.browser || profile.browserApp || "chrome";
   const deviceClass = fp.deviceClass || (osName === "android" ? "mobile" : "desktop");
+  const sessionPartition = getProfileSessionPartition(profile.id || "__new__");
   const issues = [];
   const warnings = [];
   const passes = [];
@@ -1323,6 +1384,16 @@ function validateProfileConsistency(profile = {}) {
   if (browser === "safari") {
     addWarn("Safari is currently an identity template only; the launched runtime is still Electron Chromium.");
   }
+
+  if (profile.id) {
+    addPass(`Storage partition is ${sessionPartition}.`);
+  } else {
+    addWarn("Unsaved profiles receive their isolated storage partition after creation.");
+  }
+  if (fp.fingerprintSeed) addPass("Per-profile fingerprint seed is set.");
+  else addWarn("Per-profile fingerprint seed will be generated when the profile is saved.");
+  if (fp.hardwareId) addPass("Profile hardware id metadata is set.");
+  else addWarn("Profile hardware id metadata will be generated when the profile is saved.");
 
   const screenWidth = Number(fp.screenWidth) || 0;
   const screenHeight = Number(fp.screenHeight) || 0;
@@ -1403,6 +1474,7 @@ function validateProfileConsistency(profile = {}) {
   }
 
   const summary = {
+    storage: sessionPartition,
     screen: screenWidth > 0 && screenHeight > 0 ? `${screenWidth}x${screenHeight} @ ${dpr} DPR` : "missing",
     fonts: fp.fonts === "blocked" ? "blocked" : `${fontProfile}, ${effectiveFonts.length} fonts`,
     gpu: gpuVendor && gpuRenderer ? `${gpuVendor} / ${gpuRenderer}` : "missing"
@@ -1418,7 +1490,8 @@ function validateProfileConsistency(profile = {}) {
       os: osName,
       browser,
       deviceClass,
-      actualRuntime: "Electron Chromium"
+      actualRuntime: "Electron Chromium",
+      sessionPartition
     },
     summary,
     issues,

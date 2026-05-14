@@ -635,6 +635,7 @@ function renderProfileAudit(audit) {
   rows.push(`<span class="pm-audit-line ${audit.ok ? "pass" : "warn"}">Score: ${Number(audit.score) || 0}/100. Runtime: ${escHtml(audit.profile?.actualRuntime || "Electron Chromium")}.</span>`);
   rows.push(`<span class="pm-audit-line warn">Engine note: Firefox/Safari are identity templates only; profile windows run on bundled Chromium.</span>`);
   if (audit.summary) {
+    rows.push(`<span class="pm-audit-line pass">Storage: ${escHtml(audit.summary.storage || audit.profile?.sessionPartition || "profile partition")}.</span>`);
     rows.push(`<span class="pm-audit-line pass">Screen: ${escHtml(audit.summary.screen || "missing")}.</span>`);
     rows.push(`<span class="pm-audit-line pass">Fonts: ${escHtml(audit.summary.fonts || "missing")}.</span>`);
     rows.push(`<span class="pm-audit-line pass">GPU: ${escHtml(audit.summary.gpu || "missing")}.</span>`);

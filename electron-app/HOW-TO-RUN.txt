@@ -26,22 +26,26 @@ HOW IT WORKS
   - Click "Save" to save changes.
   - Go to the Session tab and click "Open in new window" to launch a
     dedicated browser window with that profile's settings applied.
-  - Each profile window is completely isolated — separate cookies,
-    localStorage, and proxy. Fingerprint is injected before any page script.
+  - Each profile window uses a separate browser session partition for
+    cookies, cache, localStorage, IndexedDB, service workers, auth cache,
+    and proxy settings. Fingerprint config is injected before page scripts.
   - Profile windows use Privacy Shield's bundled Chromium runtime, not your
     regular Chrome, Brave, Edge, or Firefox installation.
   - Each running profile has its own window title and generated taskbar icon
     so multiple profiles can be identified while running at the same time.
   - Use the Engine & Identity Audit panel in the Fingerprint tab to check
-    whether the selected profile's OS, browser template, mobile fields,
-    screen, fonts, GPU, language, timezone, geolocation, and WebGL settings
-    are coherent.
+    whether the selected profile's storage partition, OS, browser template,
+    mobile fields, screen, fonts, GPU, language, timezone, geolocation, and
+    WebGL settings are coherent.
   - Android mobile browser profiles use mobile viewport, touch, UA client
     hints, screen, DPR, WebGL, timezone, language, geolocation, and sensor
     emulation in the profile browser window.
   - The Cloud Phones tab stores provider-hosted Android phone records and
     opens the provider console URL. It does not create real Android devices
     without an external cloud-phone provider.
+  - Privacy Shield separates profiles and keeps identity parameters coherent,
+    but it does not guarantee that websites cannot correlate accounts through
+    network reputation, login behavior, reused content, or site-side systems.
 
 PROXY SETUP
   - Add your SOCKS5 or HTTP proxies in the Proxy Library section.

@@ -50,6 +50,7 @@
     fonts: "real",
     deviceName: "off",
     deviceNameValue: "",
+    fingerprintSeed: "",
     hardwareId: "",
     fontProfile: "windows",
     installedFonts: [],
@@ -161,8 +162,8 @@
 
   const createProfile = (state, data = {}) => {
     const now = Date.now();
-    const profile = {
-      id: data.id || makeId("profile"),
+      const profile = {
+        id: data.id || makeId("profile"),
       name: data.name || "New Profile",
       status: data.status || "new",
       os: data.os || "windows",
@@ -175,11 +176,23 @@
       cookies: Array.isArray(data.cookies) ? data.cookies : [],
       session: data.session || null,
       createdAt: data.createdAt || now,
-      updatedAt: now
+        updatedAt: now
+      };
+      if (!profile.fingerprint.fingerprintSeed) {
+        profile.fingerprint.fingerprintSeed = Math.random().toString(16).slice(2, 18);
+      }
+      if (!profile.fingerprint.hardwareId) {
+        const suffix = Math.random().toString(16).slice(2, 14).toUpperCase();
+        profile.fingerprint.hardwareId = profile.os === "android" ? `ANDROID-${suffix}` : `{${suffix}}`;
+      }
+      if (!Array.isArray(profile.fingerprint.installedFonts) || !profile.fingerprint.installedFonts.length) {
+        profile.fingerprint.installedFonts = profile.os === "android"
+          ? ["Roboto", "Droid Sans", "Noto Sans", "Noto Color Emoji", "Google Sans"]
+          : ["Arial", "Calibri", "Cambria", "Consolas", "Courier New", "Georgia", "Segoe UI", "Tahoma", "Times New Roman", "Verdana"];
+      }
+      state.profiles.push(profile);
+      return profile;
     };
-    state.profiles.push(profile);
-    return profile;
-  };
 
   const randomProfileData = (country, index, options = {}) => {
     const fp = defaultFingerprint();
@@ -326,6 +339,13 @@
             result = { ok: false, error: "Profile not found" };
             break;
           }
+          const safeProfileId = String(profile.id || "__new__").replace(/[^a-zA-Z0-9_-]/g, "_");
+          const sessionPartition = `persist:privacy-shield-profile-${safeProfileId}`;
+          passes.push({ level: "pass", message: `Storage partition is ${sessionPartition}.` });
+          if (fp.fingerprintSeed) passes.push({ level: "pass", message: "Per-profile fingerprint seed is set." });
+          else warnings.push({ level: "warn", message: "Per-profile fingerprint seed will be generated when saved." });
+          if (fp.hardwareId) passes.push({ level: "pass", message: "Profile hardware id metadata is set." });
+          else warnings.push({ level: "warn", message: "Profile hardware id metadata will be generated when saved." });
           if (profile.os === "android" && fp.deviceClass !== "mobile") issues.push({ level: "issue", message: "Android profiles should use mobile device class." });
           const screenWidth = Number(fp.screenWidth) || 0;
           const screenHeight = Number(fp.screenHeight) || 0;
@@ -349,8 +369,9 @@
             audit: {
               ok: issues.length === 0,
               score: Math.max(0, 100 - issues.length * 25 - warnings.length * 8),
-              profile: { actualRuntime: "Browser preview" },
+              profile: { actualRuntime: "Browser preview", sessionPartition },
               summary: {
+                storage: sessionPartition,
                 screen: screenWidth && screenHeight ? `${screenWidth}x${screenHeight} @ ${dpr} DPR` : "missing",
                 fonts: fp.fonts === "blocked" ? "blocked" : `${fp.fontProfile || profile.os || "windows"}, ${fonts.length} fonts`,
                 gpu: fp.webglVendor && fp.webglRenderer ? `${fp.webglVendor} / ${fp.webglRenderer}` : "missing"
