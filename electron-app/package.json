@@ -1,7 +1,7 @@
 {
   "name": "privacy-shield",
-  "version": "1.0.0",
-  "description": "Privacy Shield — Browser Identity Manager Desktop App",
+  "version": "1.5.0",
+  "description": "Privacy Shield Browser - Profile Identity Manager Desktop App",
   "author": "Privacy Shield",
   "main": "src/main.js",
   "scripts": {
@@ -15,7 +15,7 @@
   },
   "build": {
     "appId": "com.privacyshield.app",
-    "productName": "Privacy Shield",
+    "productName": "Privacy Shield Browser",
     "icon": "icons/icon256.png",
     "directories": {
       "output": "dist"
@@ -48,6 +48,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.4",
+    "ssh2": "^1.17.0",
     "ws": "^8.20.1"
   }
 }

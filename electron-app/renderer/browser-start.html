@@ -16,9 +16,22 @@
     justify-content: center;
     padding: 24px;
   }
-  .logo { font-size: 48px; margin-bottom: 8px; }
+  .logo {
+    width: 58px;
+    height: 58px;
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #2563eb;
+    color: #fff;
+    font-size: 18px;
+    font-weight: 800;
+    margin-bottom: 14px;
+    box-shadow: 0 14px 40px rgba(37, 99, 235, .24);
+  }
   h1 { font-size: 22px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; }
-  .subtitle { font-size: 13px; color: #64748b; margin-bottom: 28px; }
+  .subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 28px; }
   .url-box {
     display: flex;
     gap: 8px;
@@ -82,13 +95,13 @@
     display: none;
   }
   .error-banner.show { display: block; }
-  .info-row { margin-top: 32px; font-size: 12px; color: #475569; }
+  .info-row { margin-top: 32px; font-size: 12px; color: #64748b; text-align: center; max-width: 640px; line-height: 1.5; }
 </style>
 </head>
 <body>
-<div class="logo">&#128737;</div>
+<div class="logo">PS</div>
 <h1>Privacy Shield Browser</h1>
-<p class="subtitle">Your isolated browsing profile is active</p>
+<p class="subtitle">Branded Chromium shell for isolated profile testing</p>
 
 <div id="errorBanner" class="error-banner"></div>
 
@@ -108,7 +121,7 @@
   <a class="shortcut" href="https://chat.openai.com"><div class="shortcut-icon">&#129302;</div>ChatGPT</a>
 </div>
 
-<p class="info-row">Fingerprint isolation is active. All cookies, storage, and sessions are stored separately from your other profiles.</p>
+<p class="info-row">This browser window uses its own Electron session partition, cache, cookies, storage, proxy/VPN route, permissions policy, and profile identity settings.</p>
 
 <script>
 function go() {

@@ -28,13 +28,35 @@ function toast(text, ms = 2200) {
 }
 
 function osChip(os) {
-  const map = { windows: ["os-windows", "Win"], macos: ["os-macos", "Mac"], linux: ["os-linux", "Linux"] };
+  const map = { windows: ["os-windows", "Win"], macos: ["os-macos", "Mac"], linux: ["os-linux", "Linux"], android: ["os-linux", "Android"] };
   const [cls, label] = map[os] || ["os-windows", "Win"];
   return `<span class="chip ${cls}">${label}</span>`;
 }
 
+function browserLabel(browser) {
+  const map = {
+    privacy: "Privacy Shield",
+    chrome: "Chrome",
+    brave: "Brave",
+    edge: "Edge",
+    firefox: "Firefox",
+    safari: "Safari"
+  };
+  return map[browser] || map.chrome;
+}
+
 function statusChip(s) {
   return `<span class="chip status-${s || "new"}">${(s || "new").charAt(0).toUpperCase() + (s || "new").slice(1)}</span>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[ch]));
 }
 
 function randDeviceName() {
@@ -59,9 +81,14 @@ let webglPresets = [];
 
 // Proxy library (global, shared across profiles)
 let proxyLibrary = [];
+let vpsProxyRecords = [];
+let proxyProviderConfig = { endpoint: "", authMode: "bearer", hasToken: false };
+let cloudPhones = [];
+let cloudPhoneProviderConfig = { endpoint: "", authMode: "bearer", hasToken: false };
 
 // Currently selected country code (for proxy picker)
 let selectedCountry = null;
+let currentFingerprintMeta = {};
 
 // =========================================================
 // Boot
@@ -81,8 +108,14 @@ async function init() {
   // Load proxy library
   const libRes = await msg("PROXY_LIB_GET");
   proxyLibrary = libRes.library || [];
+  await loadVpsProxyRecords();
+  renderProxyProviderConfig();
+  renderVpsProxyRecords();
   renderProxyLibrary();
   renderCountryProxies(null, null); // show all proxies in picker on load
+  await loadCloudPhones();
+  renderCloudPhoneProviderConfig();
+  renderCloudPhones();
 
   await loadProfiles();
   bindSidebarEvents();
@@ -97,6 +130,9 @@ async function init() {
         await refreshOpenWindows();
         renderList();
         if (selectedId) updateSessionTab();
+      } else if (payload.type === "CLOUD_PHONES_CHANGED") {
+        await loadCloudPhones();
+        renderCloudPhones();
       }
     });
   }
@@ -141,6 +177,7 @@ function startNewProfile() {
   // Open an empty setup form WITHOUT saving until the user clicks "Create profile".
   creatingNew = true;
   selectedId = null;
+  currentFingerprintMeta = {};
   $("emptyState").hidden = true;
   $("formWrap").hidden = false;
   // Build a synthetic placeholder so populateForm can fill defaults
@@ -229,7 +266,6 @@ async function assignToTab(profileId) {
 // =========================================================
 function renderList() {
   const list = $("profileList");
-  const empty = $("listEmpty");
   const search = $("searchInput").value.toLowerCase();
   const fStatus = $("filterStatus").value;
   const fOS = $("filterOS").value;
@@ -244,11 +280,9 @@ function renderList() {
   list.innerHTML = "";
 
   if (!filtered.length) {
-    empty.hidden = false;
-    list.appendChild(empty);
+    list.innerHTML = '<div class="pm-list-empty" id="listEmpty">No profiles yet.<br>Click <b>+ New Profile</b> to start.</div>';
     return;
   }
-  empty.hidden = true;
 
   for (const p of filtered) {
     const isActive = p.id === selectedId;
@@ -262,8 +296,9 @@ function renderList() {
     const assignedBadge = isAssigned ? `<span class="chip status-active">On Tab</span>` : "";
     const runningBadge  = isRunning ? `<span class="chip status-active">Live</span>` : "";
     const tags = (p.tags || []).slice(0, 3).map((t) => `<span class="chip status-new">${escHtml(t)}</span>`).join("");
-    const browserIcons = { chrome: "&#9689;", brave: "&#129321;", edge: "&#127919;" };
-    const browserBadge = `<span class="chip browser-chip" title="${p.browserApp || "chrome"}">${browserIcons[p.browserApp || "chrome"] || "&#9689;"} ${(p.browserApp || "Chrome").charAt(0).toUpperCase() + (p.browserApp || "chrome").slice(1)}</span>`;
+    const browserIcons = { privacy: "PS", chrome: "&#9689;", brave: "&#129321;", edge: "&#127919;", firefox: "FF", safari: "SF" };
+    const browserName = p.browserApp || "chrome";
+    const browserBadge = `<span class="chip browser-chip" title="${browserLabel(browserName)}">${browserIcons[browserName] || "&#9689;"} ${browserLabel(browserName)}</span>`;
     const incogBadge   = p.windowMode === "incognito" ? `<span class="chip incog-chip">Incognito</span>` : "";
 
     card.innerHTML = `
@@ -342,6 +377,39 @@ function populateForm(p) {
   updateAssignedTabInfo();
 
   const fp = p.fingerprint || {};
+  currentFingerprintMeta = {
+    countryCode: fp.countryCode || "",
+    country: fp.country || "",
+    continent: fp.continent || "",
+    organization: fp.organization || fp.ispOrg || "",
+    ip: fp.ip || "",
+    domain: fp.domain || "",
+    hardwareId: fp.hardwareId || "",
+    fontProfile: fp.fontProfile || p.os || "windows",
+    installedFonts: Array.isArray(fp.installedFonts) ? fp.installedFonts : [],
+    colorDepth: fp.colorDepth || 24,
+    pixelDepth: fp.pixelDepth || 24,
+    devicePixelRatio: fp.devicePixelRatio || 1,
+    deviceClass: fp.deviceClass || (p.os === "android" ? "mobile" : "desktop"),
+    mobileModel: fp.mobileModel || "",
+    mobileManufacturer: fp.mobileManufacturer || "",
+    platformVersion: fp.platformVersion || "",
+    androidBuild: fp.androidBuild || "",
+    architecture: fp.architecture || (p.os === "android" ? "arm" : "x86"),
+    bitness: fp.bitness || "64",
+    maxTouchPoints: fp.maxTouchPoints || (p.os === "android" ? 5 : 0),
+    screenOrientation: fp.screenOrientation || (p.os === "android" ? "portrait-primary" : "landscape-primary"),
+    touchEmulation: fp.touchEmulation ?? (p.os === "android"),
+    sensorEmulation: fp.sensorEmulation ?? (p.os === "android"),
+    viewportMobile: fp.viewportMobile ?? (p.os === "android"),
+    pointerType: fp.pointerType || (p.os === "android" ? "coarse" : "fine"),
+    hoverType: fp.hoverType || (p.os === "android" ? "none" : "hover"),
+    deviceMotion: fp.deviceMotion || null,
+    deviceOrientation: fp.deviceOrientation || null,
+    connectionType: fp.connectionType || "wifi",
+    downlink: fp.downlink || 10,
+    rtt: fp.rtt || 50
+  };
   setVal("fp-browser", fp.browser || p.browserApp || "chrome");
   updateBrowserVersionOptions();
   setVal("fp-userAgent", fp.userAgent || "auto");
@@ -404,6 +472,7 @@ function populateForm(p) {
   setVal("fp-ispOrg", fp.ispOrg || "");
 
   const px = p.proxy || {};
+  setVal("px-networkMode", px.networkMode || (px.enabled ? "proxy" : "direct"));
   setVal("px-enabled", String(Boolean(px.enabled)));
   setVal("px-scheme", px.scheme || "socks5");
   setVal("px-host", px.host || "");
@@ -484,9 +553,41 @@ function collectForm() {
       state: ($("fp-state")?.value || "").trim(),
       ispName: ($("fp-ispName")?.value || "").trim(),
       ispAsn: ($("fp-ispAsn")?.value || "").trim(),
-      ispOrg: ($("fp-ispOrg")?.value || "").trim()
+      ispOrg: ($("fp-ispOrg")?.value || "").trim(),
+      countryCode: currentFingerprintMeta.countryCode || selectedCountry || "",
+      country: currentFingerprintMeta.country || "",
+      continent: currentFingerprintMeta.continent || "",
+      organization: currentFingerprintMeta.organization || ($("fp-ispOrg")?.value || "").trim(),
+      ip: currentFingerprintMeta.ip || "",
+      domain: currentFingerprintMeta.domain || "",
+      hardwareId: currentFingerprintMeta.hardwareId || "",
+      fontProfile: currentFingerprintMeta.fontProfile || $("fp-os")?.value || "windows",
+      installedFonts: Array.isArray(currentFingerprintMeta.installedFonts) ? currentFingerprintMeta.installedFonts : [],
+      colorDepth: Number(currentFingerprintMeta.colorDepth) || 24,
+      pixelDepth: Number(currentFingerprintMeta.pixelDepth) || 24,
+      devicePixelRatio: Number(currentFingerprintMeta.devicePixelRatio) || 1,
+      deviceClass: ($("fp-os")?.value === "android") ? "mobile" : (currentFingerprintMeta.deviceClass || "desktop"),
+      mobileModel: currentFingerprintMeta.mobileModel || "",
+      mobileManufacturer: currentFingerprintMeta.mobileManufacturer || "",
+      platformVersion: currentFingerprintMeta.platformVersion || "",
+      androidBuild: currentFingerprintMeta.androidBuild || "",
+      architecture: ($("fp-os")?.value === "android") ? "arm" : (currentFingerprintMeta.architecture || "x86"),
+      bitness: currentFingerprintMeta.bitness || "64",
+      maxTouchPoints: Number(currentFingerprintMeta.maxTouchPoints) || (($("fp-os")?.value === "android") ? 5 : 0),
+      screenOrientation: ($("fp-os")?.value === "android") ? "portrait-primary" : (currentFingerprintMeta.screenOrientation || "landscape-primary"),
+      touchEmulation: ($("fp-os")?.value === "android") || Boolean(currentFingerprintMeta.touchEmulation),
+      sensorEmulation: ($("fp-os")?.value === "android") || Boolean(currentFingerprintMeta.sensorEmulation),
+      viewportMobile: ($("fp-os")?.value === "android") || Boolean(currentFingerprintMeta.viewportMobile),
+      pointerType: ($("fp-os")?.value === "android") ? "coarse" : (currentFingerprintMeta.pointerType || "fine"),
+      hoverType: ($("fp-os")?.value === "android") ? "none" : (currentFingerprintMeta.hoverType || "hover"),
+      deviceMotion: currentFingerprintMeta.deviceMotion || null,
+      deviceOrientation: currentFingerprintMeta.deviceOrientation || null,
+      connectionType: currentFingerprintMeta.connectionType || "wifi",
+      downlink: Number(currentFingerprintMeta.downlink) || 10,
+      rtt: Number(currentFingerprintMeta.rtt) || 50
     },
     proxy: {
+      networkMode: $("px-networkMode")?.value || (($("px-enabled")?.value === "true") ? "proxy" : "direct"),
       enabled: $("px-enabled").value === "true",
       scheme: $("px-scheme").value,
       host: $("px-host").value.trim(),
@@ -541,6 +642,10 @@ function updateConditionalRows() {
 
   const bvSel = $("fp-browserVersion")?.value;
   show("browserVersionCustomRow", bvSel === "custom");
+
+  const networkMode = $("px-networkMode")?.value || "proxy";
+  const pxEnabled = $("px-enabled")?.value === "true";
+  show("proxyFields", networkMode === "proxy" && pxEnabled);
 }
 
 function updateUAPreview() {
@@ -557,11 +662,14 @@ function updateUAPreview() {
   const full = bv.includes(".") ? bv : bv + ".0.0.0";
   const fv   = full.split(".")[0];
 
-  const osStr = { windows: "Windows NT 10.0; Win64; x64", macos: "Macintosh; Intel Mac OS X 10_15_7", linux: "X11; Linux x86_64" }[os] || "Windows NT 10.0; Win64; x64";
+  const osStr = { windows: "Windows NT 10.0; Win64; x64", macos: "Macintosh; Intel Mac OS X 10_15_7", linux: "X11; Linux x86_64", android: "Linux; Android 14; Pixel 8 Build/UP1A.231005.007" }[os] || "Windows NT 10.0; Win64; x64";
   let ua;
   if (br === "firefox")     ua = `Mozilla/5.0 (${osStr}; rv:${fv}.0) Gecko/20100101 Firefox/${fv}.0`;
   else if (br === "safari") ua = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${full} Safari/605.1.15`;
+  else if (br === "privacy" && os === "android") ua = `Mozilla/5.0 (${osStr}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Mobile Safari/537.36 PrivacyShield/${full}`;
+  else if (os === "android") ua = `Mozilla/5.0 (${osStr}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Mobile Safari/537.36`;
   else if (br === "edge")   ua = `Mozilla/5.0 (${osStr}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36 Edg/${full}`;
+  else if (br === "privacy") ua = `Mozilla/5.0 (${osStr}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36 PrivacyShield/${full}`;
   else                      ua = `Mozilla/5.0 (${osStr}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`;
 
   preview.textContent = "Auto: " + ua;
@@ -604,9 +712,26 @@ function updateBrowserVersionOptions() {
       <option value="136">136</option>
       <option value="148">148 (latest)</option>
       <option value="custom">Custom…</option>`;
-    const name = br === "edge" ? "Edge" : br === "brave" ? "Brave" : "Chrome";
+    const name = browserLabel(br);
     if (hint) hint.textContent = `Sets the ${name} version in the auto-generated User-Agent string.`;
   }
+  updateUAPreview();
+}
+
+function setBrowserVersionValue(version) {
+  const value = String(version || "148");
+  const sel = $("fp-browserVersion");
+  if (!sel) return;
+  const hasOption = Array.from(sel.options || []).some((option) => option.value === value);
+  if (hasOption) {
+    setVal("fp-browserVersion", value);
+    setVal("fp-browserVersionCustom", "");
+  } else {
+    setVal("fp-browserVersion", "custom");
+    setVal("fp-browserVersionCustom", value);
+  }
+  const bvcRow = $("browserVersionCustomRow");
+  if (bvcRow) bvcRow.hidden = hasOption;
   updateUAPreview();
 }
 
@@ -746,6 +871,20 @@ async function testProxy() {
   const data = collectForm();
   if (selectedId) await msg("PROFILE_UPDATE", { id: selectedId, data });
   const px = data.proxy;
+  const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+  if (mode === "vpn") {
+    const captured = await captureCurrentVpnLocation(res);
+    if (captured?.ok) {
+      res.textContent = `VPN mode OK - current IP: ${captured.network.ip}${captured.network.country ? " - " + captured.network.country : ""}`;
+      res.className = "pm-proxy-result ok";
+    }
+    return;
+  }
+  if (mode === "direct") {
+    res.textContent = "Direct mode uses this computer's current connection. Use VPN mode to capture an active VPN IP.";
+    res.className = "pm-proxy-result ok";
+    return;
+  }
   if (!px.host || !px.port) {
     res.textContent = "Enter host and port first.";
     res.className = "pm-proxy-result err";
@@ -759,6 +898,75 @@ async function testProxy() {
     res.textContent = "Failed: " + (r.error || "unknown");
     res.className = "pm-proxy-result err";
   }
+}
+
+async function captureCurrentVpnLocation(targetResult) {
+  const res = targetResult || $("vpnCaptureResult");
+  const btn = $("btnCaptureVpn");
+  if (res) {
+    res.textContent = "Capturing current IP...";
+    res.className = "pm-proxy-result";
+  }
+  if (btn) btn.disabled = true;
+
+  const r = await msg("NETWORK_CAPTURE_CURRENT");
+  if (!r.ok || !r.network) {
+    if (res) {
+      res.textContent = "Failed: " + (r.error || "could not capture current IP");
+      res.className = "pm-proxy-result err";
+    }
+    if (btn) btn.disabled = false;
+    return { ok: false, error: r.error || "could not capture current IP" };
+  }
+
+  const n = r.network;
+  setVal("px-networkMode", "vpn");
+  setVal("px-enabled", "false");
+  setVal("fp-timezone", "manual");
+  if (n.timezone) setVal("fp-timezoneValue", n.timezone);
+  setVal("fp-language", "manual");
+  if (n.countryCode) setVal("fp-languageValue", languageForCountry(n.countryCode));
+  setVal("fp-geolocation", "manual");
+  if (n.latitude) setVal("fp-geoLat", n.latitude);
+  if (n.longitude) setVal("fp-geoLng", n.longitude);
+  setVal("fp-geoAccuracy", 50);
+  if (n.city) setVal("fp-city", n.city);
+  if (n.state) setVal("fp-state", n.state);
+  if (n.ispName) setVal("fp-ispName", n.ispName);
+  if (n.ispAsn) setVal("fp-ispAsn", n.ispAsn);
+  if (n.ispOrg || n.organization) setVal("fp-ispOrg", n.ispOrg || n.organization);
+  currentFingerprintMeta = {
+    ...currentFingerprintMeta,
+    countryCode: n.countryCode || currentFingerprintMeta.countryCode || "",
+    country: n.country || currentFingerprintMeta.country || "",
+    continent: n.continent || currentFingerprintMeta.continent || "",
+    organization: n.organization || n.ispOrg || currentFingerprintMeta.organization || "",
+    ip: n.ip || currentFingerprintMeta.ip || ""
+  };
+
+  updateConditionalRows();
+  updateUAPreview();
+  if (selectedId) {
+    await msg("PROFILE_UPDATE", { id: selectedId, data: collectForm() });
+    await loadProfiles();
+    renderList();
+  }
+  if (res) {
+    res.textContent = `VPN/IP captured: ${n.ip}${n.country ? " - " + n.country : ""}${n.city ? ", " + n.city : ""}`;
+    res.className = "pm-proxy-result ok";
+  }
+  toast("Current VPN/IP location applied");
+  if (btn) btn.disabled = false;
+  return { ok: true, network: n };
+}
+
+function languageForCountry(countryCode) {
+  const map = {
+    us: "en-US", gb: "en-GB", ca: "en-CA", au: "en-AU", de: "de-DE", nl: "nl-NL",
+    fr: "fr-FR", ch: "de-DE", se: "sv-SE", jp: "ja-JP", sg: "en-SG", br: "pt-BR",
+    in: "hi-IN", ae: "ar-AE", ru: "ru-RU", tr: "tr-TR", ng: "en-US"
+  };
+  return map[String(countryCode || "").toLowerCase()] || "en-US";
 }
 
 // =========================================================
@@ -861,11 +1069,18 @@ function bindFormEvents() {
   });
 
   // Conditional row toggles
-  const condTriggers = ["fp-userAgent", "fp-webglInfo", "fp-timezone", "fp-language", "fp-geolocation", "fp-deviceName", "fp-ports", "fp-webrtc", "fp-mediaDevices", "fp-screen", "fp-os", "fp-browserVersion", "fp-browser"];
+  const condTriggers = ["fp-userAgent", "fp-webglInfo", "fp-timezone", "fp-language", "fp-geolocation", "fp-deviceName", "fp-ports", "fp-webrtc", "fp-mediaDevices", "fp-screen", "fp-os", "fp-browserVersion", "fp-browser", "px-enabled", "px-networkMode"];
   for (const id of condTriggers) {
     const el = $(id);
     if (el) el.addEventListener("change", () => { updateConditionalRows(); updateUAPreview(); updateBrowserVersionOptions(); });
   }
+  $("px-networkMode")?.addEventListener("change", () => {
+    const mode = $("px-networkMode")?.value || "proxy";
+    if (mode === "proxy") setVal("px-enabled", "true");
+    if (mode === "vpn" || mode === "direct") setVal("px-enabled", "false");
+    updateConditionalRows();
+  });
+  $("btnCaptureVpn")?.addEventListener("click", captureCurrentVpnLocation);
 
   // Browser version custom input — live-update UA preview
   const bvcInput = $("fp-browserVersionCustom");
@@ -913,6 +1128,36 @@ function bindFormEvents() {
 // =========================================================
 // Session event binding
 // =========================================================
+function openBulkModal() {
+  const modal = $("bulkModal");
+  const errBox = $("bulkError");
+  const goBtn = $("btnBulkGo");
+  if (errBox) {
+    errBox.textContent = "";
+    errBox.style.display = "none";
+  }
+  if (goBtn) {
+    goBtn.disabled = false;
+    goBtn.textContent = "Create";
+  }
+  if (modal) modal.hidden = false;
+}
+
+function closeBulkModal() {
+  const modal = $("bulkModal");
+  const errBox = $("bulkError");
+  const goBtn = $("btnBulkGo");
+  if (errBox) {
+    errBox.textContent = "";
+    errBox.style.display = "none";
+  }
+  if (goBtn) {
+    goBtn.disabled = false;
+    goBtn.textContent = "Create";
+  }
+  if (modal) modal.hidden = true;
+}
+
 function bindSessionEvents() {
   $("btnOpenWindow")?.addEventListener("click", () => selectedId && openProfileWindow(selectedId));
 
@@ -924,8 +1169,14 @@ function bindSessionEvents() {
   });
 
   // Bulk create modal
-  $("btnBulkCreate")?.addEventListener("click", () => { $("bulkError").style.display = "none"; $("bulkModal").hidden = false; });
-  $("btnBulkCancel")?.addEventListener("click", () => { $("bulkModal").hidden = true; });
+  $("btnBulkCreate")?.addEventListener("click", openBulkModal);
+  $("btnBulkCancel")?.addEventListener("click", closeBulkModal);
+  $("bulkModal")?.addEventListener("click", (ev) => {
+    if (ev.target === $("bulkModal")) closeBulkModal();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !$("bulkModal")?.hidden) closeBulkModal();
+  });
   $("btnBulkGo")?.addEventListener("click", async () => {
     const btn = $("btnBulkGo");
     const errBox = $("bulkError");
@@ -933,15 +1184,20 @@ function bindSessionEvents() {
     btn.disabled = true; btn.textContent = "Creating…";
     const count = parseInt($("bulkCount").value, 10) || 10;
     const country = $("bulkCountry").value;
-    const assignProxies = $("bulkProxies").value === "1";
-    const r = await msg("PROFILE_BULK_CREATE", { count, country, assignProxies });
+    const rawNetworkMode = $("bulkProxies").value || "direct";
+    const networkMode = rawNetworkMode === "1" ? "proxy" : rawNetworkMode === "0" ? "direct" : rawNetworkMode;
+    const assignProxies = networkMode === "proxy";
+    const deviceClass = $("bulkDeviceClass")?.value || "desktop";
+    const browserApp = $("bulkBrowserApp")?.value || "random";
+    const r = await msg("PROFILE_BULK_CREATE", { count, country, assignProxies, networkMode, deviceClass, browserApp });
     btn.disabled = false; btn.textContent = "Create";
     if (!r.ok) {
       errBox.textContent = "Error: " + (r.error || "unknown — check Desktop/privacy-shield-error.txt");
       errBox.style.display = "block";
+      btn.disabled = false; btn.textContent = "Create";
       return;
     }
-    $("bulkModal").hidden = true;
+    closeBulkModal();
     await loadProfiles();
     renderList();
     toast(`Created ${r.created} profiles`);
@@ -949,25 +1205,48 @@ function bindSessionEvents() {
   $("btnSaveSession")?.addEventListener("click", () => selectedId && saveSession(selectedId));
   $("btnCloseWindow")?.addEventListener("click", () => selectedId && closeProfileWindow(selectedId));
   $("btnClearSession")?.addEventListener("click", () => selectedId && clearSession(selectedId));
+  $("btnClearBrowserData")?.addEventListener("click", () => selectedId && clearBrowserData(selectedId));
   document.querySelectorAll(".pm-country-btn").forEach((btn) => {
     btn.addEventListener("click", () => applyCountryPreset(btn.dataset.country));
   });
 
   // Proxy picker
   $("btnApplyCountryProxy")?.addEventListener("click", applySelectedLibraryProxy);
+  $("btnGenerateCountryProxy")?.addEventListener("click", () => {
+    if (!selectedCountry) { toast("Choose a country first"); return; }
+    generatePrivateProxyForCountry(selectedCountry);
+  });
   $("btnAddCountryProxy")?.addEventListener("click", () => {
-    if (selectedCountry) setVal("plib-country", selectedCountry);
-    $("proxyLibForm")?.scrollIntoView({ behavior: "smooth" });
-    $("plib-host")?.focus();
+    if (selectedCountry) setVal("vps-country", selectedCountry);
+    $("vpsProxyForm")?.scrollIntoView({ behavior: "smooth" });
+    $("vps-host")?.focus();
   });
 
   // Proxy library form
+  $("btnSaveProxyProvider")?.addEventListener("click", saveProxyProviderSettings);
+  $("btnVpsTestSsh")?.addEventListener("click", testVpsSsh);
+  $("btnVpsInstall")?.addEventListener("click", installVpsProxy);
+  $("btnVpsClear")?.addEventListener("click", resetVpsForm);
+  $("vpsProxyList")?.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("[data-vps-action]");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    if (btn.dataset.vpsAction === "test") await testVpsProxy(id);
+    else if (btn.dataset.vpsAction === "edit") editVpsProxy(id);
+    else if (btn.dataset.vpsAction === "del") await deleteVpsProxy(id);
+  });
   $("btnSaveProxyLib")?.addEventListener("click", saveProxyLibEntry);
   $("btnCancelProxyLib")?.addEventListener("click", resetProxyLibForm);
   $("btnToggleProxyLib")?.addEventListener("click", () => {
     const panel = $("proxyLibPanel");
     if (panel) panel.hidden = !panel.hidden;
   });
+
+  // Android cloud phones
+  $("btnSaveCloudProvider")?.addEventListener("click", saveCloudPhoneProviderSettings);
+  $("btnSaveCloudPhone")?.addEventListener("click", saveCloudPhoneRecord);
+  $("btnResetCloudPhone")?.addEventListener("click", resetCloudPhoneForm);
+  $("cloudPhoneList")?.addEventListener("click", handleCloudPhoneListClick);
 
   // Auto-detect from own server
   $("btnDetectProxy")?.addEventListener("click", autoDetectProxy);
@@ -995,6 +1274,8 @@ async function openProfileWindow(profileId) {
   const r = await msg("PROFILE_OPEN_WINDOW", { profileId });
   if (!r.ok) {
     toast("Failed to start: " + (r.error || "unknown"));
+  } else if (r.preview) {
+    toast("Preview window opened. Run the desktop app for real isolated browsing.");
   } else if (r.existing) {
     toast("Already running — focused");
   } else {
@@ -1040,6 +1321,19 @@ async function clearSession(profileId) {
   await loadProfiles();
   updateSessionTab();
   toast("Session cleared");
+}
+
+async function clearBrowserData(profileId) {
+  if (!confirm("Clear cookies, storage, cache, auth, and saved tabs for this profile?")) return;
+  const r = await msg("PROFILE_CLEAR_BROWSER_DATA", { profileId });
+  if (!r.ok) {
+    toast("Clear failed: " + (r.error || "unknown"));
+    return;
+  }
+  await loadProfiles();
+  updateSessionTab();
+  updateCookiePanel(profiles.find((p) => p.id === profileId) || {});
+  toast("Profile browser data cleared");
 }
 
 function updateSessionTab() {
@@ -1128,43 +1422,105 @@ const COUNTRY_PRESETS = {
   ng: { name: "Nigeria (Lagos)", timezone: "Africa/Lagos", offset: -60, language: "en-US", lat: 6.5244, lng: 3.3792, os: "linux", screenWidth: 1366, screenHeight: 768, browserVersion: "148", city: "Lagos", state: "Lagos State", ispName: "Airtel Networks Limited", ispAsn: "36873", ispOrg: "Airtel Networks Limited" }
 };
 
-function applyCountryPreset(countryCode) {
-  const p = COUNTRY_PRESETS[countryCode];
-  if (!p) return;
+function applyGeneratedIdentityToForm(data) {
+  const fp = data?.fingerprint || {};
+  if (!fp) return;
 
-  // Fingerprint tab
-  setVal("fp-timezone", "manual");
-  setVal("fp-timezoneValue", p.timezone);
-  setVal("fp-timezoneOffset", p.offset);
-  setVal("fp-language", "manual");
-  setVal("fp-languageValue", p.language);
-  setVal("fp-geolocation", "manual");
-  setVal("fp-geoLat", p.lat);
-  setVal("fp-geoLng", p.lng);
-  setVal("fp-geoAccuracy", 50);
-  setVal("fp-os", p.os);
-  setVal("fp-screen", "manual");
-  setVal("fp-screenWidth", p.screenWidth);
-  setVal("fp-screenHeight", p.screenHeight);
-  setVal("fp-userAgent", "auto");
+  currentFingerprintMeta = {
+    countryCode: fp.countryCode || "",
+    country: fp.country || "",
+    continent: fp.continent || "",
+    organization: fp.organization || fp.ispOrg || "",
+    ip: fp.ip || "",
+    domain: fp.domain || "",
+    hardwareId: fp.hardwareId || "",
+    fontProfile: fp.fontProfile || data.os || "windows",
+    installedFonts: Array.isArray(fp.installedFonts) ? fp.installedFonts : [],
+    colorDepth: fp.colorDepth || 24,
+    pixelDepth: fp.pixelDepth || 24,
+    devicePixelRatio: fp.devicePixelRatio || 1,
+    deviceClass: fp.deviceClass || (data.os === "android" ? "mobile" : "desktop"),
+    mobileModel: fp.mobileModel || "",
+    mobileManufacturer: fp.mobileManufacturer || "",
+    platformVersion: fp.platformVersion || "",
+    androidBuild: fp.androidBuild || "",
+    architecture: fp.architecture || (data.os === "android" ? "arm" : "x86"),
+    bitness: fp.bitness || "64",
+    maxTouchPoints: fp.maxTouchPoints || (data.os === "android" ? 5 : 0),
+    screenOrientation: fp.screenOrientation || (data.os === "android" ? "portrait-primary" : "landscape-primary"),
+    touchEmulation: fp.touchEmulation ?? (data.os === "android"),
+    sensorEmulation: fp.sensorEmulation ?? (data.os === "android"),
+    viewportMobile: fp.viewportMobile ?? (data.os === "android"),
+    pointerType: fp.pointerType || (data.os === "android" ? "coarse" : "fine"),
+    hoverType: fp.hoverType || (data.os === "android" ? "none" : "hover"),
+    deviceMotion: fp.deviceMotion || null,
+    deviceOrientation: fp.deviceOrientation || null,
+    connectionType: fp.connectionType || "wifi",
+    downlink: fp.downlink || 10,
+    rtt: fp.rtt || 50
+  };
 
-  // Browser version (preset-specific or default)
-  if (p.browserVersion) {
-    setVal("fp-browserVersion", p.browserVersion);
-    const bvcRow = $("browserVersionCustomRow");
-    if (bvcRow) bvcRow.hidden = true;
+  if (creatingNew || !$("fp-name")?.value.trim() || /^New Profile\b/.test($("fp-name")?.value || "")) {
+    setVal("fp-name", data.name || $("fp-name")?.value || "New Profile");
   }
+  setVal("fp-os", data.os || "windows");
+  setVal("fp-browserApp", data.browserApp || fp.browser || "chrome");
+  setVal("fp-browser", fp.browser || data.browserApp || "chrome");
+  updateBrowserVersionOptions();
 
-  // ISP / Location identity
-  if (p.city !== undefined) setVal("fp-city", p.city);
-  if (p.state !== undefined) setVal("fp-state", p.state);
-  if (p.ispName !== undefined) setVal("fp-ispName", p.ispName);
-  if (p.ispAsn !== undefined) setVal("fp-ispAsn", p.ispAsn);
-  if (p.ispOrg !== undefined) setVal("fp-ispOrg", p.ispOrg);
+  setVal("fp-userAgent", fp.userAgent || "auto");
+  setVal("fp-userAgentValue", fp.userAgentValue || "");
+  setVal("fp-timezone", "manual");
+  setVal("fp-timezoneValue", fp.timezoneValue || "UTC");
+  setVal("fp-timezoneOffset", fp.timezoneOffset ?? 0);
+  setVal("fp-language", "manual");
+  setVal("fp-languageValue", fp.languageValue || "en-US");
+  setVal("fp-geolocation", "manual");
+  setVal("fp-geoLat", fp.geoLat ?? 0);
+  setVal("fp-geoLng", fp.geoLng ?? 0);
+  setVal("fp-geoAccuracy", fp.geoAccuracy ?? 50);
+  setVal("fp-screen", "manual");
+  setVal("fp-screenWidth", fp.screenWidth || 1920);
+  setVal("fp-screenHeight", fp.screenHeight || 1080);
+  setVal("fp-cpuCores", "manual");
+  setVal("fp-cpuCoresValue", fp.cpuCoresValue || 4);
+  setVal("fp-ram", "manual");
+  setVal("fp-ramValue", fp.ramValue || 8);
+  setVal("fp-webgl", fp.webgl || "noise");
+  setVal("fp-webglInfo", "manual");
+  setVal("fp-webglVendor", fp.webglVendor || "");
+  setVal("fp-webglRenderer", fp.webglRenderer || "");
+  setVal("fp-webgpu", String(Boolean(fp.webgpu)));
+  setVal("fp-audio", fp.audio || "noise");
+  setVal("fp-clientRects", fp.clientRects || "real");
+  setVal("fp-mediaDevices", fp.mediaDevices || "real");
+  setVal("fp-cameras", fp.cameras ?? 1);
+  setVal("fp-microphones", fp.microphones ?? 1);
+  setVal("fp-speakers", fp.speakers ?? 1);
+  setVal("fp-fonts", fp.fonts || "real");
+  setVal("fp-deviceName", "manual");
+  setVal("fp-deviceNameValue", fp.deviceNameValue || randDeviceName());
+  setVal("fp-ports", fp.ports || "block");
+  setVal("fp-blockedPorts", (fp.blockedPorts || [3389, 5938]).join(", "));
+  setVal("fp-doNotTrack", String(Boolean(fp.doNotTrack)));
+  setVal("fp-webrtc", fp.webrtc || "altered");
+  setVal("fp-webrtcIP", fp.webrtcIP || "");
+  setVal("fp-blockCookies", String(Boolean(fp.blockCookies)));
+  setVal("fp-blockStorage", String(Boolean(fp.blockStorage)));
+  setVal("fp-city", fp.city || "");
+  setVal("fp-state", fp.state || "");
+  setVal("fp-ispName", fp.ispName || "");
+  setVal("fp-ispAsn", fp.ispAsn || "");
+  setVal("fp-ispOrg", fp.ispOrg || fp.organization || "");
+  setBrowserVersionValue(fp.browserVersion || "148");
 
-  // Update OS-related UI
   updateConditionalRows();
   updateUAPreview();
+}
+
+async function applyCountryPreset(countryCode) {
+  const p = COUNTRY_PRESETS[countryCode];
+  if (!p) return;
 
   // Highlight selected button
   document.querySelectorAll(".pm-country-btn").forEach((btn) => {
@@ -1175,14 +1531,30 @@ function applyCountryPreset(countryCode) {
   const applied = $("countryApplied");
   if (applied) {
     applied.hidden = false;
-    applied.textContent = `Applied ${p.name} — timezone, language, geolocation, and screen set. Remember to add your proxy in the Proxy tab, then click Save.`;
+    applied.textContent = `Generating a fresh ${p.name} device, browser, location, and fingerprint...`;
   }
 
-  toast(`${p.name} preset applied — click Save to keep it`);
+  const deviceClass = $("countryDeviceClass")?.value || "desktop";
+  const r = await msg("PROFILE_COUNTRY_IDENTITY", { country: countryCode, index: profiles.length + 1, deviceClass });
+  if (!r.ok || !r.data) {
+    if (applied) applied.textContent = r.error || `Could not generate ${p.name} identity.`;
+    toast("Identity generation failed");
+    return;
+  }
+
+  applyGeneratedIdentityToForm(r.data);
+
+  const fp = r.data.fingerprint || {};
+  const city = fp.city ? `${fp.city}, ` : "";
+  if (applied) applied.textContent = `Applied fresh ${city}${fp.country || p.name} identity. Looking for a matching VPS proxy.`;
 
   // Show proxy picker for this country
   selectedCountry = countryCode;
   renderCountryProxies(countryCode, p.name);
+  toast(`New ${p.name} identity applied`);
+  generatePrivateProxyForCountry(countryCode, { auto: true }).catch((err) => {
+    setPrivateProxyStatus(String(err.message || err), "err");
+  });
 }
 
 // =========================================================
@@ -1195,16 +1567,236 @@ const COUNTRY_NAMES = {
   br:"Brazil",in:"India",ae:"UAE (Dubai)",ru:"Russia",tr:"Turkey",ng:"Nigeria","":" Any"
 };
 
+async function loadProxyProviderConfig() {
+  const r = await msg("PROXY_PROVIDER_GET");
+  if (r.ok && r.config) proxyProviderConfig = r.config;
+}
+
+function renderProxyProviderConfig() {
+  setVal("proxyProviderEndpoint", proxyProviderConfig.endpoint || "");
+  setVal("proxyProviderAuthMode", proxyProviderConfig.authMode || "bearer");
+  const token = $("proxyProviderToken");
+  if (token) {
+    token.value = "";
+    token.placeholder = proxyProviderConfig.hasToken ? "Token saved - leave blank to keep" : "API token";
+  }
+  setPrivateProxyStatus("Country buttons use installed VPS proxies only. Add and install one VPS per country you need.", "info");
+}
+
+function setPrivateProxyStatus(text, state = "info") {
+  const el = $("privateProxyStatus");
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text || "";
+  el.className = "pm-private-proxy-status " + state;
+}
+
+function upsertProxyEntry(entry) {
+  if (!entry || !entry.id) return;
+  const idx = proxyLibrary.findIndex((e) => e.id === entry.id);
+  if (idx === -1) proxyLibrary.push(entry);
+  else proxyLibrary[idx] = { ...proxyLibrary[idx], ...entry };
+}
+
+function privateVpsProxies() {
+  return proxyLibrary.filter((e) => e && e.host && e.port && e.private !== false && e.source === "vps");
+}
+
+function upsertVpsRecord(record) {
+  if (!record || !record.id) return;
+  const idx = vpsProxyRecords.findIndex((item) => item.id === record.id);
+  if (idx === -1) vpsProxyRecords.push(record);
+  else vpsProxyRecords[idx] = { ...vpsProxyRecords[idx], ...record };
+}
+
+async function loadVpsProxyRecords() {
+  const r = await msg("VPS_PROXY_LIST");
+  vpsProxyRecords = r.records || [];
+}
+
+function setVpsStatus(text, state = "info") {
+  const el = $("vpsStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.style.color = state === "ok" ? "var(--green)" : state === "err" ? "var(--red)" : "var(--muted)";
+}
+
+function collectVpsForm() {
+  const host = $("vps-host")?.value.trim();
+  const country = $("vps-country")?.value || "";
+  const username = $("vps-ssh-user")?.value.trim() || "root";
+  const password = $("vps-ssh-password")?.value || "";
+  const privateKey = $("vps-ssh-key")?.value.trim() || "";
+  if (!host) throw new Error("VPS host is required");
+  if (!country) throw new Error("Country is required");
+  if (!username) throw new Error("SSH user is required");
+  if (!password && !privateKey) throw new Error("Enter an SSH password or private key");
+
+  const installBtn = $("btnVpsInstall");
+  return {
+    id: installBtn?.dataset.editId || "",
+    label: $("vps-label")?.value.trim() || `${COUNTRY_NAMES[country] || country.toUpperCase()} VPS`,
+    country,
+    host,
+    sshPort: Number($("vps-ssh-port")?.value) || 22,
+    username,
+    password,
+    privateKey,
+    proxyPort: Number($("vps-proxy-port")?.value) || 1080,
+    httpPort: Number($("vps-http-port")?.value) || 1081,
+    infoPort: Number($("vps-info-port")?.value) || 8888
+  };
+}
+
+function resetVpsForm() {
+  ["vps-label", "vps-host", "vps-ssh-password", "vps-ssh-key"].forEach((id) => setVal(id, ""));
+  setVal("vps-country", selectedCountry || "us");
+  setVal("vps-ssh-port", "22");
+  setVal("vps-ssh-user", "root");
+  setVal("vps-proxy-port", "1080");
+  setVal("vps-http-port", "1081");
+  setVal("vps-info-port", "8888");
+  const installBtn = $("btnVpsInstall");
+  if (installBtn) delete installBtn.dataset.editId;
+  setVpsStatus("");
+}
+
+function renderVpsProxyRecords() {
+  const list = $("vpsProxyList");
+  if (!list) return;
+  if (!vpsProxyRecords.length) {
+    list.innerHTML = '<div class="pm-list-empty">No VPS proxies installed yet.</div>';
+    return;
+  }
+
+  list.innerHTML = vpsProxyRecords.map((record) => {
+    const proxy = record.proxy || {};
+    const ssh = record.ssh || {};
+    const label = escapeHtml(record.label || proxy.label || record.host || "VPS Proxy");
+    const country = escapeHtml(COUNTRY_NAMES[record.country] || record.country || "Any");
+    const host = escapeHtml(record.host || ssh.host || proxy.host || "");
+    const port = escapeHtml(proxy.port || record.proxyPort || "");
+    const status = escapeHtml(record.installedAt ? `installed ${new Date(record.installedAt).toLocaleString()}` : "saved");
+    return `
+      <div class="pm-vps-item" data-vps-id="${escapeHtml(record.id)}">
+        <div class="pm-proxy-lib-item-main">
+          <span class="pm-proxy-lib-label">${label}</span>
+          <span class="pm-proxy-lib-meta">${country} - ${host}:${port} - VPS private</span>
+          <span class="pm-proxy-lib-status" id="vps-status-${escapeHtml(record.id)}">${status}</span>
+        </div>
+        <div class="pm-proxy-lib-actions">
+          <button class="pm-btn-xs" data-vps-action="test" data-id="${escapeHtml(record.id)}">Test</button>
+          <button class="pm-btn-xs" data-vps-action="edit" data-id="${escapeHtml(record.id)}">Edit</button>
+          <button class="pm-btn-xs danger" data-vps-action="del" data-id="${escapeHtml(record.id)}">Del</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function testVpsSsh() {
+  let data;
+  try { data = collectVpsForm(); } catch (err) { setVpsStatus(err.message, "err"); return; }
+
+  const btn = $("btnVpsTestSsh");
+  if (btn) { btn.disabled = true; btn.textContent = "Testing..."; }
+  setVpsStatus("Connecting to VPS SSH...", "info");
+  const r = await msg("VPS_PROXY_TEST_SSH", data);
+  if (r.ok) {
+    setVpsStatus(`SSH ok: ${r.server || data.host}`, "ok");
+    toast("SSH connection works");
+  } else {
+    setVpsStatus(r.error || "SSH failed", "err");
+    toast("SSH connection failed");
+  }
+  if (btn) { btn.disabled = false; btn.textContent = "Test SSH"; }
+}
+
+async function installVpsProxy() {
+  let data;
+  try { data = collectVpsForm(); } catch (err) { setVpsStatus(err.message, "err"); return; }
+
+  const btn = $("btnVpsInstall");
+  if (btn) { btn.disabled = true; btn.textContent = "Installing..."; }
+  setVpsStatus("Installing proxy service on the VPS...", "info");
+  const r = await msg("VPS_PROXY_INSTALL", data);
+  if (r.ok) {
+    upsertVpsRecord(r.record);
+    upsertProxyEntry(r.proxy);
+    renderVpsProxyRecords();
+    renderProxyLibrary();
+    renderCountryProxies(selectedCountry, selectedCountry ? COUNTRY_PRESETS[selectedCountry]?.name : null);
+    resetVpsForm();
+    setVpsStatus(`Installed: ${r.proxy.host}:${r.proxy.port}`, "ok");
+    toast("VPS proxy installed");
+  } else {
+    setVpsStatus(r.error || "Install failed", "err");
+    toast("VPS install failed");
+  }
+  if (btn) { btn.disabled = false; btn.textContent = "Install / Update VPS Proxy"; }
+}
+
+async function testVpsProxy(id) {
+  const statusEl = document.getElementById(`vps-status-${id}`);
+  if (statusEl) { statusEl.textContent = "testing..."; statusEl.style.color = "var(--muted)"; }
+  const r = await msg("VPS_PROXY_TEST", { id });
+  if (r.ok) {
+    const ip = r.proxy?.ip || r.info?.hostname || "online";
+    if (statusEl) { statusEl.textContent = `online - ${ip}`; statusEl.style.color = "var(--green)"; }
+    toast("VPS proxy is online");
+  } else {
+    if (statusEl) { statusEl.textContent = r.error || "unreachable"; statusEl.style.color = "var(--red)"; }
+    toast("VPS proxy test failed");
+  }
+}
+
+async function deleteVpsProxy(id) {
+  if (!id || !confirm("Delete this VPS proxy from the app? The service on the VPS will keep running until you remove it from the server.")) return;
+  const r = await msg("VPS_PROXY_DELETE", { id });
+  if (!r.ok) {
+    toast(r.error || "Delete failed");
+    return;
+  }
+  vpsProxyRecords = vpsProxyRecords.filter((record) => record.id !== id);
+  proxyLibrary = proxyLibrary.filter((entry) => entry.vpsId !== id);
+  renderVpsProxyRecords();
+  renderProxyLibrary();
+  renderCountryProxies(selectedCountry, selectedCountry ? COUNTRY_PRESETS[selectedCountry]?.name : null);
+  toast("VPS proxy deleted");
+}
+
+function editVpsProxy(id) {
+  const record = vpsProxyRecords.find((item) => item.id === id);
+  if (!record) return;
+  const proxy = record.proxy || {};
+  const ssh = record.ssh || {};
+  setVal("vps-label", record.label || proxy.label || "");
+  setVal("vps-country", record.country || proxy.country || "us");
+  setVal("vps-host", record.host || ssh.host || proxy.host || "");
+  setVal("vps-ssh-port", ssh.port || 22);
+  setVal("vps-ssh-user", ssh.username || "root");
+  setVal("vps-ssh-password", "");
+  setVal("vps-ssh-key", "");
+  setVal("vps-proxy-port", proxy.port || 1080);
+  setVal("vps-http-port", proxy.httpPort || 1081);
+  setVal("vps-info-port", proxy.infoPort || 8888);
+  const installBtn = $("btnVpsInstall");
+  if (installBtn) installBtn.dataset.editId = id;
+  setVpsStatus("Loaded VPS settings. Re-enter password or key before installing.", "info");
+  $("vpsProxyForm")?.scrollIntoView({ behavior: "smooth" });
+}
+
 function renderCountryProxies(countryCode, countryName) {
   const label  = $("countryProxyLabel");
   const sel    = $("countryProxySel");
   const empty  = $("countryProxyEmpty");
   if (!sel) return;
 
-  // Filter: if countryCode given, show only that country; otherwise show all
+  // Filter: country auto-apply only uses VPS proxies installed by this app.
+  const vpsMatches = privateVpsProxies();
   const matches = countryCode
-    ? proxyLibrary.filter((e) => e.country === countryCode || e.country === "")
-    : proxyLibrary;
+    ? vpsMatches.filter((e) => e.country === countryCode || e.country === "")
+    : vpsMatches;
 
   if (label) {
     label.textContent = countryCode
@@ -1217,49 +1809,147 @@ function renderCountryProxies(countryCode, countryName) {
     const o = document.createElement("option");
     o.value = "";
     o.textContent = countryCode
-      ? `No proxies for ${COUNTRY_NAMES[countryCode] || countryCode} — add one in Proxy Library`
-      : "No proxies saved yet — add one in Proxy Library below";
+      ? `No VPS proxy for ${COUNTRY_NAMES[countryCode] || countryCode} - setup needed`
+      : "No VPS proxies installed yet";
     sel.appendChild(o);
-    if (empty) empty.hidden = false;
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = countryCode
+        ? `Setup needed: add and install a VPS proxy for ${COUNTRY_NAMES[countryCode] || countryCode}.`
+        : "Add and install a VPS proxy below before using country proxy buttons.";
+    }
   } else {
     if (empty) empty.hidden = true;
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = "— choose a proxy —";
+    placeholder.textContent = "- choose a VPS proxy -";
     sel.appendChild(placeholder);
     for (const e of matches) {
       const o = document.createElement("option");
       o.value = e.id;
-      const flag = Object.entries(COUNTRY_NAMES).find(([k]) => k === e.country)?.[0] || "";
-      o.textContent = `${e.label || "Unnamed"} — ${e.scheme.toUpperCase()} ${e.host}:${e.port}${e.ispName ? " | " + e.ispName : ""}`;
+      o.textContent = `${e.label || "Unnamed"} - ${e.scheme.toUpperCase()} ${e.host}:${e.port}${e.ispName ? " | " + e.ispName : ""}`;
       sel.appendChild(o);
     }
   }
 }
 
-function applySelectedLibraryProxy() {
-  const sel = $("countryProxySel");
-  if (!sel || !sel.value) return;
-  const entry = proxyLibrary.find((e) => e.id === sel.value);
+async function fillProxyFromEntry(entry, opts = {}) {
   if (!entry) return;
+  const px = {
+    networkMode: "proxy",
+    enabled: true,
+    scheme: entry.scheme || "socks5",
+    host: entry.host || "",
+    port: entry.port || 1080,
+    username: entry.username || "",
+    password: entry.password || "",
+    rotationUrl: entry.rotationUrl || "",
+    bypassList: ["localhost", "127.0.0.1"]
+  };
 
-  // Fill Proxy tab fields
+  setVal("px-networkMode", px.networkMode);
   setVal("px-enabled", "true");
-  setVal("px-scheme", entry.scheme || "socks5");
-  setVal("px-host", entry.host || "");
-  setVal("px-port", entry.port || 1080);
-  setVal("px-username", entry.username || "");
-  setVal("px-password", entry.password || "");
+  setVal("px-scheme", px.scheme);
+  setVal("px-host", px.host);
+  setVal("px-port", px.port);
+  setVal("px-username", px.username);
+  setVal("px-password", px.password);
+  setVal("px-rotationUrl", px.rotationUrl);
+  setVal("px-bypassList", px.bypassList.join(", "));
 
-  // Fill ISP / identity fields from this proxy's metadata
   if (entry.ispName) setVal("fp-ispName", entry.ispName);
   if (entry.ispAsn)  setVal("fp-ispAsn",  entry.ispAsn);
   if (entry.ispOrg)  setVal("fp-ispOrg",  entry.ispOrg);
   if (entry.city)    setVal("fp-city",     entry.city);
+  currentFingerprintMeta = {
+    ...currentFingerprintMeta,
+    countryCode: entry.country || currentFingerprintMeta.countryCode || selectedCountry || "",
+    country: COUNTRY_NAMES[entry.country] || currentFingerprintMeta.country || "",
+    organization: entry.ispOrg || entry.ispName || currentFingerprintMeta.organization || "",
+    ip: entry.host || currentFingerprintMeta.ip || ""
+  };
 
-  // Switch to Proxy tab so user sees it
-  document.querySelector('[data-tab="proxy"]')?.click();
+  if (opts.persist !== false && selectedId && !creatingNew) {
+    await msg("PROFILE_UPDATE", { id: selectedId, data: collectForm() });
+    await loadProfiles();
+    renderList();
+  }
+
+  if (opts.switchTab) document.querySelector('[data-tab="proxy"]')?.click();
+}
+
+async function applySelectedLibraryProxy() {
+  const sel = $("countryProxySel");
+  if (!sel || !sel.value) return;
+  const entry = proxyLibrary.find((e) => e.id === sel.value);
+  if (!entry) return;
+  await fillProxyFromEntry(entry, { switchTab: true });
   toast(`Proxy applied: ${entry.label || entry.host}`);
+}
+
+async function generatePrivateProxyForCountry(countryCode, opts = {}) {
+  if (!countryCode) return;
+  const btn = $("btnGenerateCountryProxy");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Checking...";
+  }
+  setPrivateProxyStatus(`Looking for installed VPS proxy for ${COUNTRY_NAMES[countryCode] || countryCode.toUpperCase()}...`, "info");
+
+  const r = await msg("PROXY_GENERATE_PRIVATE", { country: countryCode, profileId: selectedId });
+  if (!r.ok) {
+    setPrivateProxyStatus(r.error || "No private proxy available for this country.", "err");
+    toast("No private proxy available");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Use VPS proxy";
+    }
+    return;
+  }
+
+  upsertProxyEntry(r.entry);
+  renderProxyLibrary();
+  renderCountryProxies(countryCode, COUNTRY_PRESETS[countryCode]?.name);
+  if ($("countryProxySel")) $("countryProxySel").value = r.entry.id || "";
+  await fillProxyFromEntry(r.entry, { switchTab: !opts.auto });
+
+  const warning = r.warning ? ` (${r.warning})` : "";
+  setPrivateProxyStatus(`VPS proxy ready: ${r.entry.host}:${r.entry.port}${warning}`, r.warning ? "warn" : "ok");
+  toast(`VPS ${COUNTRY_NAMES[countryCode] || countryCode.toUpperCase()} proxy applied`);
+
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = "Use VPS proxy";
+  }
+}
+
+async function saveProxyProviderSettings() {
+  const btn = $("btnSaveProxyProvider");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+  }
+
+  const r = await msg("PROXY_PROVIDER_SAVE", {
+    config: {
+      endpoint: $("proxyProviderEndpoint")?.value.trim() || "",
+      token: $("proxyProviderToken")?.value.trim() || "",
+      authMode: $("proxyProviderAuthMode")?.value || "bearer"
+    }
+  });
+
+  if (r.ok) {
+    proxyProviderConfig = r.config;
+    renderProxyProviderConfig();
+    toast("Private proxy provider saved");
+  } else {
+    setPrivateProxyStatus(r.error || "Could not save private provider", "err");
+  }
+
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = "Save provider";
+  }
 }
 
 function renderProxyLibrary() {
@@ -1285,7 +1975,7 @@ function renderProxyLibrary() {
     </div>
   `).join("");
 
-  list.addEventListener("click", async (ev) => {
+  list.onclick = async (ev) => {
     const btn = ev.target.closest("[data-action]");
     if (!btn) return;
     const id = btn.dataset.id;
@@ -1294,14 +1984,24 @@ function renderProxyLibrary() {
       if (!e) return;
       await testProxyEntry(e);
     } else if (btn.dataset.action === "del") {
-      await msg("PROXY_LIB_DELETE", { id });
-      proxyLibrary = proxyLibrary.filter((e) => e.id !== id);
-      renderProxyLibrary();
-      renderCountryProxies(selectedCountry, selectedCountry ? COUNTRY_PRESETS[selectedCountry]?.name : null);
-      toast("Proxy deleted");
+      const e = proxyLibrary.find((x) => x.id === id);
+      if (e?.source === "vps" && e.vpsId) {
+        await deleteVpsProxy(e.vpsId);
+      } else {
+        await msg("PROXY_LIB_DELETE", { id });
+        proxyLibrary = proxyLibrary.filter((entry) => entry.id !== id);
+        renderProxyLibrary();
+        renderCountryProxies(selectedCountry, selectedCountry ? COUNTRY_PRESETS[selectedCountry]?.name : null);
+        toast("Proxy deleted");
+      }
     } else if (btn.dataset.action === "edit") {
       const e = proxyLibrary.find((x) => x.id === id);
       if (!e) return;
+      if (e.source === "vps") {
+        toast("Edit VPS proxies from the VPS installer");
+        if (e.vpsId) editVpsProxy(e.vpsId);
+        return;
+      }
       setVal("plib-label",   e.label || "");
       setVal("plib-country", e.country || "");
       setVal("plib-scheme",  e.scheme || "socks5");
@@ -1318,7 +2018,7 @@ function renderProxyLibrary() {
       if (cancelBtn) cancelBtn.hidden = false;
       $("proxyLibForm")?.scrollIntoView({ behavior: "smooth" });
     }
-  }, { capture: false });
+  };
 }
 
 async function saveProxyLibEntry() {
@@ -1335,7 +2035,9 @@ async function saveProxyLibEntry() {
     ispName:  $("plib-ispName")?.value.trim() || "",
     ispAsn:   $("plib-asn")?.value.trim() || "",
     ispOrg:   $("plib-ispName")?.value.trim() || "",
-    city:     $("plib-city")?.value.trim() || ""
+    city:     $("plib-city")?.value.trim() || "",
+    private:  true,
+    source:   "private"
   };
 
   const saveBtn = $("btnSaveProxyLib");
@@ -1371,22 +2073,19 @@ function resetProxyLibForm() {
 
 async function testProxyEntry(entry) {
   const statusEl = document.getElementById(`plib-status-${entry.id}`);
-  if (statusEl) { statusEl.textContent = " testing…"; statusEl.style.color = "var(--muted)"; }
-
-  try {
-    // Ping the info endpoint on port 8888 — works regardless of auth
-    const infoUrl = `http://${entry.host}:8888/`;
-    const resp = await fetch(infoUrl, { signal: AbortSignal.timeout(6000) });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const info = await resp.json();
-
-    const uptime = info.uptime_sec != null ? ` · up ${Math.floor(info.uptime_sec / 60)}m` : "";
-    const active = info.active != null ? ` · ${info.active} active` : "";
-    if (statusEl) { statusEl.textContent = ` online${uptime}${active}`; statusEl.style.color = "var(--green)"; }
+  if (statusEl) { statusEl.textContent = " testing..."; statusEl.style.color = "var(--muted)"; }
+  const r = await msg("TEST_PROXY", {
+    host: entry.host,
+    port: entry.port,
+    scheme: entry.scheme,
+    username: entry.username || "",
+    password: entry.password || ""
+  });
+  if (r.ok) {
+    if (statusEl) { statusEl.textContent = ` online - ${r.ip}`; statusEl.style.color = "var(--green)"; }
     toast(`${entry.label || entry.host}: online`);
-  } catch (_) {
-    // Fallback: check if SOCKS5 port is reachable via a direct fetch to the info endpoint
-    if (statusEl) { statusEl.textContent = " unreachable"; statusEl.style.color = "var(--red)"; }
+  } else {
+    if (statusEl) { statusEl.textContent = " " + (r.error || "unreachable"); statusEl.style.color = "var(--red)"; }
     toast(`${entry.label || entry.host}: could not connect`);
   }
 }
@@ -1453,6 +2152,174 @@ async function autoDetectProxy() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// =========================================================
+// Android Cloud Phones
+// =========================================================
+async function loadCloudPhones() {
+  const providerRes = await msg("CLOUD_PHONE_PROVIDER_GET");
+  cloudPhoneProviderConfig = providerRes.config || { endpoint: "", authMode: "bearer", hasToken: false };
+  const listRes = await msg("CLOUD_PHONE_LIST");
+  cloudPhones = listRes.phones || [];
+}
+
+function renderCloudPhoneProviderConfig() {
+  setVal("cloudProviderEndpoint", cloudPhoneProviderConfig.endpoint || "");
+  setVal("cloudProviderAuthMode", cloudPhoneProviderConfig.authMode || "bearer");
+  setVal("cloudProviderToken", "");
+  const status = $("cloudProviderStatus");
+  if (status) {
+    status.textContent = cloudPhoneProviderConfig.hasToken
+      ? "Provider saved. Token is stored securely by Electron safeStorage where available."
+      : "Provider is optional. You can also register phones manually from an existing provider console.";
+  }
+}
+
+async function saveCloudPhoneProviderSettings() {
+  const btn = $("btnSaveCloudProvider");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+  const r = await msg("CLOUD_PHONE_PROVIDER_SAVE", {
+    config: {
+      endpoint: $("cloudProviderEndpoint")?.value.trim() || "",
+      authMode: $("cloudProviderAuthMode")?.value || "bearer",
+      token: $("cloudProviderToken")?.value.trim() || ""
+    }
+  });
+  if (r.ok) {
+    cloudPhoneProviderConfig = r.config || cloudPhoneProviderConfig;
+    renderCloudPhoneProviderConfig();
+    toast("Cloud phone provider saved");
+  } else {
+    const status = $("cloudProviderStatus");
+    if (status) status.textContent = r.error || "Could not save provider";
+  }
+  if (btn) { btn.disabled = false; btn.textContent = "Save provider"; }
+}
+
+function collectCloudPhoneForm() {
+  return {
+    label: $("cloudPhoneLabel")?.value.trim() || "Android Cloud Phone",
+    provider: $("cloudPhoneProvider")?.value.trim() || "",
+    country: $("cloudPhoneCountry")?.value || "",
+    androidVersion: $("cloudPhoneAndroid")?.value || "14",
+    manufacturer: $("cloudPhoneManufacturer")?.value.trim() || "Google",
+    model: $("cloudPhoneModel")?.value.trim() || "Pixel 8",
+    imei: $("cloudPhoneImei")?.value.trim() || "",
+    hardwareFingerprint: $("cloudPhoneHardware")?.value.trim() || "",
+    remoteUrl: $("cloudPhoneRemoteUrl")?.value.trim() || "",
+    status: $("cloudPhoneStatusSel")?.value || "available",
+    notes: $("cloudPhoneNotes")?.value || ""
+  };
+}
+
+async function saveCloudPhoneRecord() {
+  const btn = $("btnSaveCloudPhone");
+  const editId = btn?.dataset.editId;
+  const phone = collectCloudPhoneForm();
+  if (editId) phone.id = editId;
+
+  const r = await msg("CLOUD_PHONE_UPSERT", { phone });
+  if (!r.ok) {
+    const status = $("cloudPhoneFormStatus");
+    if (status) status.textContent = r.error || "Could not save cloud phone";
+    return;
+  }
+  const idx = cloudPhones.findIndex((item) => item.id === r.phone.id);
+  if (idx === -1) cloudPhones.push(r.phone);
+  else cloudPhones[idx] = r.phone;
+  resetCloudPhoneForm();
+  renderCloudPhones();
+  toast("Cloud phone saved");
+}
+
+function resetCloudPhoneForm() {
+  ["cloudPhoneLabel", "cloudPhoneProvider", "cloudPhoneImei", "cloudPhoneHardware", "cloudPhoneRemoteUrl", "cloudPhoneNotes"].forEach((id) => setVal(id, ""));
+  setVal("cloudPhoneAndroid", "14");
+  setVal("cloudPhoneCountry", "");
+  setVal("cloudPhoneManufacturer", "Google");
+  setVal("cloudPhoneModel", "Pixel 8");
+  setVal("cloudPhoneStatusSel", "available");
+  const btn = $("btnSaveCloudPhone");
+  if (btn) {
+    delete btn.dataset.editId;
+    btn.textContent = "Save cloud phone";
+  }
+  const status = $("cloudPhoneFormStatus");
+  if (status) status.textContent = "";
+}
+
+function renderCloudPhones() {
+  const list = $("cloudPhoneList");
+  if (!list) return;
+  if (!cloudPhones.length) {
+    list.innerHTML = '<div class="pm-list-empty">No Android cloud phones registered yet.</div>';
+    return;
+  }
+  list.innerHTML = cloudPhones.map((phone) => {
+    const country = phone.country ? (COUNTRY_NAMES[phone.country] || phone.country.toUpperCase()) : "Any country";
+    const device = `${phone.manufacturer || "Android"} ${phone.model || ""}`.trim();
+    const imei = phone.imei ? `IMEI ${phone.imei}` : "No IMEI stored";
+    const remote = phone.remoteUrl ? "Console URL saved" : "Console URL missing";
+    return `
+      <div class="pm-cloud-phone-item" data-id="${escHtml(phone.id)}">
+        <div class="pm-cloud-phone-main">
+          <span class="pm-cloud-phone-title">${escHtml(phone.label || "Android Cloud Phone")}</span>
+          <span class="pm-cloud-phone-meta">${escHtml(phone.provider || "Provider")} · Android ${escHtml(phone.androidVersion || "14")} · ${escHtml(device)} · ${escHtml(country)} · ${escHtml(phone.status || "available")}</span>
+          <span class="pm-cloud-phone-id">${escHtml(imei)} · ${escHtml(phone.hardwareFingerprint || "No hardware fingerprint stored")} · ${escHtml(remote)}</span>
+        </div>
+        <div class="pm-cloud-phone-actions">
+          <button class="pm-btn-xs primary" data-cloud-action="open" data-id="${escHtml(phone.id)}">Open</button>
+          <button class="pm-btn-xs" data-cloud-action="edit" data-id="${escHtml(phone.id)}">Edit</button>
+          <button class="pm-btn-xs danger" data-cloud-action="delete" data-id="${escHtml(phone.id)}">Del</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function handleCloudPhoneListClick(ev) {
+  const btn = ev.target.closest("[data-cloud-action]");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const phone = cloudPhones.find((item) => item.id === id);
+  if (!phone) return;
+  if (btn.dataset.cloudAction === "edit") {
+    editCloudPhoneRecord(phone);
+  } else if (btn.dataset.cloudAction === "delete") {
+    if (!confirm("Delete this cloud phone record?")) return;
+    const r = await msg("CLOUD_PHONE_DELETE", { id });
+    if (!r.ok) { toast(r.error || "Delete failed"); return; }
+    cloudPhones = cloudPhones.filter((item) => item.id !== id);
+    renderCloudPhones();
+    toast("Cloud phone deleted");
+  } else if (btn.dataset.cloudAction === "open") {
+    const r = await msg("CLOUD_PHONE_OPEN", { id });
+    if (!r.ok) { toast(r.error || "Could not open cloud phone"); return; }
+    await loadCloudPhones();
+    renderCloudPhones();
+    toast(r.existing ? "Cloud phone already open" : "Cloud phone console opened");
+  }
+}
+
+function editCloudPhoneRecord(phone) {
+  setVal("cloudPhoneLabel", phone.label || "");
+  setVal("cloudPhoneProvider", phone.provider || "");
+  setVal("cloudPhoneAndroid", phone.androidVersion || "14");
+  setVal("cloudPhoneCountry", phone.country || "");
+  setVal("cloudPhoneManufacturer", phone.manufacturer || "Google");
+  setVal("cloudPhoneModel", phone.model || "Pixel 8");
+  setVal("cloudPhoneImei", phone.imei || "");
+  setVal("cloudPhoneHardware", phone.hardwareFingerprint || "");
+  setVal("cloudPhoneRemoteUrl", phone.remoteUrl || "");
+  setVal("cloudPhoneStatusSel", phone.status || "available");
+  setVal("cloudPhoneNotes", phone.notes || "");
+  const btn = $("btnSaveCloudPhone");
+  if (btn) {
+    btn.dataset.editId = phone.id;
+    btn.textContent = "Update cloud phone";
+  }
+  $("cloudPhoneLabel")?.focus();
 }
 
 // =========================================================

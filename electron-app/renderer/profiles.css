@@ -17,6 +17,10 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+[hidden] {
+  display: none !important;
+}
+
 html, body {
   font-family: -apple-system, "Segoe UI", Inter, Roboto, system-ui, sans-serif;
   font-size: 13px;
@@ -377,6 +381,7 @@ html, body {
   color: var(--muted);
   font-size: 12px;
 }
+.pm-label.compact { width: auto; }
 
 .pm-hint {
   font-size: 11px;
@@ -698,10 +703,17 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   font-size: 12px;
   font-weight: 600;
   margin-bottom: 8px;
   color: var(--accent-h);
+}
+.pm-proxy-picker-actions {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .pm-proxy-picker-body {
   display: flex;
@@ -709,6 +721,18 @@ html, body {
   align-items: center;
 }
 .pm-proxy-picker-body .pm-sel { flex: 1; }
+.pm-private-proxy-status {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.pm-private-proxy-status.info { color: var(--muted); background: rgba(148,163,184,.08); }
+.pm-private-proxy-status.ok { color: var(--green); background: rgba(34,197,94,.09); border-color: rgba(34,197,94,.35); }
+.pm-private-proxy-status.warn { color: #fbbf24; background: rgba(245,158,11,.09); border-color: rgba(245,158,11,.35); }
+.pm-private-proxy-status.err { color: var(--red); background: rgba(239,68,68,.09); border-color: rgba(239,68,68,.35); }
 
 /* ===== PROXY LIBRARY ===== */
 .pm-section-title-row {
@@ -724,6 +748,21 @@ html, body {
   padding: 12px;
   margin-bottom: 12px;
 }
+.pm-vps-list {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+.pm-vps-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.pm-vps-item:last-child { border-bottom: none; }
 .pm-proxy-lib-list {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -764,8 +803,179 @@ html, body {
 }
 .pm-proxy-lib-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
+/* ===== ANDROID CLOUD PHONES ===== */
+.pm-cloud-grid {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.pm-cloud-phone-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel2);
+  max-height: 360px;
+  overflow-y: auto;
+}
+.pm-cloud-phone-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.pm-cloud-phone-item:last-child { border-bottom: none; }
+.pm-cloud-phone-main { flex: 1; min-width: 0; }
+.pm-cloud-phone-title {
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pm-cloud-phone-meta,
+.pm-cloud-phone-id {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pm-cloud-phone-id { color: var(--accent-h); font-size: 10px; }
+.pm-cloud-phone-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+@media (max-width: 720px) {
+  html, body {
+    overflow: auto;
+  }
+
+  .pm-root {
+    display: block;
+    height: auto;
+    min-height: 100vh;
+    width: 100%;
+  }
+
+  .pm-sidebar {
+    width: 100%;
+    min-width: 0;
+    height: 48vh;
+    min-height: 360px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .pm-sidebar-top,
+  .pm-filter-row,
+  .pm-sidebar-footer,
+  .pm-account-bar,
+  .pm-form-title-row,
+  .pm-form-meta-row,
+  .pm-btn-row,
+  .pm-proxy-picker-body {
+    flex-wrap: wrap;
+  }
+
+  .pm-logo-row {
+    min-width: 0;
+  }
+
+  .pm-logo-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .pm-editor {
+    min-height: 52vh;
+    overflow: visible;
+  }
+
+  .pm-form-header,
+  .pm-tab-content {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .pm-name-input,
+  .pm-tags-input,
+  .pm-sel-sm,
+  .pm-sel,
+  .pm-input,
+  .pm-input-sm,
+  .pm-btn,
+  .pm-btn-sm {
+    max-width: 100%;
+  }
+
+  .pm-hdr-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .pm-tabs {
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .pm-tab {
+    flex: 0 0 auto;
+  }
+
+  .pm-grid,
+  .pm-row {
+    grid-template-columns: 1fr;
+  }
+
+  .pm-card {
+    align-items: flex-start;
+  }
+
+  .pm-card-actions,
+  .pm-proxy-lib-actions,
+  .pm-cloud-phone-actions,
+  .pm-proxy-picker-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .pm-proxy-picker-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pm-proxy-lib-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pm-cloud-phone-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pm-vps-item {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pm-modal {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+  }
+}

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Profile Manager — Privacy Shield</title>
   <link rel="stylesheet" href="profiles.css" />
 </head>
@@ -37,6 +38,7 @@
         <option value="windows">Windows</option>
         <option value="macos">macOS</option>
         <option value="linux">Linux</option>
+        <option value="android">Android</option>
       </select>
     </div>
 
@@ -101,8 +103,10 @@
             <option value="windows">Windows</option>
             <option value="macos">macOS</option>
             <option value="linux">Linux</option>
+            <option value="android">Android</option>
           </select>
           <select id="fp-browserApp" class="pm-sel-sm">
+            <option value="privacy">Privacy Shield</option>
             <option value="chrome">Chrome</option>
             <option value="brave">Brave</option>
             <option value="edge">Edge</option>
@@ -123,6 +127,7 @@
         <button class="pm-tab" data-tab="proxy">Proxy</button>
         <button class="pm-tab" data-tab="cookies">Cookies &amp; Storage</button>
         <button class="pm-tab" data-tab="session">Session</button>
+        <button class="pm-tab" data-tab="cloudphones">Cloud Phones</button>
       </div>
 
       <!-- ========= FINGERPRINT TAB ========= -->
@@ -149,6 +154,7 @@
           <div class="pm-row">
             <label class="pm-label">Browser</label>
             <select id="fp-browser" class="pm-sel">
+              <option value="privacy">Privacy Shield Browser</option>
               <option value="chrome">Chrome</option>
               <option value="brave">Brave</option>
               <option value="edge">Edge</option>
@@ -584,6 +590,18 @@
               <option value="true">On</option>
             </select>
           </div>
+          <div class="pm-row">
+            <label class="pm-label">Network source</label>
+            <select id="px-networkMode" class="pm-sel">
+              <option value="proxy">Proxy / VPS per profile</option>
+              <option value="vpn">Current VPN on this computer</option>
+              <option value="direct">Direct connection</option>
+            </select>
+          </div>
+          <div class="pm-btn-row" style="margin-bottom:10px">
+            <button type="button" class="pm-btn-sm" id="btnCaptureVpn">Capture current VPN/IP</button>
+            <span id="vpnCaptureResult" class="pm-proxy-result"></span>
+          </div>
           <div id="proxyFields">
             <div class="pm-row">
               <label class="pm-label">Type</label>
@@ -625,7 +643,7 @@
             </div>
           </div>
           <div class="pm-hint">
-            When this profile is applied to a tab, its proxy is activated globally in Chrome. Chrome's proxy API does not support per-tab proxies — each profile switch changes the active proxy.
+            When this profile browser starts, its proxy/VPN routing is applied to that profile's isolated browser session.
           </div>
         </div>
 
@@ -684,14 +702,32 @@
             <button class="pm-btn-sm" id="btnSaveSession" hidden>Save session</button>
           </div>
           <div class="pm-hint" id="windowHint">
-            Click <b>Open in new window</b> to launch a dedicated Chrome window for this profile. Your proxy will be applied automatically and all tabs will be fingerprint-isolated to this profile.
+            Click <b>Start</b> to launch a dedicated Privacy Shield Browser window for this profile. Your selected browser identity, proxy/VPN route, storage, and tabs are isolated to this profile.
           </div>
         </div>
 
         <!-- Country / Quick-setup -->
         <div class="pm-section">
           <div class="pm-section-title">Country Quick-Setup</div>
-          <p class="pm-hint">Click a country to instantly set timezone, language, geolocation, OS, screen, and browser version. Then pick a saved proxy below or add one.</p>
+          <p class="pm-hint">Click a country to generate a fresh coherent desktop or Android browser identity for that location. Then pick a saved proxy below or add one.</p>
+          <div class="pm-row">
+            <label class="pm-label">Device type</label>
+            <select id="countryDeviceClass" class="pm-sel">
+              <option value="desktop">Desktop / laptop</option>
+              <option value="mobile">Android mobile browser</option>
+              <option value="random">Random mix</option>
+            </select>
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">Browser</label>
+            <select id="countryBrowserApp" class="pm-sel">
+              <option value="random">Random compatible browser</option>
+              <option value="privacy">Privacy Shield Browser</option>
+              <option value="chrome">Chrome</option>
+              <option value="brave">Brave</option>
+              <option value="edge">Edge</option>
+            </select>
+          </div>
           <div class="pm-country-grid" id="countryGrid">
             <button class="pm-country-btn" data-country="us">🇺🇸 United States</button>
             <button class="pm-country-btn" data-country="gb">🇬🇧 United Kingdom</button>
@@ -717,7 +753,10 @@
           <div class="pm-proxy-picker">
             <div class="pm-proxy-picker-title">
               <span>Select proxy <span id="countryProxyLabel" style="color:var(--accent-h)"></span></span>
-              <button type="button" class="pm-btn-xs" id="btnAddCountryProxy">+ Add proxy</button>
+              <span class="pm-proxy-picker-actions">
+                <button type="button" class="pm-btn-xs primary" id="btnGenerateCountryProxy">Use VPS proxy</button>
+                <button type="button" class="pm-btn-xs" id="btnAddCountryProxy">+ Add VPS</button>
+              </span>
             </div>
             <div class="pm-proxy-picker-body">
               <select id="countryProxySel" class="pm-sel">
@@ -725,7 +764,8 @@
               </select>
               <button type="button" class="pm-btn-xs primary" id="btnApplyCountryProxy">Apply</button>
             </div>
-            <div id="countryProxyEmpty" class="pm-hint" style="margin-top:4px">Go to <b>Proxy Library</b> below to add your proxies, then pick one here.</div>
+            <div id="countryProxyEmpty" class="pm-hint" style="margin-top:4px">Add and install a VPS proxy below for this country, then pick it here.</div>
+            <div id="privateProxyStatus" class="pm-private-proxy-status info" hidden></div>
           </div>
         </div>
 
@@ -735,9 +775,72 @@
             <span class="pm-section-title">Proxy Library</span>
             <button type="button" class="pm-btn-xs" id="btnToggleProxyLib">Show / Hide</button>
           </div>
-          <p class="pm-hint">Save your proxy servers here so you can quickly apply them to any profile.</p>
+          <p class="pm-hint">Install private VPS proxies here. Country buttons only use VPS proxies you own and install from this panel.</p>
 
           <div id="proxyLibPanel">
+
+            <div class="pm-proxy-lib-form" id="vpsProxyForm">
+              <div class="pm-section-title" style="font-size:11px;margin-bottom:8px;color:var(--muted)">VPS proxy installer</div>
+              <div class="pm-row">
+                <label class="pm-label">Label</label>
+                <input type="text" id="vps-label" class="pm-input" placeholder="US VPS 1" />
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">Country</label>
+                <select id="vps-country" class="pm-sel-sm">
+                  <option value="us">United States</option>
+                  <option value="gb">United Kingdom</option>
+                  <option value="de">Germany</option>
+                  <option value="nl">Netherlands</option>
+                  <option value="fr">France</option>
+                  <option value="ch">Switzerland</option>
+                  <option value="se">Sweden</option>
+                  <option value="ca">Canada</option>
+                  <option value="au">Australia</option>
+                  <option value="jp">Japan</option>
+                  <option value="sg">Singapore</option>
+                  <option value="br">Brazil</option>
+                  <option value="in">India</option>
+                  <option value="ae">UAE</option>
+                  <option value="ru">Russia</option>
+                  <option value="tr">Turkey</option>
+                  <option value="ng">Nigeria</option>
+                </select>
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">VPS host</label>
+                <input type="text" id="vps-host" class="pm-input-sm" placeholder="1.2.3.4" style="flex:2" />
+                <label class="pm-label" style="margin-left:8px">SSH</label>
+                <input type="number" id="vps-ssh-port" class="pm-input-sm" value="22" style="width:76px" />
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">SSH user</label>
+                <input type="text" id="vps-ssh-user" class="pm-input-sm" value="root" autocomplete="username" style="flex:1" />
+                <label class="pm-label" style="margin-left:8px">Password</label>
+                <input type="password" id="vps-ssh-password" class="pm-input-sm" autocomplete="current-password" style="flex:1" />
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">SSH key</label>
+                <textarea id="vps-ssh-key" class="pm-notes" rows="3" placeholder="Optional private key"></textarea>
+              </div>
+              <div class="pm-row">
+                <label class="pm-label">SOCKS5</label>
+                <input type="number" id="vps-proxy-port" class="pm-input-sm" value="1080" style="width:82px" />
+                <label class="pm-label" style="margin-left:8px">HTTP</label>
+                <input type="number" id="vps-http-port" class="pm-input-sm" value="1081" style="width:82px" />
+                <label class="pm-label" style="margin-left:8px">Info</label>
+                <input type="number" id="vps-info-port" class="pm-input-sm" value="8888" style="width:82px" />
+              </div>
+              <div class="pm-btn-row" style="margin-top:8px">
+                <button type="button" class="pm-btn-sm" id="btnVpsTestSsh">Test SSH</button>
+                <button type="button" class="pm-btn primary" id="btnVpsInstall">Install / Update VPS Proxy</button>
+                <button type="button" class="pm-btn-xs muted" id="btnVpsClear">Clear</button>
+                <span id="vpsStatus" class="pm-hint" style="margin-left:10px"></span>
+              </div>
+              <div id="vpsProxyList" class="pm-vps-list">
+                <div class="pm-list-empty">No VPS proxies installed yet.</div>
+              </div>
+            </div>
 
             <!-- Auto-detect from your own server (advanced — hidden by default) -->
             <details style="margin-bottom:10px">
@@ -837,10 +940,116 @@
           </div>
           <div class="pm-btn-row" style="margin-top:10px;">
             <button class="pm-btn-sm danger" id="btnClearSession">Clear saved session</button>
+            <button class="pm-btn-sm danger" id="btnClearBrowserData">Clear browser data</button>
           </div>
         </div>
 
       </div><!-- /tab-session -->
+
+      <!-- ========= CLOUD PHONES TAB ========= -->
+      <div class="pm-tab-panel" id="tab-cloudphones">
+        <div class="pm-section">
+          <div class="pm-section-title">Android Cloud Phones</div>
+          <p class="pm-hint">
+            Register real provider-hosted Android devices here. The app stores each phone's Android version, device model, IMEI or hardware fingerprint when your provider gives it, and opens the provider's remote console.
+          </p>
+          <div class="pm-row">
+            <label class="pm-label">Provider API</label>
+            <input type="text" id="cloudProviderEndpoint" class="pm-input" placeholder="https://provider.example/api" />
+          </div>
+          <div class="pm-row">
+            <label class="pm-label">Auth</label>
+            <select id="cloudProviderAuthMode" class="pm-sel-sm">
+              <option value="bearer">Bearer token</option>
+              <option value="x-api-key">X-API-Key</option>
+              <option value="none">None</option>
+            </select>
+            <input type="password" id="cloudProviderToken" class="pm-input" placeholder="leave blank to keep saved token" autocomplete="off" />
+            <button type="button" class="pm-btn-sm" id="btnSaveCloudProvider">Save provider</button>
+          </div>
+          <div id="cloudProviderStatus" class="pm-hint"></div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Add / Edit Cloud Phone</div>
+          <div class="pm-cloud-grid">
+            <div class="pm-row">
+              <label class="pm-label">Label</label>
+              <input type="text" id="cloudPhoneLabel" class="pm-input" placeholder="TikTok Android 14 - US" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Provider</label>
+              <input type="text" id="cloudPhoneProvider" class="pm-input" placeholder="Genymotion, BrowserStack, Redfinger, custom" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Android</label>
+              <select id="cloudPhoneAndroid" class="pm-sel-sm">
+                <option value="10">Android 10</option>
+                <option value="11">Android 11</option>
+                <option value="12">Android 12</option>
+                <option value="13">Android 13</option>
+                <option value="14" selected>Android 14</option>
+                <option value="15">Android 15</option>
+              </select>
+              <label class="pm-label compact">Country</label>
+              <select id="cloudPhoneCountry" class="pm-sel-sm">
+                <option value="">Any</option>
+                <option value="us">United States</option>
+                <option value="gb">United Kingdom</option>
+                <option value="de">Germany</option>
+                <option value="ng">Nigeria</option>
+                <option value="in">India</option>
+                <option value="br">Brazil</option>
+                <option value="ae">UAE</option>
+                <option value="sg">Singapore</option>
+              </select>
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Device</label>
+              <input type="text" id="cloudPhoneManufacturer" class="pm-input-sm" placeholder="Google" style="flex:1" />
+              <input type="text" id="cloudPhoneModel" class="pm-input" placeholder="Pixel 8 / SM-S911B" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">IMEI</label>
+              <input type="text" id="cloudPhoneImei" class="pm-input" placeholder="provider-supplied IMEI" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Hardware ID</label>
+              <input type="text" id="cloudPhoneHardware" class="pm-input" placeholder="provider hardware fingerprint" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Console URL</label>
+              <input type="text" id="cloudPhoneRemoteUrl" class="pm-input" placeholder="https://provider.example/phones/abc/console" />
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Status</label>
+              <select id="cloudPhoneStatusSel" class="pm-sel-sm">
+                <option value="available">Available</option>
+                <option value="running">Running</option>
+                <option value="stopped">Stopped</option>
+                <option value="busy">Busy</option>
+                <option value="offline">Offline</option>
+              </select>
+            </div>
+            <div class="pm-row">
+              <label class="pm-label">Notes</label>
+              <textarea id="cloudPhoneNotes" class="pm-notes" rows="2" placeholder="Installed apps, account notes, provider plan, renewal date"></textarea>
+            </div>
+            <div class="pm-btn-row">
+              <button type="button" class="pm-btn primary" id="btnSaveCloudPhone">Save cloud phone</button>
+              <button type="button" class="pm-btn-xs muted" id="btnResetCloudPhone">Clear</button>
+              <span id="cloudPhoneFormStatus" class="pm-hint"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Registered Phones</div>
+          <div id="cloudPhoneList" class="pm-cloud-phone-list">
+            <div class="pm-list-empty">No Android cloud phones registered yet.</div>
+          </div>
+        </div>
+      </div><!-- /tab-cloudphones -->
 
     </div><!-- /pm-form-wrap -->
   </main>
@@ -877,13 +1086,30 @@
         <option value="ch">Switzerland</option>
       </select>
     </div>
-    <div class="pm-row"><label class="pm-label">Assign proxies</label>
+    <div class="pm-row"><label class="pm-label">Network source</label>
       <select id="bulkProxies" class="pm-sel">
-        <option value="0">No (set later)</option>
-        <option value="1">Yes, from proxy library</option>
+        <option value="direct">No network override</option>
+        <option value="proxy">VPS/proxy per profile</option>
+        <option value="vpn">Current VPN on this computer</option>
       </select>
     </div>
-    <p class="pm-hint" style="margin-top:8px">Each profile gets a unique fingerprint (UA, timezone, language, screen, CPU, RAM) matched to the country.</p>
+    <div class="pm-row"><label class="pm-label">Device type</label>
+      <select id="bulkDeviceClass" class="pm-sel">
+        <option value="desktop">Desktop / laptop</option>
+        <option value="mobile">Android mobile browser</option>
+        <option value="random">Random mix</option>
+      </select>
+    </div>
+    <div class="pm-row"><label class="pm-label">Browser</label>
+      <select id="bulkBrowserApp" class="pm-sel">
+        <option value="random">Random compatible browser</option>
+        <option value="privacy">Privacy Shield Browser</option>
+        <option value="chrome">Chrome</option>
+        <option value="brave">Brave</option>
+        <option value="edge">Edge</option>
+      </select>
+    </div>
+    <p class="pm-hint" style="margin-top:8px">Each profile gets a unique coherent fingerprint (UA, timezone, language, screen, CPU, RAM, hardware ID, fonts, WebGL, touch/mobile fields) matched to the country. VPN mode uses the computer's active VPN connection.</p>
     <div id="bulkError" style="display:none;margin-top:10px;padding:10px 12px;background:#450a0a;border:1px solid #7f1d1d;color:#fca5a5;border-radius:8px;font-size:13px"></div>
     <div class="pm-btn-row" style="margin-top:12px;justify-content:flex-end">
       <button class="pm-btn-sm" id="btnBulkCancel">Cancel</button>
@@ -892,6 +1118,7 @@
   </div>
 </div>
 
+<script src="browser-preview.js"></script>
 <script src="profiles.js"></script>
 </body>
 </html>

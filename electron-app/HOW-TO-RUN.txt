@@ -1,0 +1,41 @@
+Privacy Shield — Desktop App
+==============================
+
+REQUIREMENTS
+  Node.js 18 or newer — https://nodejs.org
+
+FIRST-TIME SETUP
+  Open a terminal in this folder and run:
+    npm install
+
+RUN (development / preview)
+    npm start
+
+BUILD INSTALLER (.exe for Windows)
+    npm run build
+
+  The installer and a portable .exe will appear in the dist/ folder.
+
+DATA STORAGE
+  Profiles and proxy library are stored in:
+    Windows: C:\Users\<YOU>\AppData\Roaming\Privacy Shield\privacy-shield\
+
+HOW IT WORKS
+  - Click "+ New Profile" to create a profile.
+  - Configure fingerprint, proxy, timezone, geolocation, ISP, etc.
+  - Click "Save" to save changes.
+  - Go to the Session tab and click "Open in new window" to launch a
+    dedicated browser window with that profile's settings applied.
+  - Each profile window is completely isolated — separate cookies,
+    localStorage, and proxy. Fingerprint is injected before any page script.
+  - Android mobile browser profiles use mobile viewport, touch, UA client
+    hints, screen, DPR, WebGL, timezone, language, geolocation, and sensor
+    emulation in the profile browser window.
+  - The Cloud Phones tab stores provider-hosted Android phone records and
+    opens the provider console URL. It does not create real Android devices
+    without an external cloud-phone provider.
+
+PROXY SETUP
+  - Add your SOCKS5 or HTTP proxies in the Proxy Library section.
+  - Use the Proxy Server (proxy-server/install.sh) to run your own
+    proxy on a VPS in the country of your choice.

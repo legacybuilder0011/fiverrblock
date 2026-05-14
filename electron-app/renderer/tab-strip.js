@@ -8,9 +8,12 @@ const btnBack  = document.getElementById("btn-back");
 const btnFwd   = document.getElementById("btn-fwd");
 const btnReload = document.getElementById("btn-reload");
 const btnHome  = document.getElementById("btn-home");
+const profilePillText = document.getElementById("profile-pill-text");
+const profilePill = document.getElementById("profile-pill");
 
 let tabs = [];        // [{ id, title, url, active }]
 let activeTabId = null;
+let browserMeta = null;
 let suppressUrlSync = false;
 
 function render() {
@@ -45,10 +48,30 @@ function render() {
   }
   btnBack.disabled = !active || !active.canBack;
   btnFwd.disabled  = !active || !active.canForward;
+  renderMeta();
 }
 
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function renderMeta() {
+  if (!profilePillText || !browserMeta) return;
+  const location = [browserMeta.city, browserMeta.countryCode ? browserMeta.countryCode.toUpperCase() : ""].filter(Boolean).join(", ");
+  const device = browserMeta.deviceClass === "mobile" ? "Android" : (browserMeta.os || "desktop");
+  const text = `${browserMeta.profileName || "Profile"} - ${device} - ${browserMeta.networkLabel || "Direct"}${location ? " - " + location : ""}`;
+  profilePillText.textContent = text;
+  if (profilePill) {
+    profilePill.title = [
+      browserMeta.appName || "Privacy Shield Browser",
+      `Profile: ${browserMeta.profileName || ""}`,
+      `Device: ${device}`,
+      `Network: ${browserMeta.networkLabel || "Direct"}${browserMeta.proxyHost ? " " + browserMeta.proxyHost : ""}`,
+      location ? `Location: ${location}` : "",
+      browserMeta.timezone ? `Timezone: ${browserMeta.timezone}` : "",
+      browserMeta.language ? `Language: ${browserMeta.language}` : ""
+    ].filter(Boolean).join("\n");
+  }
 }
 
 // ── Receive state updates from main ──────────────────────────────────────────
@@ -56,6 +79,7 @@ api.onMainEvent((payload) => {
   if (!payload || payload.type !== "TAB_STATE") return;
   tabs = payload.tabs || [];
   activeTabId = payload.activeTabId;
+  if (payload.meta) browserMeta = payload.meta;
   render();
 });
 
@@ -92,6 +116,16 @@ document.addEventListener("keydown", (e) => {
 // Request initial state when ready
 api.invoke("TAB_GET_STATE", {}).then((r) => {
   if (r && r.tabs) {
-    tabs = r.tabs; activeTabId = r.activeTabId; render();
+    tabs = r.tabs;
+    activeTabId = r.activeTabId;
+    browserMeta = r.meta || browserMeta;
+    render();
+  }
+});
+
+api.invoke("BROWSER_PROFILE_META", {}).then((r) => {
+  if (r && r.meta) {
+    browserMeta = r.meta;
+    renderMeta();
   }
 });

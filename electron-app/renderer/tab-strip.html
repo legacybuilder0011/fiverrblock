@@ -76,6 +76,31 @@
     padding: 0 8px;
     gap: 6px;
   }
+  #brand-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid #263247;
+    border-radius: 15px;
+    background: #0f172a;
+    color: #dbeafe;
+    font-weight: 700;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+  #brand-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #2563eb;
+    color: #fff;
+    font-size: 10px;
+  }
   .nav-btn {
     width: 30px; height: 30px;
     background: transparent;
@@ -99,6 +124,33 @@
     outline: none;
   }
   #url-input:focus { border-color: #3b82f6; }
+  #profile-pill {
+    max-width: 260px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    border: 1px solid #263247;
+    border-radius: 15px;
+    background: #101827;
+    color: #cbd5e1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pill-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #22c55e;
+    flex: 0 0 auto;
+  }
+  @media (max-width: 640px) {
+    #brand-text { display: none; }
+    #brand-chip { padding: 0 6px; }
+    #profile-pill { max-width: 96px; padding: 0 8px; }
+  }
 </style>
 </head>
 <body>
@@ -106,10 +158,12 @@
   <button id="new-tab" title="New tab (Ctrl+T)">+</button>
 </div>
 <div id="url-row">
+  <div id="brand-chip" title="Privacy Shield Browser"><span id="brand-mark">PS</span><span id="brand-text">Privacy Shield</span></div>
   <button class="nav-btn" id="btn-back" title="Back">&larr;</button>
   <button class="nav-btn" id="btn-fwd" title="Forward">&rarr;</button>
   <button class="nav-btn" id="btn-reload" title="Reload">&#8634;</button>
   <input type="text" id="url-input" placeholder="Enter URL or search..." />
+  <div id="profile-pill" title="Profile identity"><span class="pill-dot"></span><span id="profile-pill-text">Profile</span></div>
   <button class="nav-btn" id="btn-home" title="Home">&#8962;</button>
 </div>
 <script src="tab-strip.js"></script>

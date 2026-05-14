@@ -14,6 +14,13 @@ function logError(err) {
   } catch (_) {}
 }
 let appReady = false;
+
+// Keep WebRTC from bypassing the selected profile network path with direct UDP.
+app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
+app.commandLine.appendSwitch("enable-features", "WebRtcHideLocalIpsWithMdns");
+app.setName("Privacy Shield Browser");
+if (process.platform === "win32") app.setAppUserModelId("com.privacyshield.browser");
+
 process.on("uncaughtException", (err) => {
   logError(err);
   // Before the app is ready, errors prevent the window from opening at all.

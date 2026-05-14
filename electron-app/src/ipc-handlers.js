@@ -7,6 +7,7 @@ const os = require("os");
 const store = require("./profile-store");
 const sessionMgr = require("./session-manager");
 const authStore = require("./auth-store");
+const vpsProxy = require("./vps-proxy-manager");
 
 function logError(err) {
   try {
@@ -32,6 +33,7 @@ function startPageUrl(errorMsg, failedUrl) {
 
 // profileId → BrowserWindow reference for profile browser windows
 const profileWindows = new Map();
+const cloudPhoneWindows = new Map();
 // windowId → { profileId, tabs: [{id, view, ...}], activeTabId }
 const windowTabState = new Map();
 // webContentsId → profileId (so the fingerprint preload can find its profile)
@@ -69,6 +71,10 @@ function registerIpcHandlers() {
   ipcMain.handle("PROFILE_CREATE", async (_ev, { data = {} } = {}) => {
     const profile = store.createProfile(data);
     return { ok: true, profile };
+  });
+
+  ipcMain.handle("PROFILE_COUNTRY_IDENTITY", async (_ev, { country = "us", index = 1, deviceClass = "desktop", browserApp = "random" } = {}) => {
+    return { ok: true, data: store.buildCountryProfileData(country, index, { deviceClass, browserApp }) };
   });
 
   ipcMain.handle("PROFILE_UPDATE", async (_ev, { id, data = {} } = {}) => {
@@ -173,9 +179,9 @@ function registerIpcHandlers() {
   });
 
   // Bulk profile generation
-  ipcMain.handle("PROFILE_BULK_CREATE", async (_ev, { count, country, assignProxies } = {}) => {
+  ipcMain.handle("PROFILE_BULK_CREATE", async (_ev, { count, country, assignProxies, networkMode, deviceClass, browserApp } = {}) => {
     try {
-      return await bulkCreateProfiles(count, country, assignProxies);
+      return await bulkCreateProfiles(count, country, assignProxies, networkMode, deviceClass, browserApp);
     } catch (err) {
       logError(err);
       return { ok: false, error: err.message || String(err) };
@@ -197,8 +203,72 @@ function registerIpcHandlers() {
     return { ok: true, count };
   });
 
+  ipcMain.handle("PROFILE_CLEAR_BROWSER_DATA", async (_ev, { profileId } = {}) => {
+    try {
+      const sess = sessionMgr.getSessionForProfile(profileId);
+      await sess.clearStorageData({
+        storages: [
+          "appcache",
+          "cookies",
+          "filesystem",
+          "indexdb",
+          "localstorage",
+          "shadercache",
+          "websql",
+          "serviceworkers",
+          "cachestorage"
+        ]
+      });
+      try { await sess.clearCache(); } catch (_) {}
+      try { await sess.clearAuthCache(); } catch (_) {}
+      try { await sess.clearHostResolverCache(); } catch (_) {}
+      try { await sess.closeAllConnections(); } catch (_) {}
+      store.updateProfile(profileId, { cookies: [], localStorageData: {}, session: null });
+      return { ok: true };
+    } catch (err) {
+      logError(err);
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+
   ipcMain.handle("PROFILE_GET_WINDOWS", async () => {
     return { ok: true, windows: sessionMgr.getAllProfileWindows() };
+  });
+
+  // Android Cloud Phones manager. Real phones must come from a provider; these
+  // handlers persist provider/device records and open provider-hosted consoles.
+  ipcMain.handle("CLOUD_PHONE_PROVIDER_GET", async () => {
+    const config = store.getCloudPhoneProviderConfig();
+    return { ok: true, config: { endpoint: config.endpoint, authMode: config.authMode, hasToken: Boolean(config.token) } };
+  });
+
+  ipcMain.handle("CLOUD_PHONE_PROVIDER_SAVE", async (_ev, { config = {} } = {}) => {
+    const saved = store.saveCloudPhoneProviderConfig(config);
+    return { ok: true, config: { endpoint: saved.endpoint, authMode: saved.authMode, hasToken: Boolean(saved.token) } };
+  });
+
+  ipcMain.handle("CLOUD_PHONE_LIST", async () => ({
+    ok: true,
+    phones: store.getCloudPhones()
+  }));
+
+  ipcMain.handle("CLOUD_PHONE_UPSERT", async (_ev, { phone = {} } = {}) => {
+    const saved = store.upsertCloudPhone(phone);
+    notifyManagerWindows("CLOUD_PHONES_CHANGED");
+    return { ok: true, phone: saved };
+  });
+
+  ipcMain.handle("CLOUD_PHONE_DELETE", async (_ev, { id } = {}) => {
+    store.deleteCloudPhone(id);
+    const existing = cloudPhoneWindows.get(id);
+    if (existing && !existing.isDestroyed()) existing.close();
+    cloudPhoneWindows.delete(id);
+    notifyManagerWindows("CLOUD_PHONES_CHANGED");
+    return { ok: true };
+  });
+
+  ipcMain.handle("CLOUD_PHONE_OPEN", async (_ev, { id } = {}) => {
+    return openCloudPhoneWindow(id);
   });
 
   // ── Proxy library ─────────────────────────────────────────────────────────────
@@ -223,10 +293,146 @@ function registerIpcHandlers() {
     return { ok: true };
   });
 
+  ipcMain.handle("PROXY_PROVIDER_GET", async () => {
+    const cfg = store.getProxyProviderConfig();
+    return {
+      ok: true,
+      config: {
+        endpoint: cfg.endpoint,
+        authMode: cfg.authMode,
+        hasToken: Boolean(cfg.token)
+      }
+    };
+  });
+
+  ipcMain.handle("PROXY_PROVIDER_SAVE", async (_ev, { config = {} } = {}) => {
+    const saved = store.saveProxyProviderConfig(config);
+    return {
+      ok: true,
+      config: {
+        endpoint: saved.endpoint,
+        authMode: saved.authMode,
+        hasToken: Boolean(saved.token)
+      }
+    };
+  });
+
+  ipcMain.handle("PROXY_GENERATE_PRIVATE", async (_ev, { country } = {}) => {
+    const wantedCountry = String(country || "").toLowerCase();
+    const pooled = pickVpsPrivateProxy(wantedCountry);
+    if (pooled) {
+      const used = store.markProxyUsed(pooled.id) || pooled;
+      return { ok: true, entry: used, source: "vps" };
+    }
+
+    return {
+      ok: false,
+      error: `No private VPS proxy for ${wantedCountry ? wantedCountry.toUpperCase() : "this country"}. Add and install a VPS proxy first.`
+    };
+  });
+
+  ipcMain.handle("VPS_PROXY_LIST", async () => ({
+    ok: true,
+    records: store.getVpsProxies()
+  }));
+
+  ipcMain.handle("VPS_PROXY_TEST_SSH", async (_ev, data = {}) => {
+    try {
+      const result = await vpsProxy.testSsh(data);
+      return { ok: true, stdout: result.stdout };
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+
+  ipcMain.handle("VPS_PROXY_INSTALL", async (_ev, data = {}) => {
+    try {
+      const existing = data.id
+        ? store.getVpsProxies({ includeSecrets: true }).find((r) => r.id === data.id)
+        : null;
+      const installInput = { ...data };
+      if (existing?.proxy) {
+        installInput.proxyUsername = installInput.proxyUsername || existing.proxy.username || "";
+        installInput.proxyPassword = installInput.proxyPassword || existing.proxy.password || "";
+        installInput.proxyHost = installInput.proxyHost || existing.proxy.host || data.host || "";
+      }
+      const installed = await vpsProxy.installProxy(installInput);
+      const recordId = data.id || store.generateId();
+      const proxyEntryData = {
+        id: existing?.proxyEntryId,
+        label: installed.record.label,
+        country: installed.record.country,
+        scheme: installed.record.proxy.scheme || "socks5",
+        host: installed.record.proxy.host,
+        port: installed.record.proxy.port,
+        username: installed.record.proxy.username,
+        password: installed.record.proxy.password,
+        bypassList: installed.record.proxy.bypassList || ["localhost", "127.0.0.1"],
+        ispName: installed.record.proxy.ispName || "",
+        ispAsn: installed.record.proxy.ispAsn || "",
+        city: installed.record.proxy.city || "",
+        private: true,
+        source: "vps",
+        vpsId: recordId,
+        infoPort: installed.record.proxy.infoPort,
+        httpPort: installed.record.proxy.httpPort
+      };
+
+      let proxyEntry = existing?.proxyEntryId
+        ? store.updateProxyEntry(existing.proxyEntryId, proxyEntryData)
+        : null;
+      if (!proxyEntry) proxyEntry = store.addProxyEntry(proxyEntryData);
+      const saved = store.upsertVpsProxy({
+        ...installed.record,
+        id: recordId,
+        proxyEntryId: proxyEntry.id,
+        proxy: { ...installed.record.proxy, id: proxyEntry.id }
+      });
+      return { ok: true, record: saved, proxy: proxyEntry };
+    } catch (err) {
+      logError(err);
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+
+  ipcMain.handle("VPS_PROXY_TEST", async (_ev, { id } = {}) => {
+    try {
+      const record = store.getVpsProxies({ includeSecrets: true }).find((r) => r.id === id);
+      if (!record) return { ok: false, error: "VPS proxy not found" };
+      const info = await vpsProxy.fetchInfo(record.proxy.host || record.ssh.host, record.proxy.infoPort || 8888);
+      const proxy = await testProxy(
+        record.proxy.host || record.ssh.host,
+        record.proxy.port || 1080,
+        record.proxy.scheme || "socks5",
+        record.proxy.username || "",
+        record.proxy.password || ""
+      );
+      return { ok: Boolean(proxy.ok), info, proxy, error: proxy.error || info.error || "" };
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+
+  ipcMain.handle("VPS_PROXY_DELETE", async (_ev, { id } = {}) => {
+    const record = store.getVpsProxies({ includeSecrets: true }).find((r) => r.id === id);
+    if (record?.proxyEntryId) store.deleteProxyEntry(record.proxyEntryId);
+    store.deleteVpsProxy(id);
+    return { ok: true };
+  });
+
   // ── Proxy test ────────────────────────────────────────────────────────────────
 
   ipcMain.handle("TEST_PROXY", async (_ev, { host, port, scheme, username, password } = {}) => {
     return testProxy(host, port, scheme, username, password);
+  });
+
+  ipcMain.handle("NETWORK_CAPTURE_CURRENT", async () => {
+    try {
+      const network = await captureCurrentNetwork();
+      return { ok: true, network };
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) };
+    }
   });
 
   // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -320,6 +526,7 @@ function registerIpcHandlers() {
     if (!state) return { tabs: [], activeTabId: null };
     return {
       activeTabId: state.activeTabId,
+      meta: getProfileBrowserMeta(state.profileId),
       tabs: state.tabs.map((t) => {
         const wc = t.view.webContents;
         return {
@@ -331,6 +538,12 @@ function registerIpcHandlers() {
         };
       })
     };
+  });
+
+  ipcMain.handle("BROWSER_PROFILE_META", async (ev) => {
+    const winId = getCallerWindowId(ev);
+    const state = winId != null ? windowTabState.get(winId) : null;
+    return { ok: Boolean(state), meta: state ? getProfileBrowserMeta(state.profileId) : null };
   });
 }
 
@@ -360,6 +573,166 @@ async function postLoginSync() {
 
 // ── Profile window management ──────────────────────────────────────────────────
 
+function getProfileBrowserMeta(profileId) {
+  const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+  if (!profile) return null;
+  const fp = profile.fingerprint || {};
+  const proxy = profile.proxy || {};
+  const mode = proxy.networkMode || (proxy.enabled ? "proxy" : "direct");
+  return {
+    appName: "Privacy Shield Browser",
+    profileId: profile.id,
+    profileName: profile.name || "Profile",
+    country: fp.country || "",
+    countryCode: fp.countryCode || "",
+    city: fp.city || "",
+    deviceClass: fp.deviceClass || (profile.os === "android" ? "mobile" : "desktop"),
+    os: profile.os || "windows",
+    browser: fp.browser || profile.browserApp || "chrome",
+    networkMode: mode,
+    networkLabel: mode === "proxy" ? "VPS/proxy" : mode === "vpn" ? "VPN" : "Direct",
+    proxyHost: mode === "proxy" && proxy.host ? `${proxy.host}:${proxy.port || ""}` : "",
+    timezone: fp.timezoneValue || "",
+    language: fp.languageValue || ""
+  };
+}
+
+async function openCloudPhoneWindow(id) {
+  const record = store.getCloudPhones().find((phone) => phone.id === id);
+  if (!record) return { ok: false, error: "Cloud phone not found" };
+
+  let remoteUrl;
+  try {
+    remoteUrl = new URL(record.remoteUrl);
+    if (!["http:", "https:"].includes(remoteUrl.protocol)) throw new Error("unsupported protocol");
+  } catch (_) {
+    return { ok: false, error: "Add a valid provider console URL before opening this cloud phone" };
+  }
+
+  const existing = cloudPhoneWindows.get(id);
+  if (existing && !existing.isDestroyed()) {
+    existing.focus();
+    return { ok: true, windowId: existing.id, existing: true };
+  }
+
+  const win = new BrowserWindow({
+    width: 430,
+    height: 900,
+    title: `Android Cloud Phone - ${record.label}`,
+    backgroundColor: "#0c0f14",
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true
+    }
+  });
+  win.setMenuBarVisibility(false);
+  cloudPhoneWindows.set(id, win);
+  store.upsertCloudPhone({ ...record, status: "running" });
+  notifyManagerWindows("CLOUD_PHONES_CHANGED");
+
+  win.on("closed", () => {
+    cloudPhoneWindows.delete(id);
+    const latest = store.getCloudPhones().find((phone) => phone.id === id);
+    if (latest && latest.status === "running") store.upsertCloudPhone({ ...latest, status: "available" });
+    notifyManagerWindows("CLOUD_PHONES_CHANGED");
+  });
+
+  try {
+    await win.loadURL(remoteUrl.toString());
+    return { ok: true, windowId: win.id };
+  } catch (err) {
+    logError(err);
+    try { win.destroy(); } catch (_) {}
+    return { ok: false, error: "Cloud phone console failed to load: " + (err.message || err) };
+  }
+}
+
+function buildUserAgentMetadata(config) {
+  const major = String(config._uaVersion || ((config.userAgent || "").match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || "148");
+  const full = `${major}.0.0.0`;
+  const browser = config._browserApp || "chrome";
+  const brand = browser === "edge" ? "Microsoft Edge" : browser === "brave" ? "Brave" : browser === "privacy" ? "Privacy Shield Browser" : "Google Chrome";
+  return {
+    brands: [
+      { brand: "Not_A Brand", version: "8" },
+      { brand: "Chromium", version: major },
+      { brand, version: major }
+    ],
+    fullVersionList: [
+      { brand: "Not_A Brand", version: "8.0.0.0" },
+      { brand: "Chromium", version: full },
+      { brand, version: full }
+    ],
+    platform: config._uaOS || "Android",
+    platformVersion: config._platformVersion || "14",
+    architecture: config._architecture || "arm",
+    model: config._mobileModel || "",
+    mobile: Boolean(config._mobile),
+    bitness: config._bitness || "64",
+    wow64: false
+  };
+}
+
+async function applyTabEmulation(webContents, profile) {
+  const config = store.buildConfigFromProfile(profile);
+  if (config.userAgent) {
+    try { webContents.setUserAgent(config.userAgent); } catch (_) {}
+  }
+  if (!config._mobile && !config._viewportMobile && !config._touchEmulation) return;
+
+  const screen = config.screen || {};
+  const width = Math.max(320, Math.min(1200, Number(screen.width) || 412));
+  const height = Math.max(480, Math.min(1600, Number(screen.height) || 915));
+  const dpr = Math.max(1, Math.min(4, Number(config._devicePixelRatio) || 2.625));
+  const send = async (method, params) => {
+    try {
+      await webContents.debugger.sendCommand(method, params);
+    } catch (err) {
+      logError(`Mobile emulation ${method} failed: ${err.message || err}`);
+    }
+  };
+
+  try {
+    if (!webContents.debugger.isAttached()) webContents.debugger.attach("1.3");
+  } catch (err) {
+    logError(`Mobile emulation attach failed: ${err.message || err}`);
+    return;
+  }
+
+  await send("Emulation.setDeviceMetricsOverride", {
+    width,
+    height,
+    deviceScaleFactor: dpr,
+    mobile: true,
+    screenWidth: width,
+    screenHeight: height,
+    positionX: 0,
+    positionY: 0,
+    scale: 1
+  });
+  await send("Emulation.setTouchEmulationEnabled", {
+    enabled: true,
+    maxTouchPoints: Math.max(1, Number(config._maxTouchPoints) || 5)
+  });
+  await send("Emulation.setEmitTouchEventsForMouse", {
+    enabled: true,
+    configuration: "mobile"
+  });
+  await send("Emulation.setUserAgentOverride", {
+    userAgent: config.userAgent,
+    platform: "Android",
+    userAgentMetadata: buildUserAgentMetadata(config)
+  });
+  if (config.geo) {
+    await send("Emulation.setGeolocationOverride", {
+      latitude: Number(config.geo.latitude) || 0,
+      longitude: Number(config.geo.longitude) || 0,
+      accuracy: Number(config.geo.accuracy) || 50
+    });
+  }
+}
+
 async function openProfileWindow(profileId, customUrl) {
   // If already open, focus or open a new tab for the requested URL
   const existing = profileWindows.get(profileId);
@@ -383,12 +756,17 @@ async function openProfileWindow(profileId, customUrl) {
   // The BrowserWindow itself hosts the tab strip UI (with the safe preload).
   // Each tab is a separate WebContentsView with the fingerprint preload + profile session.
   const offset = profileWindows.size * 30;
+  const fp = profile.fingerprint || {};
+  const isMobileProfile = fp.deviceClass === "mobile" || profile.os === "android";
+  const winWidth = isMobileProfile ? Math.max(390, Math.min(520, Number(fp.screenWidth) || 412) + 24) : 1280;
+  const winHeight = isMobileProfile ? Math.max(720, Math.min(980, Number(fp.screenHeight) || 915) + TAB_STRIP_HEIGHT + 16) : 800;
   const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    show: false,
+    width: winWidth,
+    height: winHeight,
     x: 80 + offset,
     y: 60 + offset,
-    title: profile.name,
+    title: `Privacy Shield Browser - ${profile.name}`,
     backgroundColor: "#0c0f14",
     webPreferences: {
       preload: RENDERER_PRELOAD,
@@ -398,7 +776,6 @@ async function openProfileWindow(profileId, customUrl) {
     }
   });
   win.setMenuBarVisibility(false);
-  win.loadFile(TAB_STRIP_HTML);
 
   // Init the tab state for this window
   windowTabState.set(win.id, { profileId, tabs: [], activeTabId: null });
@@ -406,6 +783,16 @@ async function openProfileWindow(profileId, customUrl) {
   profileWindows.set(profileId, win);
   sessionMgr.registerWindow(win.id, profileId);
   store.saveOpenProfiles([...profileWindows.keys()]);
+
+  const showProfileWindow = () => {
+    if (win.isDestroyed()) return;
+    try {
+      if (win.isMinimized()) win.restore();
+      if (!win.isVisible()) win.show();
+      win.focus();
+      win.moveTop();
+    } catch (_) {}
+  };
 
   // Open the first tab once the tab strip is loaded
   win.webContents.once("did-finish-load", () => {
@@ -420,6 +807,7 @@ async function openProfileWindow(profileId, customUrl) {
     }
     if (!urls.length) urls.push(startPageUrl());
     for (const u of urls) addTab(win.id, u);
+    showProfileWindow();
   });
 
   // Resize active tab view when window resizes
@@ -456,9 +844,18 @@ async function openProfileWindow(profileId, customUrl) {
     notifyManagerWindows("WINDOWS_CHANGED");
   });
 
+  try {
+    await win.loadFile(TAB_STRIP_HTML);
+    showProfileWindow();
+  } catch (err) {
+    logError(err);
+    try { win.destroy(); } catch (_) {}
+    return { ok: false, error: "Browser window failed to load: " + (err.message || err) };
+  }
+
   notifyManagerWindows("WINDOWS_CHANGED");
 
-  return { ok: true, windowId: win.id, tabCount: 1 };
+  return { ok: true, windowId: win.id, tabCount: Math.max(1, windowTabState.get(win.id)?.tabs?.length || 0) };
 }
 
 // ── Tab management ───────────────────────────────────────────────────────────
@@ -469,6 +866,7 @@ function addTab(windowId, url) {
   const win = BrowserWindow.fromId(windowId);
   if (!win || win.isDestroyed()) return null;
   const profileId = state.profileId;
+  const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
   const sess = sessionMgr.getSessionForProfile(profileId);
 
   const view = new WebContentsView({
@@ -489,6 +887,7 @@ function addTab(windowId, url) {
 
   // Reload tab strip on tab/page events
   const wc = view.webContents;
+  const emulationReady = profile ? applyTabEmulation(wc, profile).catch(logError) : Promise.resolve();
   wc.on("page-title-updated", (_e, title) => { tabEntry.title = title; emitTabState(windowId); });
   wc.on("did-navigate", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
   wc.on("did-navigate-in-page", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
@@ -503,7 +902,9 @@ function addTab(windowId, url) {
 
   win.contentView.addChildView(view);
   activateTab(windowId, tabId);
-  wc.loadURL(url || startPageUrl());
+  emulationReady.finally(() => {
+    if (!wc.isDestroyed()) wc.loadURL(url || startPageUrl());
+  });
 
   emitTabState(windowId);
   return tabId;
@@ -583,67 +984,134 @@ function emitTabState(windowId) {
       canForward: !wc.isDestroyed() ? wc.navigationHistory.canGoForward() : false
     };
   });
-  win.webContents.send("MAIN_EVENT", { type: "TAB_STATE", tabs, activeTabId: state.activeTabId });
+  win.webContents.send("MAIN_EVENT", {
+    type: "TAB_STATE",
+    tabs,
+    activeTabId: state.activeTabId,
+    meta: getProfileBrowserMeta(state.profileId)
+  });
 }
 
 // ── Bulk profile generator ───────────────────────────────────────────────────
-async function bulkCreateProfiles(count, countryCode, assignProxies) {
+async function bulkCreateProfiles(count, countryCode, assignProxies, networkMode, deviceClass, browserApp) {
   const n = Math.max(1, Math.min(100, parseInt(count, 10) || 10));
-  const COUNTRIES = ["us","gb","de","nl","fr","ca","au","jp","sg","br","in","ae","tr","se","ch"];
-  const proxyLib = assignProxies ? store.getProxyLibrary() : [];
+  const COUNTRIES = ["us","gb","de","nl","fr","ca","au","jp","sg","br","in","ae","tr","se","ch","ng"];
   const created = [];
+  const requestedMode = String(networkMode || "").toLowerCase();
+  const mode = ["proxy", "vpn", "direct"].includes(requestedMode)
+    ? requestedMode
+    : (assignProxies ? "proxy" : "direct");
+  const vpnNetwork = mode === "vpn" ? await captureCurrentNetwork() : null;
+  const pending = [];
+  const selectedProxyIds = new Set();
 
   for (let i = 0; i < n; i++) {
-    const country = countryCode === "random" || !countryCode
+    const country = vpnNetwork?.countryCode || (countryCode === "random" || !countryCode
       ? COUNTRIES[Math.floor(Math.random() * COUNTRIES.length)]
-      : countryCode;
-    const data = randomProfileData(country, i + 1);
+      : countryCode);
+    const data = store.buildCountryProfileData(country, i + 1, { deviceClass: deviceClass || "desktop", browserApp: browserApp || "random" });
+    let proxyMatch = null;
 
-    if (assignProxies && proxyLib.length) {
-      // Try to find a proxy matching the country, otherwise pick any
-      const match = proxyLib.find((p) => p.country === country) || proxyLib[i % proxyLib.length];
-      if (match) {
-        data.proxy = {
-          enabled: true,
-          scheme: match.scheme || "socks5",
-          host: match.host, port: match.port,
-          username: match.username || "", password: match.password || "",
-          bypassList: ["localhost", "127.0.0.1"]
-        };
+    if (mode === "vpn") {
+      applyCapturedNetworkToProfileData(data, vpnNetwork);
+    } else if (mode === "direct") {
+      data.proxy = { ...(data.proxy || {}), networkMode: "direct", enabled: false };
+    } else if (assignProxies || mode === "proxy") {
+      proxyMatch = pickVpsPrivateProxy(country, selectedProxyIds) || pickVpsPrivateProxy("", selectedProxyIds);
+      if (!proxyMatch) {
+        throw new Error(`Not enough private VPS proxies for ${String(country).toUpperCase()}. Add one VPS/proxy per profile IP, or use VPN/direct mode.`);
       }
+      selectedProxyIds.add(proxyMatch.id);
     }
-    const profile = store.createProfile(data);
+    pending.push({ data, proxyMatch });
+  }
+
+  for (const item of pending) {
+    if (item.proxyMatch) {
+      const used = store.markProxyUsed(item.proxyMatch.id) || item.proxyMatch;
+      item.data.proxy = {
+        networkMode: "proxy",
+        enabled: true,
+        scheme: used.scheme || "socks5",
+        host: used.host, port: used.port,
+        username: used.username || "", password: used.password || "",
+        bypassList: ["localhost", "127.0.0.1"]
+      };
+    }
+    const profile = store.createProfile(item.data);
     created.push(profile);
   }
   return { ok: true, created: created.length, profiles: created };
 }
 
-function randomProfileData(country, idx) {
-  const COUNTRY_TZ = { us:"America/New_York", gb:"Europe/London", de:"Europe/Berlin", nl:"Europe/Amsterdam", fr:"Europe/Paris", ca:"America/Toronto", au:"Australia/Sydney", jp:"Asia/Tokyo", sg:"Asia/Singapore", br:"America/Sao_Paulo", in:"Asia/Kolkata", ae:"Asia/Dubai", tr:"Europe/Istanbul", se:"Europe/Stockholm", ch:"Europe/Zurich" };
-  const COUNTRY_LANG = { us:"en-US", gb:"en-GB", de:"de-DE", nl:"nl-NL", fr:"fr-FR", ca:"en-CA", au:"en-AU", jp:"ja-JP", sg:"en-SG", br:"pt-BR", in:"hi-IN", ae:"ar-AE", tr:"tr-TR", se:"sv-SE", ch:"de-DE" };
-  const SCREENS = [[1920,1080],[1366,768],[1536,864],[1440,900],[2560,1440],[1600,900]];
-  const OS = country === "au" ? "macos" : "windows";
-  const screen = SCREENS[Math.floor(Math.random() * SCREENS.length)];
-  const cores = [2,4,6,8,12,16][Math.floor(Math.random() * 6)];
-  const ram = [4,8,16,32][Math.floor(Math.random() * 4)];
-
-  const fp = store.getDefaultFingerprint();
-  fp.timezone = "manual"; fp.timezoneValue = COUNTRY_TZ[country] || "UTC";
-  fp.language = "manual"; fp.languageValue = COUNTRY_LANG[country] || "en-US";
-  fp.screen = "manual";   fp.screenWidth = screen[0]; fp.screenHeight = screen[1];
-  fp.cpuCores = "manual"; fp.cpuCoresValue = cores;
-  fp.ram = "manual";      fp.ramValue = ram;
-  fp.browserVersion = String(140 + Math.floor(Math.random() * 9));
-
-  return {
-    name: `${country.toUpperCase()} Profile ${idx}`,
-    os: OS,
-    browserApp: "chrome",
-    status: "new",
-    fingerprint: fp
+function applyCapturedNetworkToProfileData(data, network) {
+  const fp = data.fingerprint || {};
+  const countryCode = String(network.countryCode || fp.countryCode || "").toLowerCase();
+  data.fingerprint = {
+    ...fp,
+    timezone: "manual",
+    timezoneValue: network.timezone || fp.timezoneValue || "UTC",
+    timezoneOffset: timezoneOffsetMinutes(network.timezone || fp.timezoneValue || "UTC"),
+    language: "manual",
+    languageValue: languageForCountry(countryCode) || fp.languageValue || "en-US",
+    geolocation: "manual",
+    geoLat: Number(network.latitude) || fp.geoLat || 0,
+    geoLng: Number(network.longitude) || fp.geoLng || 0,
+    geoAccuracy: 50,
+    city: network.city || fp.city || "",
+    state: network.state || fp.state || "",
+    ispName: network.ispName || fp.ispName || "",
+    ispAsn: network.ispAsn || fp.ispAsn || "",
+    ispOrg: network.ispOrg || fp.ispOrg || "",
+    organization: network.organization || network.ispOrg || fp.organization || "",
+    ip: network.ip || fp.ip || "",
+    countryCode,
+    country: network.country || fp.country || "",
+    continent: network.continent || fp.continent || ""
   };
+  data.proxy = { ...(data.proxy || {}), networkMode: "vpn", enabled: false };
 }
 
+function languageForCountry(countryCode) {
+  const map = {
+    us: "en-US", gb: "en-GB", ca: "en-CA", au: "en-AU", de: "de-DE", nl: "nl-NL",
+    fr: "fr-FR", ch: "de-CH", se: "sv-SE", jp: "ja-JP", sg: "en-SG", br: "pt-BR",
+    in: "en-IN", ae: "ar-AE", ru: "ru-RU", tr: "tr-TR", ng: "en-NG"
+  };
+  return map[String(countryCode || "").toLowerCase()] || "";
+}
+
+function timezoneOffsetMinutes(timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "shortOffset"
+    }).formatToParts(new Date());
+    const zoneName = parts.find((part) => part.type === "timeZoneName")?.value || "";
+    if (zoneName === "GMT" || zoneName === "UTC") return 0;
+    const match = zoneName.match(/(?:GMT|UTC)([+-])(\d{1,2})(?::?(\d{2}))?/);
+    if (!match) return 0;
+    const total = Number(match[2]) * 60 + Number(match[3] || 0);
+    return match[1] === "+" ? -total : total;
+  } catch (_) {
+    return 0;
+  }
+}
+
+function pickVpsPrivateProxy(country, excludedIds = new Set()) {
+  const wanted = String(country || "").toLowerCase();
+  const candidates = store.getProxyLibrary()
+    .filter((entry) => entry && entry.host && entry.port)
+    .filter((entry) => !excludedIds.has(entry.id))
+    .filter((entry) => entry.private !== false && entry.source === "vps")
+    .filter((entry) => !wanted || entry.country === wanted || entry.country === "")
+    .sort((a, b) => {
+      const uses = Number(a.useCount || 0) - Number(b.useCount || 0);
+      if (uses !== 0) return uses;
+      return Number(a.lastUsedAt || 0) - Number(b.lastUsedAt || 0);
+    });
+  return candidates[0] || null;
+}
 
 async function saveWindowSession(profileId, win) {
   if (!win || win.isDestroyed()) return 0;
@@ -664,13 +1132,119 @@ async function saveWindowSession(profileId, win) {
 }
 
 function notifyManagerWindows(type) {
-  // Broadcast to all windows that are NOT profile browser windows
-  const profileWinIds = new Set([...profileWindows.values()].map((w) => w.id));
+  // Broadcast to manager windows, not profile browser or provider console windows.
+  const profileWinIds = new Set([
+    ...[...profileWindows.values()].map((w) => w.id),
+    ...[...cloudPhoneWindows.values()].map((w) => w.id)
+  ]);
   for (const win of BrowserWindow.getAllWindows()) {
     if (!profileWinIds.has(win.id) && !win.isDestroyed()) {
       win.webContents.send("MAIN_EVENT", { type }).catch?.(() => {});
     }
   }
+}
+
+function isPrivateProviderHost(hostname) {
+  const h = String(hostname || "").toLowerCase();
+  if (h === "localhost" || h === "::1" || h.startsWith("127.")) return true;
+  if (h.startsWith("10.") || h.startsWith("192.168.")) return true;
+  const m = h.match(/^172\.(\d{1,2})\./);
+  return Boolean(m && Number(m[1]) >= 16 && Number(m[1]) <= 31);
+}
+
+function validateProviderEndpoint(endpoint) {
+  let url;
+  try {
+    url = new URL(String(endpoint || ""));
+  } catch (_) {
+    throw new Error("Private provider URL is invalid");
+  }
+  if (url.protocol === "https:") return url.toString();
+  if (url.protocol === "http:" && isPrivateProviderHost(url.hostname)) return url.toString();
+  throw new Error("Private provider must use HTTPS, or HTTP on localhost/private LAN");
+}
+
+function normalizeGeneratedProxy(raw, country) {
+  const data = raw && raw.proxy ? raw.proxy : raw;
+  if (!data || typeof data !== "object") throw new Error("Provider returned no proxy");
+  if (data.public === true || data.source === "public") throw new Error("Provider returned a public proxy; refused");
+
+  const host = String(data.host || data.ip || data.server || "").trim();
+  const port = Number(data.port || data.socks5_port || data.proxy_port || 0);
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Provider returned an invalid host or port");
+  }
+
+  const scheme = ["socks5", "socks4", "http", "https"].includes(data.scheme) ? data.scheme : "socks5";
+  const labelCountry = country ? country.toUpperCase() : "Private";
+
+  return {
+    label: String(data.label || `Private ${labelCountry} proxy`),
+    country: String(data.country || country || "").toLowerCase(),
+    scheme,
+    host,
+    port,
+    username: String(data.username || data.user || ""),
+    password: String(data.password || data.pass || ""),
+    rotationUrl: String(data.rotationUrl || data.rotation_url || ""),
+    ispName: String(data.ispName || data.isp || data.provider || ""),
+    ispAsn: String(data.ispAsn || data.asn || ""),
+    ispOrg: String(data.ispOrg || data.org || data.organization || ""),
+    city: String(data.city || ""),
+    private: true,
+    source: "private-provider",
+    providerId: data.id || data.proxyId || data.proxy_id || "",
+    createdAt: Date.now()
+  };
+}
+
+function requestPrivateProxyFromProvider(config, country, profileId) {
+  const endpoint = validateProviderEndpoint(config.endpoint);
+  const body = JSON.stringify({
+    country,
+    profileId: profileId || "",
+    privateOnly: true,
+    protocol: "socks5"
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = net.request({ method: "POST", url: endpoint });
+    req.setHeader("Content-Type", "application/json");
+    req.setHeader("Accept", "application/json");
+    if (config.token && config.authMode === "bearer") {
+      req.setHeader("Authorization", `Bearer ${config.token}`);
+    } else if (config.token && config.authMode === "x-api-key") {
+      req.setHeader("X-API-Key", config.token);
+    }
+
+    let responseBody = "";
+    req.on("response", (res) => {
+      res.on("data", (chunk) => { responseBody += chunk.toString(); });
+      res.on("end", () => {
+        clearTimeout(timer);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`Private provider HTTP ${res.statusCode}`));
+          return;
+        }
+        try {
+          const parsed = JSON.parse(responseBody);
+          resolve(normalizeGeneratedProxy(parsed, country));
+        } catch (err) {
+          reject(new Error(err.message || "Provider returned invalid JSON"));
+        }
+      });
+    });
+    req.on("error", (err) => {
+      clearTimeout(timer);
+      reject(new Error(String(err.message || err)));
+    });
+    const timer = setTimeout(() => {
+      try { req.abort(); } catch (_) {}
+      reject(new Error("Private provider timed out"));
+    }, 15000);
+    req.write(body);
+    req.end();
+  });
 }
 
 async function testProxy(host, port, scheme, username, password) {
@@ -699,6 +1273,79 @@ async function testProxy(host, port, scheme, username, password) {
   }
   // Return the specific error from the test attempts instead of a generic message
   return { ok: false, error: lastError || "Proxy unreachable — check host, port, and credentials" };
+}
+
+async function captureCurrentNetwork() {
+  const urls = [
+    "https://ipwho.is/",
+    "http://ip-api.com/json/?fields=status,message,continent,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,query",
+    "https://ipapi.co/json/"
+  ];
+  let lastError = "";
+  for (const url of urls) {
+    const result = await fetchJsonDirect(url);
+    if (!result.ok) {
+      lastError = result.error || lastError;
+      continue;
+    }
+    const normalized = normalizeNetworkCapture(result.data || {});
+    if (normalized.ip) return normalized;
+    lastError = "IP lookup returned no IP";
+  }
+  throw new Error(lastError || "Could not capture current VPN/IP location");
+}
+
+function fetchJsonDirect(url) {
+  return new Promise((resolve) => {
+    const req = net.request({ url, useSessionCookies: false });
+    let body = "";
+    req.on("response", (res) => {
+      res.on("data", (d) => { body += d.toString(); });
+      res.on("end", () => {
+        clearTimeout(timer);
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          resolve({ ok: false, error: `IP lookup HTTP ${res.statusCode}` });
+          return;
+        }
+        try {
+          resolve({ ok: true, data: JSON.parse(body) });
+        } catch (_) {
+          resolve({ ok: false, error: "IP lookup returned invalid JSON" });
+        }
+      });
+    });
+    req.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: err.message || String(err) });
+    });
+    const timer = setTimeout(() => {
+      try { req.abort(); } catch (_) {}
+      resolve({ ok: false, error: "IP lookup timed out" });
+    }, 9000);
+    req.end();
+  });
+}
+
+function normalizeNetworkCapture(data) {
+  const connection = data.connection || {};
+  const timezone = typeof data.timezone === "object" ? data.timezone : { id: data.timezone };
+  const asText = String(data.as || "");
+  const asnFromText = (asText.match(/AS?(\d+)/i) || [])[1] || "";
+  return {
+    ip: String(data.ip || data.query || ""),
+    country: String(data.country || data.country_name || ""),
+    countryCode: String(data.country_code || data.countryCode || "").toLowerCase(),
+    continent: String(data.continent || data.continent_code || ""),
+    city: String(data.city || ""),
+    state: String(data.region || data.regionName || ""),
+    latitude: Number(data.latitude ?? data.lat ?? 0),
+    longitude: Number(data.longitude ?? data.lon ?? 0),
+    timezone: String(timezone.id || timezone || ""),
+    ispName: String(connection.isp || data.isp || data.org || ""),
+    ispAsn: String(connection.asn || data.asn || asnFromText || ""),
+    ispOrg: String(connection.org || data.org || data.isp || ""),
+    organization: String(connection.org || data.org || data.isp || "")
+  };
 }
 
 function tryTestUrl(url, session, username, password) {
