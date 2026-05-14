@@ -805,6 +805,37 @@ function fontListForOs(osName, language) {
   return [...new Set([...common, ...base, ...locale])];
 }
 
+function resolvedFontListForProfile(fingerprint = {}, osName = "windows") {
+  if (fingerprint.fonts === "blocked") return [];
+  if (Array.isArray(fingerprint.installedFonts) && fingerprint.installedFonts.length) {
+    return fingerprint.installedFonts.map((font) => String(font)).filter(Boolean);
+  }
+  const language = fingerprint.language === "manual" && fingerprint.languageValue
+    ? fingerprint.languageValue
+    : "en-US";
+  return fontListForOs(fingerprint.fontProfile || osName, language);
+}
+
+function hasAnyToken(value, tokens) {
+  const text = String(value || "").toLowerCase();
+  return tokens.some((token) => text.includes(token));
+}
+
+function gpuLooksCompatibleWithOs(osName, vendor, renderer) {
+  const text = `${vendor || ""} ${renderer || ""}`.toLowerCase();
+  if (!text.trim()) return false;
+  if (osName === "android") return hasAnyToken(text, ["adreno", "mali", "qualcomm", "arm", "powervr", "immortalis"]);
+  if (osName === "macos") return hasAnyToken(text, ["apple", "metal", "m1", "m2", "m3", "m4", "iris", "intel"]);
+  if (osName === "linux") return hasAnyToken(text, ["mesa", "x.org", "llvm", "intel", "amd", "radeon", "nvidia"]);
+  return hasAnyToken(text, ["direct3d", "d3d11", "nvidia", "geforce", "intel", "iris", "uhd", "amd", "radeon"]);
+}
+
+function findAndroidDeviceByModel(model) {
+  const target = String(model || "").trim().toLowerCase();
+  if (!target) return null;
+  return ANDROID_DEVICE_PROFILES.find((device) => device.model.toLowerCase() === target) || null;
+}
+
 function osForCountry(countryCode, deviceClass = "desktop") {
   if (deviceClass === "mobile") return "android";
   if (countryCode === "au" || countryCode === "ch") return randomChoice(["macos", "windows", "windows"]);
@@ -1115,7 +1146,7 @@ function buildConfigFromProfile(profile) {
     _deviceNameValue: fp.deviceNameValue || "",
     _hardwareId: fp.hardwareId || "",
     _fontProfile: fp.fontProfile || profile.os || "windows",
-    _fontList: Array.isArray(fp.installedFonts) ? fp.installedFonts : [],
+    _fontList: resolvedFontListForProfile(fp, profile.os || "windows"),
     _devicePixelRatio: Number(fp.devicePixelRatio) || 1,
     _colorDepth: Number(fp.colorDepth) || 24,
     _pixelDepth: Number(fp.pixelDepth) || 24,
@@ -1299,7 +1330,27 @@ function validateProfileConsistency(profile = {}) {
   if (screenWidth <= 0 || screenHeight <= 0) addIssue("Screen width and height must be set.");
   else addPass(`Screen is ${screenWidth}x${screenHeight} at DPR ${dpr}.`);
   if (osName === "android" && screenWidth > screenHeight) addWarn("Android mobile screen is landscape-sized; portrait screens are more typical.");
+  if (osName === "android" && (screenWidth < 320 || screenWidth > 480 || screenHeight < 640 || screenHeight > 1000)) {
+    addWarn("Android mobile screen is outside the app's known phone profile range.");
+  }
+  if (osName !== "android" && screenWidth < 1024) addWarn("Desktop screen width is unusually small.");
   if (dpr < 1 || dpr > 4) addWarn("Device pixel ratio is outside the usual 1-4 range.");
+  if (osName === "android" && dpr < 2) addWarn("Android DPR is lower than the app's known phone profiles.");
+
+  const knownAndroid = findAndroidDeviceByModel(fp.mobileModel);
+  if (osName === "android" && knownAndroid) {
+    const [knownWidth, knownHeight] = knownAndroid.screen;
+    if (screenWidth === knownWidth && screenHeight === knownHeight) {
+      addPass(`Screen matches ${knownAndroid.model} profile dimensions.`);
+    } else {
+      addWarn(`Screen does not match ${knownAndroid.model} profile dimensions (${knownWidth}x${knownHeight}).`);
+    }
+    if (Math.abs(dpr - knownAndroid.dpr) <= 0.15) {
+      addPass(`DPR matches ${knownAndroid.model} profile.`);
+    } else {
+      addWarn(`DPR does not match ${knownAndroid.model} profile (${knownAndroid.dpr}).`);
+    }
+  }
 
   if (fp.timezone === "manual" && fp.timezoneValue) addPass(`Timezone is set to ${fp.timezoneValue}.`);
   else addWarn("Timezone is not manually pinned for this profile.");
@@ -1307,8 +1358,55 @@ function validateProfileConsistency(profile = {}) {
   else addWarn("Language is not manually pinned for this profile.");
   if (fp.geolocation === "manual") addPass("Geolocation is manually pinned.");
   else addWarn("Geolocation is not manually pinned for this profile.");
-  if (fp.webglVendor && fp.webglRenderer) addPass("WebGL vendor and renderer are set.");
-  else addWarn("WebGL vendor or renderer is missing.");
+
+  const fontProfile = fp.fontProfile || osName;
+  const effectiveFonts = resolvedFontListForProfile(fp, osName);
+  if (fp.fonts === "blocked") {
+    addPass("Font checks are configured to return an empty profile font set.");
+  } else if (effectiveFonts.length < 5) {
+    addWarn("Profile font list is sparse; generated profiles should keep an OS-specific font baseline.");
+  } else {
+    addPass(`Font profile ${fontProfile} exposes ${effectiveFonts.length} OS/language fonts.`);
+  }
+  if (osName === "android" && fontProfile !== "android") addIssue("Android profiles should use the Android font profile.");
+  if (osName !== "android" && fontProfile === "android") addWarn("Desktop profile is using Android fonts.");
+  const fontText = effectiveFonts.map((font) => String(font).toLowerCase()).join("|");
+  const fontAnchors = {
+    android: ["roboto", "noto sans"],
+    windows: ["segoe ui", "calibri"],
+    macos: ["helvetica neue", "san francisco"],
+    linux: ["dejavu sans", "liberation sans", "noto sans"]
+  }[osName] || ["arial"];
+  if (fp.fonts !== "blocked" && !fontAnchors.some((font) => fontText.includes(font))) {
+    addWarn(`Font list is missing common ${osName} anchor fonts.`);
+  }
+
+  const gpuVendor = fp.webglVendor || "";
+  const gpuRenderer = fp.webglRenderer || "";
+  if (gpuVendor && gpuRenderer) {
+    addPass("WebGL vendor and renderer are set.");
+    if (gpuLooksCompatibleWithOs(osName, gpuVendor, gpuRenderer)) {
+      addPass(`GPU renderer is compatible with ${osName}.`);
+    } else {
+      addWarn(`GPU renderer does not look typical for ${osName}.`);
+    }
+    if (knownAndroid) {
+      const actualGpu = `${gpuVendor} ${gpuRenderer}`.toLowerCase();
+      if (actualGpu.includes(knownAndroid.gpuVendor.toLowerCase()) || actualGpu.includes(knownAndroid.gpuRenderer.toLowerCase())) {
+        addPass(`GPU matches ${knownAndroid.model} profile family.`);
+      } else {
+        addWarn(`GPU does not match ${knownAndroid.model} profile family (${knownAndroid.gpuRenderer}).`);
+      }
+    }
+  } else {
+    addWarn("WebGL vendor or renderer is missing.");
+  }
+
+  const summary = {
+    screen: screenWidth > 0 && screenHeight > 0 ? `${screenWidth}x${screenHeight} @ ${dpr} DPR` : "missing",
+    fonts: fp.fonts === "blocked" ? "blocked" : `${fontProfile}, ${effectiveFonts.length} fonts`,
+    gpu: gpuVendor && gpuRenderer ? `${gpuVendor} / ${gpuRenderer}` : "missing"
+  };
 
   return {
     ok: issues.length === 0,
@@ -1322,6 +1420,7 @@ function validateProfileConsistency(profile = {}) {
       deviceClass,
       actualRuntime: "Electron Chromium"
     },
+    summary,
     issues,
     warnings,
     passes

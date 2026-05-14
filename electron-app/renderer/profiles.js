@@ -634,6 +634,11 @@ function renderProfileAudit(audit) {
   const rows = [];
   rows.push(`<span class="pm-audit-line ${audit.ok ? "pass" : "warn"}">Score: ${Number(audit.score) || 0}/100. Runtime: ${escHtml(audit.profile?.actualRuntime || "Electron Chromium")}.</span>`);
   rows.push(`<span class="pm-audit-line warn">Engine note: Firefox/Safari are identity templates only; profile windows run on bundled Chromium.</span>`);
+  if (audit.summary) {
+    rows.push(`<span class="pm-audit-line pass">Screen: ${escHtml(audit.summary.screen || "missing")}.</span>`);
+    rows.push(`<span class="pm-audit-line pass">Fonts: ${escHtml(audit.summary.fonts || "missing")}.</span>`);
+    rows.push(`<span class="pm-audit-line pass">GPU: ${escHtml(audit.summary.gpu || "missing")}.</span>`);
+  }
   for (const item of [...(audit.issues || []), ...(audit.warnings || []), ...(audit.passes || []).slice(0, 6)]) {
     rows.push(`<span class="pm-audit-line ${item.level}">${escHtml(item.message)}</span>`);
   }

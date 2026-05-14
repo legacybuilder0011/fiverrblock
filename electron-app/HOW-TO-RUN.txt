@@ -34,7 +34,8 @@ HOW IT WORKS
     so multiple profiles can be identified while running at the same time.
   - Use the Engine & Identity Audit panel in the Fingerprint tab to check
     whether the selected profile's OS, browser template, mobile fields,
-    screen, language, timezone, geolocation, and WebGL settings are coherent.
+    screen, fonts, GPU, language, timezone, geolocation, and WebGL settings
+    are coherent.
   - Android mobile browser profiles use mobile viewport, touch, UA client
     hints, screen, DPR, WebGL, timezone, language, geolocation, and sensor
     emulation in the profile browser window.

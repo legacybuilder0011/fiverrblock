@@ -327,6 +327,20 @@
             break;
           }
           if (profile.os === "android" && fp.deviceClass !== "mobile") issues.push({ level: "issue", message: "Android profiles should use mobile device class." });
+          const screenWidth = Number(fp.screenWidth) || 0;
+          const screenHeight = Number(fp.screenHeight) || 0;
+          const dpr = Number(fp.devicePixelRatio) || 1;
+          if (!screenWidth || !screenHeight) issues.push({ level: "issue", message: "Screen width and height must be set." });
+          else passes.push({ level: "pass", message: `Screen is ${screenWidth}x${screenHeight} at DPR ${dpr}.` });
+          if (profile.os === "android" && (screenWidth > screenHeight || dpr < 2)) warnings.push({ level: "warn", message: "Android screen metrics should be portrait and use a mobile DPR." });
+          const fonts = fp.fonts === "blocked" ? [] : (Array.isArray(fp.installedFonts) && fp.installedFonts.length ? fp.installedFonts : (profile.os === "android" ? ["Roboto", "Noto Sans", "Noto Color Emoji"] : ["Arial", "Segoe UI", "Calibri", "Times New Roman"]));
+          if (fp.fonts === "blocked") passes.push({ level: "pass", message: "Font checks return an empty profile font set." });
+          else if (fonts.length < 3) warnings.push({ level: "warn", message: "Profile font list is sparse." });
+          else passes.push({ level: "pass", message: `Font profile exposes ${fonts.length} fonts.` });
+          const gpu = `${fp.webglVendor || ""} ${fp.webglRenderer || ""}`.toLowerCase();
+          if (!gpu.trim()) warnings.push({ level: "warn", message: "WebGL vendor or renderer is missing." });
+          else if (profile.os === "android" && !/(adreno|mali|qualcomm|arm)/.test(gpu)) warnings.push({ level: "warn", message: "GPU renderer does not look typical for Android." });
+          else passes.push({ level: "pass", message: "GPU renderer is compatible with the selected OS." });
           if ((fp.browser || profile.browserApp) === "firefox") warnings.push({ level: "warn", message: "Firefox is an identity template only in this build." });
           if ((fp.browser || profile.browserApp) === "safari") warnings.push({ level: "warn", message: "Safari is an identity template only in this build." });
           passes.push({ level: "pass", message: "Preview audit completed." });
@@ -336,6 +350,11 @@
               ok: issues.length === 0,
               score: Math.max(0, 100 - issues.length * 25 - warnings.length * 8),
               profile: { actualRuntime: "Browser preview" },
+              summary: {
+                screen: screenWidth && screenHeight ? `${screenWidth}x${screenHeight} @ ${dpr} DPR` : "missing",
+                fonts: fp.fonts === "blocked" ? "blocked" : `${fp.fontProfile || profile.os || "windows"}, ${fonts.length} fonts`,
+                gpu: fp.webglVendor && fp.webglRenderer ? `${fp.webglVendor} / ${fp.webglRenderer}` : "missing"
+              },
               issues,
               warnings,
               passes

@@ -10,10 +10,10 @@ Privacy Shield Browser is a branded Electron browser shell built on Chromium. It
 - Storage isolation: cookies, cache, service workers, localStorage, IndexedDB, and auth cache can be cleared per profile.
 - Network routing: each profile can use direct routing, the computer's current VPN, or a saved VPS/proxy route.
 - Leak reduction: Chromium is started with WebRTC non-proxied UDP disabled and local IP hiding enabled.
-- Coherent identities: generated desktop and Android browser profiles keep user agent, UA client hints, OS, screen, DPR, touch points, GPU, CPU/RAM, timezone, language, and geolocation internally consistent.
+- Coherent identities: generated desktop and Android browser profiles keep user agent, UA client hints, OS, screen, DPR, touch points, GPU, font profile, CPU/RAM, timezone, language, and geolocation internally consistent.
 - Mobile browser emulation: Android profiles enable mobile viewport metrics, touch emulation, coarse-pointer media queries, Android UA client hints, vibration API, and motion/orientation sensor events.
 - Android Cloud Phones manager: provider-hosted Android devices can be registered with Android version, model, IMEI or hardware fingerprint, status, notes, and a remote console URL.
-- Fingerprint consistency audit: the manager can check selected profile settings for OS, browser template, device class, screen, touch, language, timezone, geolocation, WebGL, and runtime consistency.
+- Fingerprint consistency audit: the manager can check selected profile settings for OS, browser template, device class, screen, DPR, fonts, touch, language, timezone, geolocation, WebGL/GPU, and runtime consistency.
 
 ## What This Build Does Not Customize
 
