@@ -209,6 +209,10 @@ async function doRegister() {
   try {
     const r = await window.electronAPI.invoke('AUTH_REGISTER', { email, password });
     if (!r.ok) { showError(r.error || 'Registration failed.'); return; }
+    if (r.needsConfirmation) {
+      showSuccess('Account created! Check your email (' + (r.user && r.user.email ? r.user.email : email) + ') and click the confirmation link, then come back here and Sign In.');
+      return;
+    }
     showSuccess('Account created! Opening app…');
     setTimeout(async () => {
       await window.electronAPI.invoke('AUTH_OPEN_APP', {});

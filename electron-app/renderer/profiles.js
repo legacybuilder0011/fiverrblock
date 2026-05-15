@@ -1066,18 +1066,12 @@ function renderProxyDetectResult(detection, network, onFillClick) {
 async function captureCurrentVpnLocation(targetResult) {
   const res = targetResult || $("vpnCaptureResult");
   const btn = $("btnCaptureVpn");
-  if (res) {
-    res.textContent = "Capturing current IP...";
-    res.className = "pm-proxy-result";
-  }
+  if (res) { res.textContent = "Capturing current IP…"; res.className = "pm-proxy-result"; }
   if (btn) btn.disabled = true;
 
   const r = await msg("NETWORK_CAPTURE_CURRENT");
   if (!r.ok || !r.network) {
-    if (res) {
-      res.textContent = "Failed: " + (r.error || "could not capture current IP");
-      res.className = "pm-proxy-result err";
-    }
+    if (res) { res.textContent = "Failed: " + (r.error || "could not capture current IP"); res.className = "pm-proxy-result err"; }
     if (btn) btn.disabled = false;
     return { ok: false, error: r.error || "could not capture current IP" };
   }
@@ -1107,6 +1101,18 @@ async function captureCurrentVpnLocation(targetResult) {
     ip: n.ip || currentFingerprintMeta.ip || ""
   };
 
+  // Persist VPN detection so the consistency validator can use it
+  currentProxyDetection = {
+    detectedCountryCode: n.countryCode || "",
+    detectedCountry: n.country || "",
+    detectedCity: n.city || "",
+    detectedTimezone: n.timezone || "",
+    proxyType: "vpn",
+    detectedAt: Date.now()
+  };
+  // Show detected location chip in the VPN capture result area
+  renderProxyDetectResult(currentProxyDetection);
+
   updateConditionalRows();
   updateUAPreview();
   if (selectedId) {
@@ -1115,10 +1121,10 @@ async function captureCurrentVpnLocation(targetResult) {
     renderList();
   }
   if (res) {
-    res.textContent = `VPN/IP captured: ${n.ip}${n.country ? " - " + n.country : ""}${n.city ? ", " + n.city : ""}`;
+    res.textContent = `VPN captured: ${n.ip} · ${n.city ? n.city + ", " : ""}${n.country || ""}`;
     res.className = "pm-proxy-result ok";
   }
-  toast("Current VPN/IP location applied");
+  toast("VPN location applied — timezone, language, and geo updated");
   if (btn) btn.disabled = false;
   return { ok: true, network: n };
 }
@@ -1464,7 +1470,7 @@ async function openProfileWindow(profileId) {
   if (p) {
     const px = p.proxy || {};
     const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
-    if (mode === "proxy" && (!px.host || !px.port)) {
+    if (mode === "proxy" && px.enabled && (!px.host || !px.port)) {
       setLaunchError("Proxy host and port are required. Go to the Proxy tab, fill in the credentials, click Test & Detect, then save.");
       return;
     }

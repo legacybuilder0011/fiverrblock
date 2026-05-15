@@ -1,6 +1,6 @@
 "use strict";
 
-const { ipcMain, BrowserWindow, WebContentsView, net, nativeImage, dialog } = require("electron");
+const { ipcMain, BrowserWindow, WebContentsView, net, nativeImage, dialog, app } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -18,10 +18,22 @@ function logError(err) {
   } catch (_) {}
 }
 
+// Preload scripts are loaded by Electron via Node.js fs (ASAR-aware) — __dirname works fine.
 const FINGERPRINT_PRELOAD = path.join(__dirname, "preload-fingerprint.js");
-const RENDERER_PRELOAD = path.join(__dirname, "renderer-preload.js");
-const BROWSER_START_HTML = path.join(__dirname, "..", "renderer", "browser-start.html");
-const TAB_STRIP_HTML     = path.join(__dirname, "..", "renderer", "tab-strip.html");
+const RENDERER_PRELOAD    = path.join(__dirname, "renderer-preload.js");
+
+// HTML files are served via file:// URLs in BrowserWindow renderer processes.
+// Electron's ASAR interception is unreliable for file:// in Electron 31, so we use
+// asarUnpack to extract renderer files to app.asar.unpacked/ as real filesystem files.
+function resolveAppFile(relPath) {
+  const appRoot = app.getAppPath();
+  return appRoot.endsWith(".asar")
+    ? path.join(appRoot + ".unpacked", relPath)
+    : path.join(appRoot, relPath);
+}
+
+const BROWSER_START_HTML = resolveAppFile("renderer/browser-start.html");
+const TAB_STRIP_HTML     = resolveAppFile("renderer/tab-strip.html");
 
 const TAB_STRIP_HEIGHT = 78; // tabs row (38) + url row (40)
 
@@ -514,7 +526,8 @@ function registerIpcHandlers() {
 
   ipcMain.handle("AUTH_REGISTER", async (_ev, { email, password } = {}) => {
     const result = await authStore.register(email, password);
-    if (result.ok) await postLoginSync();
+    // Only sync if no email confirmation is needed (user is immediately active)
+    if (result.ok && !result.needsConfirmation) await postLoginSync();
     return result;
   });
 
@@ -922,21 +935,22 @@ async function openProfileWindow(profileId, customUrl) {
   // ── Required fields & consistency checks ─────────────────────────────────────
   const px = profile.proxy || {};
   const networkMode = px.networkMode || (px.enabled ? "proxy" : "direct");
-  if (networkMode === "proxy") {
+  if (networkMode === "proxy" && px.enabled) {
     if (!px.host || !px.port) {
       return { ok: false, error: "Proxy is enabled but host/port are missing. Fill them in the Proxy tab and click Test, then save." };
     }
-    // Geo consistency: if we have a detected country, verify timezone matches
-    if (px.detectedCountryCode && profile.fingerprint) {
-      const fp = profile.fingerprint;
-      const tzMode = fp.timezone || "auto";
-      if (tzMode === "manual" && fp.timezoneValue) {
-        const tzCountry = guessCountryFromTimezone(fp.timezoneValue);
-        const proxyCountry = String(px.detectedCountryCode).toLowerCase();
-        if (tzCountry && tzCountry !== proxyCountry) {
-          const proxyLabel = px.detectedCountry || proxyCountry.toUpperCase();
-          return { ok: false, error: `Geo mismatch: proxy is in ${proxyLabel} but timezone "${fp.timezoneValue}" belongs to ${tzCountry.toUpperCase()}. Fix timezone in the Fingerprint tab (or set it to Auto) and save.` };
-        }
+  }
+  // Geo consistency: runs for both proxy and VPN modes
+  if ((networkMode === "proxy" || networkMode === "vpn") && px.detectedCountryCode && profile.fingerprint) {
+    const fp = profile.fingerprint;
+    const tzMode = fp.timezone || "auto";
+    if (tzMode === "manual" && fp.timezoneValue) {
+      const tzCountry = guessCountryFromTimezone(fp.timezoneValue);
+      const detectedCountry = String(px.detectedCountryCode).toLowerCase();
+      if (tzCountry && tzCountry !== detectedCountry) {
+        const networkLabel = networkMode === "vpn" ? "VPN" : "proxy";
+        const locationLabel = px.detectedCountry || detectedCountry.toUpperCase();
+        return { ok: false, error: `Geo mismatch: ${networkLabel} is in ${locationLabel} but timezone "${fp.timezoneValue}" belongs to ${tzCountry.toUpperCase()}. Fix timezone in the Fingerprint tab (or set it to Auto) and save.` };
       }
     }
   }
@@ -1072,7 +1086,11 @@ async function openProfileWindow(profileId, customUrl) {
   });
 
   try {
-    await win.loadFile(TAB_STRIP_HTML);
+    // Use loadURL with forward slashes so Electron's ASAR interceptor can find the
+    // file. loadFile() on Windows generates backslash URLs (file:///C:\...\app.asar\...)
+    // which bypasses the ASAR check and causes ERR_FAILED (-2).
+    const tabStripUrl = "file:///" + TAB_STRIP_HTML.replace(/\\/g, "/");
+    await win.loadURL(tabStripUrl);
     showProfileWindow();
   } catch (err) {
     logError(err);
@@ -1114,7 +1132,6 @@ function addTab(windowId, url) {
 
   // Reload tab strip on tab/page events
   const wc = view.webContents;
-  const emulationReady = profile ? applyTabEmulation(wc, profile).catch(logError) : Promise.resolve();
   wc.on("page-title-updated", (_e, title) => { tabEntry.title = title; emitTabState(windowId); });
   wc.on("did-navigate", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
   wc.on("did-navigate-in-page", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
@@ -1127,18 +1144,23 @@ function addTab(windowId, url) {
     wc.loadURL(startPageUrl(desc || "Page failed to load", validatedURL || ""));
   });
 
-  // If this tab's renderer crashes, close just the tab (which closes the window
-  // if it was the last one). This keeps profileWindows clean so Start works again.
+  // If this tab's renderer crashes: clean it up, but if it was the only tab open
+  // a recovery start-page tab instead of closing the whole window (which would make
+  // it look like Start never worked). The recovery tab uses allowWindowClose:true so
+  // a second consecutive crash will cleanly close the window.
   wc.on("render-process-gone", (_ev, details) => {
     logError(`Tab renderer gone (${details.reason}) for profile ${profileId}, tab ${tabId}`);
-    closeTab(windowId, tabId);
+    closeTab(windowId, tabId, { crashRecovery: true });
   });
 
   win.contentView.addChildView(view);
   activateTab(windowId, tabId);
-  emulationReady.finally(() => {
-    if (!wc.isDestroyed()) wc.loadURL(url || startPageUrl());
-  });
+
+  // Load the URL immediately — do NOT wait for CDP emulation.
+  // The fingerprint preload (runs before any page JS) covers JS-level spoofing.
+  // CDP overrides are applied concurrently and take effect before page scripts run.
+  if (!wc.isDestroyed()) wc.loadURL(url || startPageUrl());
+  if (profile) applyTabEmulation(wc, profile).catch(logError);
 
   emitTabState(windowId);
   return tabId;
@@ -1171,7 +1193,7 @@ function layoutActiveTab(windowId) {
   }
 }
 
-function closeTab(windowId, tabId) {
+function closeTab(windowId, tabId, { crashRecovery = false } = {}) {
   const state = windowTabState.get(windowId);
   if (!state) return;
   const win = BrowserWindow.fromId(windowId);
@@ -1185,7 +1207,13 @@ function closeTab(windowId, tabId) {
   state.tabs.splice(idx, 1);
 
   if (state.tabs.length === 0) {
-    win.close();
+    if (crashRecovery) {
+      // Renderer crashed on the only open tab — open a start-page tab so the
+      // window stays alive and the user can navigate away rather than losing it.
+      addTab(windowId, startPageUrl());
+    } else {
+      win.close();
+    }
     return;
   }
   // Activate adjacent tab if we closed the active one

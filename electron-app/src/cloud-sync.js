@@ -31,7 +31,15 @@ let supabase = null;
 try {
   const { createClient } = require("@supabase/supabase-js");
   const WS = require("ws");
+  const { net } = require("electron");
+
+  // Use Electron's net.fetch (Chromium network stack) instead of Node.js global fetch.
+  // This respects system certificates including corporate TLS inspection (DPI),
+  // avoiding "fetch failed" errors that the undici-based Node.js fetch produces.
+  const electronFetch = (...args) => net.fetch(...args);
+
   supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    global: { fetch: electronFetch },
     auth: {
       persistSession: true,
       autoRefreshToken: true,
@@ -76,7 +84,10 @@ async function register(email, password) {
     const { data, error } = await supabase.auth.signUp({ email, password });
     if (error) return { ok: false, error: error.message };
     if (!data.user) return { ok: false, error: "Could not create account" };
-    return { ok: true, user: { id: data.user.id, email: data.user.email } };
+    // When email confirmation is enabled in Supabase, signUp returns no session.
+    // Tell the caller so the UI can show "check your email" instead of trying to open the app.
+    const needsConfirmation = !data.session;
+    return { ok: true, needsConfirmation, user: { id: data.user.id, email: data.user.email } };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }

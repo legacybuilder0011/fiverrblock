@@ -623,9 +623,9 @@
           <div class="pm-row">
             <label class="pm-label">Network source</label>
             <select id="px-networkMode" class="pm-sel">
+              <option value="direct">Direct connection</option>
               <option value="proxy">Proxy / VPS per profile</option>
               <option value="vpn">Current VPN on this computer</option>
-              <option value="direct">Direct connection</option>
             </select>
           </div>
           <div class="pm-btn-row" style="margin-bottom:10px">
@@ -674,8 +674,8 @@
             <div id="datacenterWarn" class="pm-proxy-warn" hidden>
               &#9888; Datacenter IP detected. Platforms flag datacenter IPs as bots — use a residential or mobile proxy for best results.
             </div>
-            <div id="proxyDetectResult" class="pm-proxy-detect" hidden></div>
           </div>
+          <div id="proxyDetectResult" class="pm-proxy-detect" hidden></div>
           <div class="pm-hint">
             Proxy URL is <b>required</b> when proxy mode is on. After entering credentials, click <b>Test &amp; Detect</b> to verify connectivity and auto-fill timezone, language, and geolocation from the proxy IP.
           </div>
