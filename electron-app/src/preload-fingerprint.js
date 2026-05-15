@@ -414,23 +414,35 @@
 
   // ── Fonts ─────────────────────────────────────────────────────────────────────
   if (config.blockFonts) {
+    const _fontSet = new Set((Array.isArray(config._fontList) ? config._fontList : []).map((f) => String(f).toLowerCase()));
+    const _fontAllowed = (spec) => { const s = String(spec || "").toLowerCase(); for (const f of _fontSet) { if (f && s.includes(f)) return true; } return false; };
     try {
       if (document.fonts) {
-        const fontList = new Set((Array.isArray(config._fontList) ? config._fontList : []).map((font) => String(font).toLowerCase()));
-        document.fonts.check = (fontSpec) => {
-          const spec = String(fontSpec || "").toLowerCase();
-          if (!fontList.size) return false;
-          for (const font of fontList) {
-            if (font && spec.includes(font)) return true;
-          }
-          return false;
-        };
+        document.fonts.check = fakeNative(function check(fontSpec) { return _fontAllowed(fontSpec); }, "check");
+        // Patch load() — sites call fonts.load("12px FontName") to probe availability
+        document.fonts.load = fakeNative(function load() { return Promise.resolve([]); }, "load");
         document.fonts.ready = Promise.resolve(document.fonts);
-        document.fonts.forEach = () => {};
-        document.fonts.values = function* () {};
-        document.fonts.keys = function* () {};
-        document.fonts.entries = function* () {};
+        document.fonts.forEach = fakeNative(function forEach() {}, "forEach");
+        document.fonts.values = fakeNative(function* values() {}, "values");
+        document.fonts.keys = fakeNative(function* keys() {}, "keys");
+        document.fonts.entries = fakeNative(function* entries() {}, "entries");
+        try { document.fonts.has = fakeNative(function has() { return false; }, "has"); } catch (_) {}
         Object.defineProperty(document.fonts, "size", { get: () => 0, configurable: true });
+      }
+    } catch (_) {}
+    // FontFace constructor — intercept load() so per-family probing respects the whitelist
+    try {
+      if (typeof window.FontFace === "function") {
+        const OrigFF = window.FontFace;
+        function SpoofedFontFace(family, source, descriptors) {
+          const face = new OrigFF(family, source, descriptors);
+          const ok = _fontAllowed(String(family || ""));
+          Object.defineProperty(face, "load", { value: fakeNative(function load() { return ok ? Promise.resolve(face) : Promise.reject(new DOMException("Font not in profile", "NetworkError")); }, "load"), configurable: true, writable: true });
+          return face;
+        }
+        SpoofedFontFace.prototype = OrigFF.prototype;
+        fakeNative(SpoofedFontFace, "FontFace");
+        window.FontFace = SpoofedFontFace;
       }
     } catch (_) {}
   }
@@ -499,6 +511,15 @@
     wrap(HTMLCanvasElement.prototype, "toDataURL", (orig) => function (...args) { try { const ctx = this.getContext("2d"); if (ctx) return noiseAndRead(this, ctx, orig, args); } catch (_) {} return orig.apply(this, args); });
     wrap(HTMLCanvasElement.prototype, "toBlob", (orig) => function (cb, ...rest) { try { const ctx = this.getContext("2d"); if (ctx) { const w = this.width, h = this.height; if (w && h) { const imgData = ctx.getImageData(0, 0, w, h); const backup = new Uint8ClampedArray(imgData.data); const d = imgData.data; for (let i = 0; i < d.length; i += 4) { if (stableNoise(i) < 0.01) d[i] ^= 1; if (stableNoise(i + 1) < 0.01) d[i + 1] ^= 1; if (stableNoise(i + 2) < 0.01) d[i + 2] ^= 1; } ctx.putImageData(imgData, 0, 0); const r = orig.call(this, cb, ...rest); const restore = ctx.createImageData(w, h); restore.data.set(backup); ctx.putImageData(restore, 0, 0); return r; } } } catch (_) {} return orig.call(this, cb, ...rest); });
     wrap(CanvasRenderingContext2D.prototype, "getImageData", (orig) => function (...args) { const imgData = orig.apply(this, args); try { const d = imgData.data; for (let i = 0; i < d.length; i += 4) { if (stableNoise(i) < 0.005) d[i] ^= 1; if (stableNoise(i + 1) < 0.005) d[i + 1] ^= 1; if (stableNoise(i + 2) < 0.005) d[i + 2] ^= 1; } } catch (_) {} return imgData; });
+    // OffscreenCanvas — used by headless fingerprinting scripts; apply same noise
+    try {
+      if (typeof OffscreenCanvas !== "undefined" && OffscreenCanvas.prototype) {
+        const _applyOffNoise = (ctx, w, h) => { if (!ctx || !w || !h) return null; try { const d = ctx.getImageData(0, 0, w, h); const bk = new Uint8ClampedArray(d.data); for (let i = 0; i < d.data.length; i += 4) { if (stableNoise(i) < 0.01) d.data[i] ^= 1; if (stableNoise(i + 1) < 0.01) d.data[i + 1] ^= 1; if (stableNoise(i + 2) < 0.01) d.data[i + 2] ^= 1; } ctx.putImageData(d, 0, 0); return bk; } catch (_) { return null; } };
+        const _restoreOff = (ctx, w, h, bk) => { try { if (!bk || !ctx) return; const rr = ctx.createImageData(w, h); rr.data.set(bk); ctx.putImageData(rr, 0, 0); } catch (_) {} };
+        wrap(OffscreenCanvas.prototype, "convertToBlob", (orig) => function (...args) { const ctx = this.getContext("2d"); const bk = _applyOffNoise(ctx, this.width, this.height); const r = orig.apply(this, args); _restoreOff(ctx, this.width, this.height, bk); return r; });
+        wrap(OffscreenCanvas.prototype, "transferToImageBitmap", (orig) => function () { const ctx = this.getContext("2d"); const bk = _applyOffNoise(ctx, this.width, this.height); const r = orig.call(this); _restoreOff(ctx, this.width, this.height, bk); return r; });
+      }
+    } catch (_) {}
   }
 
   // ── WebGL ──────────────────────────────────────────────────────────────────────
@@ -506,7 +527,17 @@
     const NORMALIZED_EXTENSIONS = ["ANGLE_instanced_arrays","EXT_blend_minmax","EXT_color_buffer_half_float","EXT_disjoint_timer_query","EXT_float_blend","EXT_frag_depth","EXT_shader_texture_lod","EXT_texture_compression_bptc","EXT_texture_compression_rgtc","EXT_texture_filter_anisotropic","EXT_sRGB","KHR_parallel_shader_compile","OES_element_index_uint","OES_fbo_render_mipmap","OES_standard_derivatives","OES_texture_float","OES_texture_float_linear","OES_texture_half_float","OES_texture_half_float_linear","OES_vertex_array_object","WEBGL_color_buffer_float","WEBGL_compressed_texture_s3tc","WEBGL_compressed_texture_s3tc_srgb","WEBGL_debug_shaders","WEBGL_depth_texture","WEBGL_draw_buffers","WEBGL_lose_context","WEBGL_multi_draw"];
     const neuter = (proto) => {
       if (!proto) return;
-      wrap(proto, "getParameter", (orig) => function (p) { if (p === 37445) return config._gpuVendor || "Google Inc. (Intel)"; if (p === 37446) return config._gpuRenderer || "ANGLE (Intel, Intel(R) UHD Graphics, OpenGL 4.1)"; if (p === 7936) return "WebKit"; if (p === 7937) return "WebKit WebGL"; if (p === 7938) return "WebGL 1.0"; if (p === 35724) return "WebGL GLSL ES 1.0"; return orig.call(this, p); });
+      wrap(proto, "getParameter", (orig) => function (p) {
+        const _isIOS = config._uaOS === "iOS";
+        // UNMASKED_VENDOR/RENDERER (37445/37446): iOS/WebKit never exposes these
+        if (p === 37445) return _isIOS ? null : (config._gpuVendor || "Google Inc. (Intel)");
+        if (p === 37446) return _isIOS ? null : (config._gpuRenderer || "ANGLE (Intel, Intel(R) UHD Graphics, OpenGL 4.1)");
+        if (p === 7936) return "WebKit";
+        if (p === 7937) return "WebKit WebGL";
+        if (p === 7938) return "WebGL 1.0 (OpenGL ES 2.0 Chromium)";
+        if (p === 35724) return "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)";
+        return orig.call(this, p);
+      });
       wrap(proto, "getExtension", (orig) => function (name) { if (name === "WEBGL_debug_renderer_info") return null; return orig.call(this, name); });
       wrap(proto, "getSupportedExtensions", (orig) => function () { return NORMALIZED_EXTENSIONS.slice(); });
       wrap(proto, "readPixels", (orig) => function (...args) { const r = orig.apply(this, args); try { const buf = args[6]; if (buf && buf.length) for (let i = 0; i < buf.length; i += 4) if (stableNoise(i) < 0.002) buf[i] ^= 1; } catch (_) {} return r; });

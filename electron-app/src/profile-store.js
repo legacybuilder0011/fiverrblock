@@ -823,24 +823,83 @@ function mobileSensorProfile() {
 }
 
 function fontListForOs(osName, language) {
-  const common = ["Arial", "Arial Black", "Courier New", "Georgia", "Times New Roman", "Trebuchet MS", "Verdana"];
-  const windows = ["Calibri", "Cambria", "Candara", "Consolas", "Corbel", "Lucida Console", "Segoe UI", "Tahoma", "Microsoft Sans Serif"];
-  const mac = ["Avenir", "Geeza Pro", "Helvetica Neue", "Menlo", "Monaco", "San Francisco", "Apple Color Emoji", "Palatino"];
-  const linux = ["DejaVu Sans", "DejaVu Serif", "Liberation Sans", "Liberation Serif", "Noto Sans", "Ubuntu", "Cantarell"];
-  const android = ["Droid Sans", "Roboto", "Noto Sans", "Noto Color Emoji", "Google Sans"];
+  const common = ["Arial", "Arial Black", "Courier New", "Georgia", "Times New Roman", "Trebuchet MS", "Verdana", "Impact", "Comic Sans MS", "Webdings", "Symbol"];
+  const windows = [
+    "Calibri", "Cambria", "Candara", "Consolas", "Corbel", "Constantia", "Lucida Console", "Lucida Sans Unicode",
+    "Segoe UI", "Segoe UI Symbol", "Segoe UI Emoji", "Tahoma", "Microsoft Sans Serif",
+    "Palatino Linotype", "Book Antiqua", "Garamond", "Franklin Gothic Medium", "Century Gothic",
+    "MS Sans Serif", "MS Serif", "Wingdings", "Wingdings 2", "Wingdings 3",
+    "Arial Narrow", "Arial Rounded MT Bold", "Wide Latin", "Agency FB",
+    "Baskerville Old Face", "Bell MT", "Bodoni MT", "Broadway", "Brush Script MT",
+    "Copperplate Gothic Bold", "Copperplate Gothic Light", "Engravers MT",
+    "Eras Bold ITC", "Eras Demi ITC", "Eras Light ITC", "Eras Medium ITC",
+    "Footlight MT Light", "Forte", "French Script MT", "Gloucester MT Extra Condensed",
+    "Goudy Old Style", "Harrington", "High Tower Text", "Jokerman", "Kristen ITC",
+    "Magneto", "Mistral", "Modern No. 20", "Old English Text MT", "Onyx",
+    "Palace Script MT", "Papyrus", "Perpetua", "Playbill", "Poor Richard", "Pristina",
+    "Rage Italic", "Rockwell", "Rockwell Condensed", "Rockwell Extra Bold",
+    "Script MT Bold", "Showcard Gothic", "Snap ITC", "Stencil", "Tempus Sans ITC",
+    "Tw Cen MT", "Viner Hand ITC", "Vivaldi", "Vladimir Script"
+  ];
+  const mac = [
+    "Avenir", "Avenir Next", "Avenir Next Condensed", "Geeza Pro", "Helvetica Neue", "Helvetica",
+    "Menlo", "Monaco", "San Francisco", "Apple Color Emoji", "Apple Symbols", "Palatino",
+    "Optima", "Futura", "Gill Sans", "Baskerville", "Didot", "Big Caslon",
+    "Cochin", "Copperplate", "Hoefler Text", "Lucida Grande", "Marker Felt",
+    "Noteworthy", "Papyrus", "Skia", "Zapfino", "Chalkboard SE", "Chalkduster",
+    "American Typewriter", "Andale Mono", "Bradley Hand", "Brush Script MT",
+    "Courier", "Herculanum", "Zapf Dingbats",
+    "Hiragino Sans", "PingFang SC", "Songti SC"
+  ];
+  const ios = [
+    "Helvetica Neue", "Helvetica", "Arial", "Courier New", "Georgia", "Times New Roman", "Verdana",
+    "Arial Rounded MT Bold", "American Typewriter", "Avenir", "Avenir Next", "Avenir Next Condensed",
+    "Baskerville", "Bodoni 72", "Bradley Hand", "Chalkboard SE", "Chalkduster", "Charter",
+    "Cochin", "Copperplate", "DIN Alternate", "DIN Condensed", "Didact Gothic",
+    "Futura", "Geeza Pro", "Gill Sans", "Hiragino Mincho ProN", "Hiragino Sans",
+    "Hoefler Text", "Kailasa", "Marker Felt", "Menlo", "Noteworthy",
+    "Optima", "Palatino", "Papyrus", "Rockwell", "San Francisco", "Apple Color Emoji",
+    "Snell Roundhand", "Superclarendon", "Thonburi", "Zapf Dingbats", "Zapfino",
+    "Apple SD Gothic Neo", "Farah", "Galvji", "Mishafi", "Noto Nastaliq Urdu"
+  ];
+  const linux = [
+    "DejaVu Sans", "DejaVu Sans Mono", "DejaVu Serif",
+    "Liberation Sans", "Liberation Serif", "Liberation Mono",
+    "Noto Sans", "Noto Serif", "Noto Color Emoji", "Noto Mono",
+    "Ubuntu", "Ubuntu Mono", "Ubuntu Condensed",
+    "Cantarell", "FreeMono", "FreeSans", "FreeSerif",
+    "Droid Sans", "Droid Serif", "Droid Sans Mono",
+    "Source Code Pro", "Source Sans Pro", "Open Sans", "Roboto"
+  ];
+  const android = [
+    "Roboto", "Roboto Thin", "Roboto Light", "Roboto Medium", "Roboto Bold", "Roboto Black",
+    "Roboto Condensed", "Roboto Condensed Light", "Roboto Condensed Bold",
+    "Noto Sans", "Noto Serif", "Noto Color Emoji", "Noto Emoji",
+    "Droid Sans", "Droid Sans Fallback", "Droid Serif", "Droid Sans Mono",
+    "Google Sans", "Google Sans Medium", "Google Sans Bold",
+    "Cutive Mono", "Coming Soon", "Dancing Script", "Source Sans Pro"
+  ];
   const locale = {
-    "ja-JP": ["Yu Gothic", "Meiryo", "Noto Sans CJK JP"],
+    "ja-JP": ["Yu Gothic", "Yu Gothic UI", "Meiryo", "Meiryo UI", "MS Gothic", "MS PGothic", "MS Mincho", "Noto Sans CJK JP", "Hiragino Sans"],
+    "zh-CN": ["SimSun", "SimHei", "Microsoft YaHei", "FangSong", "KaiTi", "Noto Sans SC"],
+    "zh-TW": ["MingLiU", "PMingLiU", "Microsoft JhengHei", "Noto Sans TC"],
+    "ko-KR": ["Malgun Gothic", "Gulim", "Dotum", "Batang", "Noto Sans KR"],
     "de-DE": ["Bahnschrift", "Segoe UI"],
     "fr-FR": ["Segoe UI", "Calibri"],
     "ru-RU": ["Arial", "Times New Roman"],
-    "ar-AE": ["Segoe UI", "Arial"],
-    "hi-IN": ["Nirmala UI", "Mangal"],
+    "ar-AE": ["Segoe UI", "Arial", "Tahoma", "Simplified Arabic"],
+    "hi-IN": ["Nirmala UI", "Mangal", "Aparajita"],
     "pt-BR": ["Segoe UI", "Calibri"],
     "tr-TR": ["Segoe UI", "Arial"],
     "sv-SE": ["Segoe UI", "Calibri"],
-    "nl-NL": ["Segoe UI", "Calibri"]
+    "nl-NL": ["Segoe UI", "Calibri"],
+    "es-ES": ["Segoe UI", "Calibri"],
+    "it-IT": ["Segoe UI", "Calibri"],
+    "th-TH": ["Tahoma", "Leelawadee", "Leelawadee UI"],
+    "vi-VN": ["Tahoma", "Arial"],
+    "id-ID": ["Segoe UI", "Arial"]
   }[language] || [];
-  const base = (osName === "android") ? android : (osName === "ios" || osName === "macos") ? mac : osName === "linux" ? linux : windows;
+  const base = osName === "android" ? android : osName === "ios" ? ios : osName === "macos" ? mac : osName === "linux" ? linux : windows;
   return [...new Set([...common, ...base, ...locale])];
 }
 
