@@ -715,4 +715,117 @@
     }
   } catch (_) {}
 
+  // ── Layer 4: Behavioral mimicry ───────────────────────────────────────────────
+
+  // Reduce event.timeStamp precision to 1 ms — prevents sub-millisecond timing
+  // fingerprinting used to distinguish machine-generated from human input.
+  try {
+    const _tsDesc = Object.getOwnPropertyDescriptor(Event.prototype, "timeStamp");
+    if (_tsDesc && _tsDesc.get) {
+      Object.defineProperty(Event.prototype, "timeStamp", {
+        get: fakeNative(function timeStamp() { return Math.round(_tsDesc.get.call(this)); }, "get timeStamp"),
+        configurable: true
+      });
+    }
+  } catch (_) {}
+
+  // window.__humanize — automation API for human-like interaction.
+  // Normal manual browsing is unaffected; scripts call these helpers to avoid
+  // bot-detection on click/type/scroll patterns.
+  try {
+    const _hSleep  = (ms) => new Promise((r) => setTimeout(r, ms));
+    const _hRand   = (lo, hi) => lo + Math.random() * (hi - lo);
+
+    // Cubic Bezier path between two screen points with random control points
+    const _hBezier = (x1, y1, x2, y2, steps) => {
+      const cp1x = x1 + _hRand(0.2, 0.5) * (x2 - x1) + _hRand(-80, 80);
+      const cp1y = y1 + _hRand(0.1, 0.4) * (y2 - y1) + _hRand(-80, 80);
+      const cp2x = x1 + _hRand(0.5, 0.8) * (x2 - x1) + _hRand(-60, 60);
+      const cp2y = y1 + _hRand(0.5, 0.9) * (y2 - y1) + _hRand(-60, 60);
+      const pts = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps, u = 1 - t;
+        pts.push({
+          x: u*u*u*x1 + 3*u*u*t*cp1x + 3*u*t*t*cp2x + t*t*t*x2,
+          y: u*u*u*y1 + 3*u*u*t*cp1y + 3*u*t*t*cp2y + t*t*t*y2
+        });
+      }
+      return pts;
+    };
+
+    const _hMouse = (type, el, x, y, extra = {}) => {
+      el.dispatchEvent(new MouseEvent(type, {
+        bubbles: true, cancelable: true, view: window,
+        clientX: x, clientY: y,
+        screenX: x + (window.screenX || 0), screenY: y + (window.screenY || 0),
+        movementX: _hRand(-1, 1), movementY: _hRand(-1, 1),
+        ...extra
+      }));
+    };
+
+    // Simulate a human click: scroll into view → Bezier mouse path → mousedown/up/click
+    const humanClick = async (el) => {
+      if (!el) throw new Error("humanClick: element required");
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      await _hSleep(_hRand(250, 550));
+      const r = el.getBoundingClientRect();
+      const tx = r.left + r.width  / 2 + _hRand(-4, 4);
+      const ty = r.top  + r.height / 2 + _hRand(-4, 4);
+      const sx = _hRand(0, window.innerWidth);
+      const sy = _hRand(0, window.innerHeight);
+      for (const pt of _hBezier(sx, sy, tx, ty, Math.round(_hRand(10, 22)))) {
+        _hMouse("mousemove", document.documentElement, pt.x, pt.y);
+        await _hSleep(_hRand(8, 24));
+      }
+      _hMouse("mouseover",  el, tx, ty);
+      _hMouse("mouseenter", el, tx, ty);
+      await _hSleep(_hRand(40, 120));
+      _hMouse("mousedown", el, tx, ty, { buttons: 1, button: 0 });
+      await _hSleep(_hRand(30, 90));
+      _hMouse("mouseup",   el, tx, ty, { buttons: 0, button: 0 });
+      _hMouse("click",     el, tx, ty);
+      await _hSleep(_hRand(50, 150));
+    };
+
+    // Simulate human typing: 60-180 ms per key, 8% chance of 400-900 ms pause
+    const humanType = async (el, text, opts = {}) => {
+      if (!el || text == null) throw new Error("humanType: element and text required");
+      const lo = opts.minDelay ?? 60, hi = opts.maxDelay ?? 180;
+      el.focus();
+      await _hSleep(_hRand(120, 380));
+      for (const ch of String(text)) {
+        const kInit = { key: ch, bubbles: true, cancelable: true };
+        el.dispatchEvent(new KeyboardEvent("keydown",  kInit));
+        el.dispatchEvent(new KeyboardEvent("keypress", kInit));
+        if ("value" in el) {
+          const s = el.selectionStart ?? el.value.length;
+          const e2 = el.selectionEnd ?? s;
+          el.value = el.value.slice(0, s) + ch + el.value.slice(e2);
+          el.selectionStart = el.selectionEnd = s + 1;
+        }
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ch }));
+        el.dispatchEvent(new KeyboardEvent("keyup", kInit));
+        await _hSleep(Math.random() < 0.08 ? _hRand(400, 900) : _hRand(lo, hi));
+      }
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+
+    // Simulate human scroll with sine-eased deceleration
+    const humanScroll = async (opts = {}) => {
+      const dist  = opts.distance  ?? _hRand(200, 500);
+      const dir   = opts.direction ?? "down";
+      const steps = Math.round(_hRand(6, 14));
+      for (let i = 0; i < steps; i++) {
+        const ease = Math.sin((i / steps) * Math.PI);
+        window.scrollBy({ top: (dir === "down" ? 1 : -1) * (dist / steps) * (0.4 + ease * 0.6), behavior: "auto" });
+        await _hSleep(_hRand(20, 55));
+      }
+    };
+
+    Object.defineProperty(window, "__humanize", {
+      value: Object.freeze({ click: humanClick, type: humanType, scroll: humanScroll, sleep: _hSleep }),
+      configurable: false, enumerable: false, writable: false
+    });
+  } catch (_) {}
+
 })();
