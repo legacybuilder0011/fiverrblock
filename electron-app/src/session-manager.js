@@ -129,7 +129,7 @@ function installWebRequestHooks(sess, config) {
       const langRoot = lang.split("-")[0] || "en";
       setHeader(headers, "User-Agent", config.userAgent);
       setHeader(headers, "Accept-Language", `${lang},${langRoot};q=0.9,en;q=0.8`);
-      if (config._browserApp !== "firefox" && config._browserApp !== "safari") {
+      if (config._browserApp !== "firefox" && config._browserApp !== "safari" && config._uaOS !== "iOS") {
         for (const [name, value] of Object.entries(buildClientHints(config))) {
           setHeader(headers, name, value);
         }

@@ -28,7 +28,7 @@ function toast(text, ms = 2200) {
 }
 
 function osChip(os) {
-  const map = { windows: ["os-windows", "Win"], macos: ["os-macos", "Mac"], linux: ["os-linux", "Linux"], android: ["os-linux", "Android"] };
+  const map = { windows: ["os-windows", "Win"], macos: ["os-macos", "Mac"], linux: ["os-linux", "Linux"], android: ["os-linux", "Android"], ios: ["os-macos", "iOS"] };
   const [cls, label] = map[os] || ["os-windows", "Win"];
   return `<span class="chip ${cls}">${label}</span>`;
 }
@@ -390,20 +390,20 @@ function populateForm(p) {
     colorDepth: fp.colorDepth || 24,
     pixelDepth: fp.pixelDepth || 24,
     devicePixelRatio: fp.devicePixelRatio || 1,
-    deviceClass: fp.deviceClass || (p.os === "android" ? "mobile" : "desktop"),
+    deviceClass: fp.deviceClass || ((p.os === "android" || p.os === "ios") ? "mobile" : "desktop"),
     mobileModel: fp.mobileModel || "",
     mobileManufacturer: fp.mobileManufacturer || "",
     platformVersion: fp.platformVersion || "",
     androidBuild: fp.androidBuild || "",
-    architecture: fp.architecture || (p.os === "android" ? "arm" : "x86"),
+    architecture: fp.architecture || ((p.os === "android" || p.os === "ios") ? "arm" : "x86"),
     bitness: fp.bitness || "64",
-    maxTouchPoints: fp.maxTouchPoints || (p.os === "android" ? 5 : 0),
-    screenOrientation: fp.screenOrientation || (p.os === "android" ? "portrait-primary" : "landscape-primary"),
-    touchEmulation: fp.touchEmulation ?? (p.os === "android"),
-    sensorEmulation: fp.sensorEmulation ?? (p.os === "android"),
-    viewportMobile: fp.viewportMobile ?? (p.os === "android"),
-    pointerType: fp.pointerType || (p.os === "android" ? "coarse" : "fine"),
-    hoverType: fp.hoverType || (p.os === "android" ? "none" : "hover"),
+    maxTouchPoints: fp.maxTouchPoints || ((p.os === "android" || p.os === "ios") ? 5 : 0),
+    screenOrientation: fp.screenOrientation || ((p.os === "android" || p.os === "ios") ? "portrait-primary" : "landscape-primary"),
+    touchEmulation: fp.touchEmulation ?? (p.os === "android" || p.os === "ios"),
+    sensorEmulation: fp.sensorEmulation ?? (p.os === "android" || p.os === "ios"),
+    viewportMobile: fp.viewportMobile ?? (p.os === "android" || p.os === "ios"),
+    pointerType: fp.pointerType || ((p.os === "android" || p.os === "ios") ? "coarse" : "fine"),
+    hoverType: fp.hoverType || ((p.os === "android" || p.os === "ios") ? "none" : "hover"),
     deviceMotion: fp.deviceMotion || null,
     deviceOrientation: fp.deviceOrientation || null,
     connectionType: fp.connectionType || "wifi",
@@ -566,20 +566,20 @@ function collectForm() {
       colorDepth: Number(currentFingerprintMeta.colorDepth) || 24,
       pixelDepth: Number(currentFingerprintMeta.pixelDepth) || 24,
       devicePixelRatio: Number(currentFingerprintMeta.devicePixelRatio) || 1,
-      deviceClass: ($("fp-os")?.value === "android") ? "mobile" : (currentFingerprintMeta.deviceClass || "desktop"),
+      deviceClass: (["android", "ios"].includes($("fp-os")?.value)) ? "mobile" : (currentFingerprintMeta.deviceClass || "desktop"),
       mobileModel: currentFingerprintMeta.mobileModel || "",
       mobileManufacturer: currentFingerprintMeta.mobileManufacturer || "",
       platformVersion: currentFingerprintMeta.platformVersion || "",
       androidBuild: currentFingerprintMeta.androidBuild || "",
-      architecture: ($("fp-os")?.value === "android") ? "arm" : (currentFingerprintMeta.architecture || "x86"),
+      architecture: (["android", "ios"].includes($("fp-os")?.value)) ? "arm" : (currentFingerprintMeta.architecture || "x86"),
       bitness: currentFingerprintMeta.bitness || "64",
-      maxTouchPoints: Number(currentFingerprintMeta.maxTouchPoints) || (($("fp-os")?.value === "android") ? 5 : 0),
-      screenOrientation: ($("fp-os")?.value === "android") ? "portrait-primary" : (currentFingerprintMeta.screenOrientation || "landscape-primary"),
-      touchEmulation: ($("fp-os")?.value === "android") || Boolean(currentFingerprintMeta.touchEmulation),
-      sensorEmulation: ($("fp-os")?.value === "android") || Boolean(currentFingerprintMeta.sensorEmulation),
-      viewportMobile: ($("fp-os")?.value === "android") || Boolean(currentFingerprintMeta.viewportMobile),
-      pointerType: ($("fp-os")?.value === "android") ? "coarse" : (currentFingerprintMeta.pointerType || "fine"),
-      hoverType: ($("fp-os")?.value === "android") ? "none" : (currentFingerprintMeta.hoverType || "hover"),
+      maxTouchPoints: Number(currentFingerprintMeta.maxTouchPoints) || ((["android", "ios"].includes($("fp-os")?.value)) ? 5 : 0),
+      screenOrientation: (["android", "ios"].includes($("fp-os")?.value)) ? "portrait-primary" : (currentFingerprintMeta.screenOrientation || "landscape-primary"),
+      touchEmulation: (["android", "ios"].includes($("fp-os")?.value)) || Boolean(currentFingerprintMeta.touchEmulation),
+      sensorEmulation: (["android", "ios"].includes($("fp-os")?.value)) || Boolean(currentFingerprintMeta.sensorEmulation),
+      viewportMobile: (["android", "ios"].includes($("fp-os")?.value)) || Boolean(currentFingerprintMeta.viewportMobile),
+      pointerType: (["android", "ios"].includes($("fp-os")?.value)) ? "coarse" : (currentFingerprintMeta.pointerType || "fine"),
+      hoverType: (["android", "ios"].includes($("fp-os")?.value)) ? "none" : (currentFingerprintMeta.hoverType || "hover"),
       deviceMotion: currentFingerprintMeta.deviceMotion || null,
       deviceOrientation: currentFingerprintMeta.deviceOrientation || null,
       connectionType: currentFingerprintMeta.connectionType || "wifi",
@@ -710,7 +710,13 @@ function updateUAPreview() {
 
   const osStr = { windows: "Windows NT 10.0; Win64; x64", macos: "Macintosh; Intel Mac OS X 10_15_7", linux: "X11; Linux x86_64", android: "Linux; Android 14; Pixel 8 Build/UP1A.231005.007" }[os] || "Windows NT 10.0; Win64; x64";
   let ua;
-  if (br === "firefox")     ua = `Mozilla/5.0 (${osStr}; rv:${fv}.0) Gecko/20100101 Firefox/${fv}.0`;
+  if (os === "ios") {
+    const iosUA = "(iPhone; CPU iPhone OS 17_2 like Mac OS X)";
+    if (br === "safari")     ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1`;
+    else if (br === "firefox") ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/${fv}.0 Mobile/15E148 Safari/604.1`;
+    else if (br === "edge")  ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 EdgiOS/${full} Mobile/15E148 Safari/604.1`;
+    else                     ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/${full} Mobile/15E148 Safari/604.1`;
+  } else if (br === "firefox")     ua = `Mozilla/5.0 (${osStr}; rv:${fv}.0) Gecko/20100101 Firefox/${fv}.0`;
   else if (br === "safari") ua = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${full} Safari/605.1.15`;
   else if (br === "privacy" && os === "android") ua = `Mozilla/5.0 (${osStr}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Mobile Safari/537.36 PrivacyShield/${full}`;
   else if (os === "android") ua = `Mozilla/5.0 (${osStr}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Mobile Safari/537.36`;
@@ -1125,6 +1131,7 @@ function bindFormEvents() {
     if (mode === "proxy") setVal("px-enabled", "true");
     if (mode === "vpn" || mode === "direct") setVal("px-enabled", "false");
     updateConditionalRows();
+    if (mode === "vpn") captureCurrentVpnLocation();
   });
   $("btnCaptureVpn")?.addEventListener("click", captureCurrentVpnLocation);
   $("btnAuditProfile")?.addEventListener("click", auditCurrentProfile);

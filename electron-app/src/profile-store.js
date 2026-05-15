@@ -730,9 +730,42 @@ const ANDROID_DEVICE_PROFILES = [
   }
 ];
 
+const IOS_DEVICE_PROFILES = [
+  {
+    manufacturer: "Apple", model: "iPhone 15 Pro", ios: "17.2", build: "21C62",
+    screen: [393, 852], dpr: 3, cores: 6, ram: 8,
+    gpuVendor: "Apple", gpuRenderer: "Apple GPU"
+  },
+  {
+    manufacturer: "Apple", model: "iPhone 15", ios: "17.2", build: "21C62",
+    screen: [393, 852], dpr: 3, cores: 6, ram: 6,
+    gpuVendor: "Apple", gpuRenderer: "Apple GPU"
+  },
+  {
+    manufacturer: "Apple", model: "iPhone 14", ios: "16.6", build: "20G75",
+    screen: [390, 844], dpr: 3, cores: 6, ram: 6,
+    gpuVendor: "Apple", gpuRenderer: "Apple GPU"
+  },
+  {
+    manufacturer: "Apple", model: "iPhone 13", ios: "17.1", build: "21B91",
+    screen: [390, 844], dpr: 3, cores: 6, ram: 4,
+    gpuVendor: "Apple", gpuRenderer: "Apple GPU"
+  },
+  {
+    manufacturer: "Apple", model: "iPhone SE (3rd gen)", ios: "17.2", build: "21C62",
+    screen: [375, 667], dpr: 2, cores: 6, ram: 4,
+    gpuVendor: "Apple", gpuRenderer: "Apple GPU"
+  },
+  {
+    manufacturer: "Apple", model: "iPad Air (5th gen)", ios: "17.2", build: "21C62",
+    screen: [820, 1180], dpr: 2, cores: 8, ram: 8,
+    gpuVendor: "Apple", gpuRenderer: "Apple GPU"
+  }
+];
+
 function normalizeDeviceClass(value) {
   const v = String(value || "desktop").toLowerCase();
-  if (["mobile", "android", "phone"].includes(v)) return "mobile";
+  if (["mobile", "android", "ios", "iphone", "ipad", "phone"].includes(v)) return "mobile";
   if (v === "random") return "random";
   return "desktop";
 }
@@ -749,6 +782,7 @@ function randomDeviceName(osName) {
   let suffix = "";
   for (let i = 0; i < 7; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
   if (osName === "android") return randomChoice(["Pixel", "Galaxy", "Android"]) + "-" + suffix.slice(0, 5);
+  if (osName === "ios") return randomChoice(["iPhone", "iPhone", "iPad"]) + "-" + suffix.slice(0, 5);
   if (osName === "macos") return randomChoice(["MacBook-Pro", "MacBook-Air", "iMac"]) + "-" + randomInt(10, 99);
   if (osName === "linux") return randomChoice(["ubuntu", "fedora", "debian", "workstation"]) + "-" + suffix.slice(0, 5).toLowerCase();
   return randomChoice(["DESKTOP", "LAPTOP", "PC", "WORKSTATION"]) + "-" + suffix;
@@ -757,6 +791,7 @@ function randomDeviceName(osName) {
 function randomHardwareId(osName) {
   const hex = (n) => crypto.randomBytes(n).toString("hex").toUpperCase();
   if (osName === "android") return `ANDROID-${hex(4)}-${hex(4)}-${hex(2)}`;
+  if (osName === "ios") return `IOS-${hex(4)}-${hex(4)}-${hex(2)}`;
   if (osName === "macos") return `MAC-${hex(4)}-${hex(2)}-${hex(2)}`;
   if (osName === "linux") return `LINUX-${hex(4)}-${hex(4)}`;
   return `{${hex(4)}-${hex(2)}-${hex(2)}-${hex(2)}-${hex(6)}}`;
@@ -805,7 +840,7 @@ function fontListForOs(osName, language) {
     "sv-SE": ["Segoe UI", "Calibri"],
     "nl-NL": ["Segoe UI", "Calibri"]
   }[language] || [];
-  const base = osName === "android" ? android : osName === "macos" ? mac : osName === "linux" ? linux : windows;
+  const base = (osName === "android") ? android : (osName === "ios" || osName === "macos") ? mac : osName === "linux" ? linux : windows;
   return [...new Set([...common, ...base, ...locale])];
 }
 
@@ -829,6 +864,7 @@ function gpuLooksCompatibleWithOs(osName, vendor, renderer) {
   const text = `${vendor || ""} ${renderer || ""}`.toLowerCase();
   if (!text.trim()) return false;
   if (osName === "android") return hasAnyToken(text, ["adreno", "mali", "qualcomm", "arm", "powervr", "immortalis"]);
+  if (osName === "ios") return hasAnyToken(text, ["apple"]);
   if (osName === "macos") return hasAnyToken(text, ["apple", "metal", "m1", "m2", "m3", "m4", "iris", "intel"]);
   if (osName === "linux") return hasAnyToken(text, ["mesa", "x.org", "llvm", "intel", "amd", "radeon", "nvidia"]);
   return hasAnyToken(text, ["direct3d", "d3d11", "nvidia", "geforce", "intel", "iris", "uhd", "amd", "radeon"]);
@@ -851,10 +887,12 @@ function browserForOs(osName, requestedBrowser = "random") {
   const requested = normalizeBrowserApp(requestedBrowser, "random");
   if (requested !== "random") {
     if (osName === "android" && ["firefox", "safari"].includes(requested)) return "chrome";
-    if (osName !== "macos" && requested === "safari") return "chrome";
+    if (osName === "ios" && requested === "privacy") return "safari";
+    if (osName !== "macos" && osName !== "ios" && requested === "safari") return "chrome";
     return requested;
   }
   if (osName === "android") return randomChoice(["privacy", "chrome", "chrome", "brave", "edge"]);
+  if (osName === "ios") return randomChoice(["safari", "safari", "chrome", "firefox", "edge"]);
   const options = osName === "macos"
     ? ["privacy", "chrome", "chrome", "brave", "edge"]
     : ["privacy", "chrome", "chrome", "chrome", "brave", "edge"];
@@ -871,6 +909,10 @@ function screenForOs(osName) {
     const device = randomChoice(ANDROID_DEVICE_PROFILES);
     return { width: device.screen[0], height: device.screen[1], device };
   }
+  if (osName === "ios") {
+    const device = randomChoice(IOS_DEVICE_PROFILES);
+    return { width: device.screen[0], height: device.screen[1], device };
+  }
   const windows = [[1366, 768], [1440, 900], [1536, 864], [1600, 900], [1920, 1080], [2560, 1440]];
   const mac = [[1440, 900], [1512, 982], [1728, 1117], [2560, 1600]];
   const linux = [[1366, 768], [1440, 900], [1920, 1080], [1600, 900]];
@@ -882,6 +924,10 @@ function randomWebglForOs(osName) {
   if (osName === "android") {
     const device = randomChoice(ANDROID_DEVICE_PROFILES);
     return { vendor: device.gpuVendor, renderer: device.gpuRenderer, platform: "android", device };
+  }
+  if (osName === "ios") {
+    const device = randomChoice(IOS_DEVICE_PROFILES);
+    return { vendor: device.gpuVendor, renderer: device.gpuRenderer, platform: "ios", device };
   }
   const matches = PROFILE_WEBGL_PRESETS.filter((preset) => preset.platform === osName);
   return randomChoice(matches.length ? matches : PROFILE_WEBGL_PRESETS);
@@ -908,7 +954,7 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
   if (!fp.browser) {
     fp.browser = profile.browserApp || "chrome";
   }
-  if (!fp.fontProfile || (osName === "android" && fp.fontProfile !== "android")) {
+  if (!fp.fontProfile || ((osName === "android" || osName === "ios") && !["android", "ios"].includes(fp.fontProfile))) {
     fp.fontProfile = osName;
   }
   if (!Array.isArray(fp.installedFonts) || !fp.installedFonts.length || fp.fontProfile !== (profile.fingerprint || {}).fontProfile) {
@@ -923,7 +969,7 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
   if (regenerateIdentity && fp.deviceName === "manual") {
     fp.deviceNameValue = randomDeviceName(osName);
   }
-  if (osName === "android") {
+  if (osName === "android" || osName === "ios") {
     fp.deviceClass = "mobile";
     fp.architecture = "arm";
     fp.maxTouchPoints = Number(fp.maxTouchPoints) || 5;
@@ -949,7 +995,7 @@ function buildCountryIdentity(countryCode = "us", options = {}) {
   const osName = osForCountry(code, deviceClass);
   const browser = browserForOs(osName, options.browserApp || options.browser || "random");
   const screen = screenForOs(osName);
-  const mobileDevice = osName === "android" ? screen.device : null;
+  const mobileDevice = (osName === "android" || osName === "ios") ? screen.device : null;
   const webgl = mobileDevice
     ? { vendor: mobileDevice.gpuVendor, renderer: mobileDevice.gpuRenderer }
     : randomWebglForOs(osName);
@@ -993,8 +1039,8 @@ function buildCountryIdentity(countryCode = "us", options = {}) {
     devicePixelRatio: dpr,
     mobileModel: mobileDevice ? mobileDevice.model : "",
     mobileManufacturer: mobileDevice ? mobileDevice.manufacturer : "",
-    platformVersion: mobileDevice ? mobileDevice.android : "",
-    androidBuild: mobileDevice ? mobileDevice.build : "",
+    platformVersion: mobileDevice ? (mobileDevice.ios || mobileDevice.android || "") : "",
+    androidBuild: mobileDevice ? (mobileDevice.build || "") : "",
     architecture: mobileDevice ? "arm" : "x86",
     bitness: "64",
     maxTouchPoints: mobileDevice ? randomChoice([5, 5, 10]) : 0,
@@ -1139,6 +1185,40 @@ function buildProfileUA(os, version, browser, fingerprint = {}) {
     };
   }
 
+  if (os === "ios") {
+    const iosVersion = fingerprint.platformVersion || "17.2";
+    const model = fingerprint.mobileModel || "iPhone 15";
+    const isIpad = model.toLowerCase().includes("ipad");
+    const iosVerUA = iosVersion.replace(/\./g, "_");
+    const deviceUA = isIpad
+      ? `(iPad; CPU OS ${iosVerUA} like Mac OS X)`
+      : `(iPhone; CPU iPhone OS ${iosVerUA} like Mac OS X)`;
+    const platform = isIpad ? "iPad" : "iPhone";
+    let ua;
+    switch (br) {
+      case "firefox":
+        ua = `Mozilla/5.0 ${deviceUA} AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/${major}.0 Mobile/15E148 Safari/604.1`;
+        break;
+      case "edge":
+        ua = `Mozilla/5.0 ${deviceUA} AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${iosVersion} EdgiOS/${full} Mobile/15E148 Safari/604.1`;
+        break;
+      case "safari":
+        ua = `Mozilla/5.0 ${deviceUA} AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${iosVersion} Mobile/15E148 Safari/604.1`;
+        break;
+      default:
+        ua = `Mozilla/5.0 ${deviceUA} AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/${full} Mobile/15E148 Safari/604.1`;
+    }
+    return {
+      ua,
+      platform,
+      os: "iOS",
+      version: major,
+      platformVersion: iosVersion,
+      mobile: true,
+      model
+    };
+  }
+
   const osStr = {
     macos:  { win: "Macintosh; Intel Mac OS X 10_15_7", platform: "MacIntel", os: "macOS" },
     linux:  { win: "X11; Linux x86_64",                 platform: "Linux x86_64", os: "Linux" },
@@ -1204,21 +1284,21 @@ function buildConfigFromProfile(profile) {
     _devicePixelRatio: Number(fp.devicePixelRatio) || 1,
     _colorDepth: Number(fp.colorDepth) || 24,
     _pixelDepth: Number(fp.pixelDepth) || 24,
-    _deviceClass: profile.os === "android" ? "mobile" : (fp.deviceClass || "desktop"),
-    _mobile: fp.deviceClass === "mobile" || profile.os === "android",
+    _deviceClass: (profile.os === "android" || profile.os === "ios") ? "mobile" : (fp.deviceClass || "desktop"),
+    _mobile: fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios",
     _mobileModel: fp.mobileModel || "",
     _mobileManufacturer: fp.mobileManufacturer || "",
     _platformVersion: fp.platformVersion || "",
     _androidBuild: fp.androidBuild || "",
-    _architecture: profile.os === "android" ? "arm" : (fp.architecture || "x86"),
+    _architecture: (profile.os === "android" || profile.os === "ios") ? "arm" : (fp.architecture || "x86"),
     _bitness: fp.bitness || "64",
-    _maxTouchPoints: Number(fp.maxTouchPoints) || (profile.os === "android" ? 5 : 0),
-    _screenOrientation: profile.os === "android" ? "portrait-primary" : (fp.screenOrientation || "landscape-primary"),
-    _touchEmulation: Boolean(fp.touchEmulation || fp.deviceClass === "mobile" || profile.os === "android"),
-    _sensorEmulation: Boolean(fp.sensorEmulation || fp.deviceClass === "mobile" || profile.os === "android"),
-    _viewportMobile: Boolean(fp.viewportMobile || fp.deviceClass === "mobile" || profile.os === "android"),
-    _pointerType: (fp.deviceClass === "mobile" || profile.os === "android") ? "coarse" : (fp.pointerType || "fine"),
-    _hoverType: (fp.deviceClass === "mobile" || profile.os === "android") ? "none" : (fp.hoverType || "hover"),
+    _maxTouchPoints: Number(fp.maxTouchPoints) || ((profile.os === "android" || profile.os === "ios") ? 5 : 0),
+    _screenOrientation: (profile.os === "android" || profile.os === "ios") ? "portrait-primary" : (fp.screenOrientation || "landscape-primary"),
+    _touchEmulation: Boolean(fp.touchEmulation || fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios"),
+    _sensorEmulation: Boolean(fp.sensorEmulation || fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios"),
+    _viewportMobile: Boolean(fp.viewportMobile || fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios"),
+    _pointerType: (fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios") ? "coarse" : (fp.pointerType || "fine"),
+    _hoverType: (fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios") ? "none" : (fp.hoverType || "hover"),
     _deviceMotion: fp.deviceMotion || null,
     _deviceOrientation: fp.deviceOrientation || null,
     _connectionType: fp.connectionType || "wifi",
@@ -1250,8 +1330,8 @@ function buildConfigFromProfile(profile) {
     screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 }
   };
 
-  const platformMap = { windows: "Win32", macos: "MacIntel", linux: "Linux x86_64", android: "Linux armv8l" };
-  const osMap = { windows: "Windows", macos: "macOS", linux: "Linux", android: "Android" };
+  const platformMap = { windows: "Win32", macos: "MacIntel", linux: "Linux x86_64", android: "Linux armv8l", ios: "iPhone" };
+  const osMap = { windows: "Windows", macos: "macOS", linux: "Linux", android: "Android", ios: "iOS" };
   cfg.platform = platformMap[profile.os || "windows"] || "Win32";
   cfg._uaOS = osMap[profile.os || "windows"] || "Windows";
 

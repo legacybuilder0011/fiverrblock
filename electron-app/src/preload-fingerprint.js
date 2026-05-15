@@ -160,7 +160,7 @@
     const architecture = config._architecture || (isMobile ? "arm" : "x86");
     const bitness = config._bitness || "64";
     const mobileModel = isMobile ? (config._mobileModel || "") : "";
-    if (browserName() === "firefox" || browserName() === "safari") {
+    if (browserName() === "firefox" || browserName() === "safari" || config._uaOS === "iOS") {
       defineRO(Navigator.prototype, "userAgentData", undefined);
     } else try {
       const uaData = {
@@ -548,7 +548,7 @@
       ];
       window.speechSynthesis.getVoices = function () {
         const os = platformName();
-        const voices = os === "macOS" ? macVoices : os === "Linux" ? linuxVoices : winVoices;
+        const voices = (os === "macOS" || os === "iOS") ? macVoices : os === "Linux" ? linuxVoices : winVoices;
         return voices.map((voice) => ({ ...voice }));
       };
       fakeNative(window.speechSynthesis.getVoices, "getVoices");

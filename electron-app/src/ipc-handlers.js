@@ -684,7 +684,8 @@ function getProfileBrowserMeta(profileId) {
     windows: "Windows",
     macos: "macOS",
     linux: "Linux",
-    android: "Android"
+    android: "Android",
+    ios: "iOS"
   };
   return {
     appName: browserLabels[browser] || "Chromium",
@@ -694,7 +695,7 @@ function getProfileBrowserMeta(profileId) {
     country: fp.country || "",
     countryCode: fp.countryCode || "",
     city: fp.city || "",
-    deviceClass: fp.deviceClass || (profile.os === "android" ? "mobile" : "desktop"),
+    deviceClass: fp.deviceClass || ((profile.os === "android" || profile.os === "ios") ? "mobile" : "desktop"),
     os: profile.os || "windows",
     osLabel: osLabels[profile.os || "windows"] || "Windows",
     browser,
@@ -767,19 +768,20 @@ function buildUserAgentMetadata(config) {
   const full = `${major}.0.0.0`;
   const browser = config._browserApp || "chrome";
   const brand = browser === "edge" ? "Microsoft Edge" : browser === "brave" ? "Brave" : browser === "privacy" ? "Privacy Shield Browser" : "Google Chrome";
+  const isIos = config._uaOS === "iOS";
   return {
-    brands: [
+    brands: isIos ? [] : [
       { brand: "Not_A Brand", version: "8" },
       { brand: "Chromium", version: major },
       { brand, version: major }
     ],
-    fullVersionList: [
+    fullVersionList: isIos ? [] : [
       { brand: "Not_A Brand", version: "8.0.0.0" },
       { brand: "Chromium", version: full },
       { brand, version: full }
     ],
     platform: config._uaOS || "Android",
-    platformVersion: config._platformVersion || "14",
+    platformVersion: config._platformVersion || (isIos ? "17.2" : "14"),
     architecture: config._architecture || "arm",
     model: config._mobileModel || "",
     mobile: Boolean(config._mobile),
@@ -844,12 +846,33 @@ async function applyTabEmulation(webContents, profile) {
     platform: config.platform || (isMobile ? "Linux armv8l" : "Win32"),
     userAgentMetadata: buildUserAgentMetadata(config)
   });
+
   if (config.geo) {
     await send("Emulation.setGeolocationOverride", {
       latitude: Number(config.geo.latitude) || 0,
       longitude: Number(config.geo.longitude) || 0,
       accuracy: Number(config.geo.accuracy) || 50
     });
+  }
+
+  // CDP-level timezone override — applies to Workers and iframes, not just the main page.
+  // This is harder to detect than JS Date.prototype.getTimezoneOffset patching.
+  if (config.timezone) {
+    await send("Emulation.setTimezoneOverride", { timezoneId: config.timezone });
+  }
+
+  // CDP-level locale override — affects Intl.* APIs at the Chromium binding layer.
+  if (config.language) {
+    await send("Emulation.setLocaleOverride", { locale: config.language });
+  }
+
+  // CDP-level hardware concurrency — applies inside WebWorkers where JS preload cannot reach.
+  const concurrency = Number(config.hardwareConcurrency) || 4;
+  await send("Emulation.setHardwareConcurrencyOverride", { hardwareConcurrency: concurrency });
+
+  // Block cookies at the CDP layer (belt-and-suspenders on top of the JS override).
+  if (config.blockCookies) {
+    await send("Emulation.setDocumentCookieDisabled", { disabled: true });
   }
 }
 
@@ -877,7 +900,7 @@ async function openProfileWindow(profileId, customUrl) {
   // Each tab is a separate WebContentsView with the fingerprint preload + profile session.
   const offset = profileWindows.size * 30;
   const fp = profile.fingerprint || {};
-  const isMobileProfile = fp.deviceClass === "mobile" || profile.os === "android";
+  const isMobileProfile = fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios";
   const winWidth = isMobileProfile ? Math.max(390, Math.min(520, Number(fp.screenWidth) || 412) + 24) : 1280;
   const winHeight = isMobileProfile ? Math.max(720, Math.min(980, Number(fp.screenHeight) || 915) + TAB_STRIP_HEIGHT + 16) : 800;
   const meta = getProfileBrowserMeta(profileId) || {};

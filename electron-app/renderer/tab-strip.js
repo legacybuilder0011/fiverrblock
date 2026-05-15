@@ -79,7 +79,9 @@ function renderMeta() {
   }
   const location = [browserMeta.city, browserMeta.countryCode ? browserMeta.countryCode.toUpperCase() : ""].filter(Boolean).join(", ");
   const device = browserMeta.deviceClass === "mobile"
-    ? (browserMeta.mobileModel ? `Android ${browserMeta.mobileModel}` : "Android")
+    ? (browserMeta.os === "ios"
+        ? (browserMeta.mobileModel || "iPhone")
+        : (browserMeta.mobileModel ? `Android ${browserMeta.mobileModel}` : "Android"))
     : (browserMeta.osLabel || browserMeta.os || "desktop");
   if (deviceChip) {
     const screen = browserMeta.screen ? ` ${browserMeta.screen}` : "";
