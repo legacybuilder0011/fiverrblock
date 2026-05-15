@@ -727,6 +727,11 @@ const ANDROID_DEVICE_PROFILES = [
     manufacturer: "OnePlus", model: "CPH2449", android: "14", build: "UP1A.231005.007",
     screen: [412, 919], dpr: 3, cores: 8, ram: 12,
     gpuVendor: "Qualcomm", gpuRenderer: "Adreno (TM) 740"
+  },
+  {
+    manufacturer: "Samsung", model: "SM-S921B", android: "14", build: "UP1A.231005.007",
+    screen: [360, 780], dpr: 3, cores: 8, ram: 8,
+    gpuVendor: "Qualcomm", gpuRenderer: "Adreno (TM) 750"
   }
 ];
 
@@ -1360,7 +1365,7 @@ function buildConfigFromProfile(profile) {
     _hoverType: (fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios") ? "none" : (fp.hoverType || "hover"),
     _deviceMotion: fp.deviceMotion || null,
     _deviceOrientation: fp.deviceOrientation || null,
-    _connectionType: fp.connectionType || "wifi",
+    _connectionType: fp.connectionType || ((profile.os === "android" || profile.os === "ios") ? "cellular" : "wifi"),
     _downlink: Number(fp.downlink) || 10,
     _rtt: Number(fp.rtt) || 50,
     _ports: fp.ports || "real",

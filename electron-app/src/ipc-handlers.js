@@ -829,7 +829,10 @@ async function applyTabEmulation(webContents, profile) {
     screenHeight: height,
     positionX: 0,
     positionY: 0,
-    scale: 1
+    scale: 1,
+    screenOrientation: isMobile
+      ? { type: "portraitPrimary", angle: 0 }
+      : { type: "landscapePrimary", angle: 90 }
   });
   if (isMobile || config._touchEmulation) {
     await send("Emulation.setTouchEmulationEnabled", {

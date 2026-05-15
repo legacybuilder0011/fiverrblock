@@ -315,10 +315,30 @@
       }
     } catch (_) {}
 
+    // Vibrate: Android supports it, iOS Safari does not
+    if (config._uaOS !== "iOS") {
+      try {
+        Navigator.prototype.vibrate = fakeNative(function vibrate(pattern) {
+          return Array.isArray(pattern) || typeof pattern === "number";
+        }, "vibrate");
+      } catch (_) {}
+    }
+  }
+
+  // ── iOS Safari platform quirks ────────────────────────────────────────────────
+  if (config._uaOS === "iOS") {
     try {
-      Navigator.prototype.vibrate = fakeNative(function vibrate(pattern) {
-        return Array.isArray(pattern) || typeof pattern === "number";
-      }, "vibrate");
+      // Real iOS Safari exposes window.safari
+      Object.defineProperty(window, "safari", { get: () => ({ pushNotification: Object.freeze({}) }), configurable: true });
+    } catch (_) {}
+    try {
+      // iOS Safari does not support vibration — remove it
+      delete Navigator.prototype.vibrate;
+      defineRO(Navigator.prototype, "vibrate", undefined);
+    } catch (_) {}
+    try {
+      // webkitGetUserMedia removed in modern iOS Safari
+      delete navigator.webkitGetUserMedia;
     } catch (_) {}
   }
 
@@ -395,21 +415,37 @@
   }
 
   if (config.blockBattery) {
-    const fakeBattery = { charging: true, chargingTime: Infinity, dischargingTime: Infinity, level: 1, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } };
+    // Mobile: realistic battery state (30-90% charge, sometimes discharging with 4-6h remaining)
+    // Desktop: always plugged in at 100% (typical workstation behaviour)
+    const _isMobBat = Boolean(config._mobile);
+    const _charging  = _isMobBat ? (stableNoise(88) > 0.45) : true;
+    const _level     = _isMobBat ? Math.round((0.30 + stableNoise(89) * 0.60) * 100) / 100 : 1;
+    const _chgTime   = _charging  ? (_isMobBat ? Math.round(1800 + stableNoise(90) * 5400) : Infinity) : Infinity;
+    const _dischTime = !_charging ? Math.round(10800 + stableNoise(91) * 10800) : Infinity;
+    const fakeBattery = { charging: _charging, chargingTime: _chgTime, dischargingTime: _dischTime, level: _level, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } };
     try { Navigator.prototype.getBattery = function () { return Promise.resolve(fakeBattery); }; } catch (_) {}
     try { delete navigator.battery; defineRO(Navigator.prototype, "battery", undefined); } catch (_) {}
   }
 
   // ── Plugins / MIME types ──────────────────────────────────────────────────────
   if (config.blockPlugins) {
-    const pdfMime = Object.freeze({ type: "application/pdf", suffixes: "pdf", description: "Portable Document Format", enabledPlugin: null });
-    const pluginNames = ["PDF Viewer", "Chrome PDF Viewer", "Chromium PDF Viewer", "Microsoft Edge PDF Viewer", "WebKit built-in PDF"];
-    const fakePluginList = pluginNames.map((name) => Object.freeze({ name, filename: "internal-pdf-viewer", description: "Portable Document Format", length: 1, item: (i) => i === 0 ? pdfMime : null, namedItem: (n) => n === "application/pdf" ? pdfMime : null, [Symbol.iterator]: function* () { yield pdfMime; } }));
-    const pluginsObj = Object.freeze({ length: 5, item(i) { return fakePluginList[i] || null; }, namedItem(n) { return fakePluginList.find((p) => p.name === n) || null; }, refresh() {}, [Symbol.iterator]: function* () { for (const p of fakePluginList) yield p; } });
-    const mimesObj = Object.freeze({ length: 1, item(i) { return i === 0 ? pdfMime : null; }, namedItem(n) { return n === "application/pdf" ? pdfMime : null; }, [Symbol.iterator]: function* () { yield pdfMime; } });
-    defineRO(Navigator.prototype, "plugins", () => pluginsObj);
-    defineRO(Navigator.prototype, "mimeTypes", () => mimesObj);
-    defineRO(Navigator.prototype, "pdfViewerEnabled", true);
+    if (config._mobile) {
+      // Mobile Safari/Chrome expose zero plugins — showing PDF Viewer is a desktop fingerprint tell
+      const emptyPlugins = Object.freeze({ length: 0, item() { return null; }, namedItem() { return null; }, refresh() {}, [Symbol.iterator]: function* () {} });
+      const emptyMimes   = Object.freeze({ length: 0, item() { return null; }, namedItem() { return null; }, [Symbol.iterator]: function* () {} });
+      defineRO(Navigator.prototype, "plugins", () => emptyPlugins);
+      defineRO(Navigator.prototype, "mimeTypes", () => emptyMimes);
+      defineRO(Navigator.prototype, "pdfViewerEnabled", false);
+    } else {
+      const pdfMime = Object.freeze({ type: "application/pdf", suffixes: "pdf", description: "Portable Document Format", enabledPlugin: null });
+      const pluginNames = ["PDF Viewer", "Chrome PDF Viewer", "Chromium PDF Viewer", "Microsoft Edge PDF Viewer", "WebKit built-in PDF"];
+      const fakePluginList = pluginNames.map((name) => Object.freeze({ name, filename: "internal-pdf-viewer", description: "Portable Document Format", length: 1, item: (i) => i === 0 ? pdfMime : null, namedItem: (n) => n === "application/pdf" ? pdfMime : null, [Symbol.iterator]: function* () { yield pdfMime; } }));
+      const pluginsObj = Object.freeze({ length: 5, item(i) { return fakePluginList[i] || null; }, namedItem(n) { return fakePluginList.find((p) => p.name === n) || null; }, refresh() {}, [Symbol.iterator]: function* () { for (const p of fakePluginList) yield p; } });
+      const mimesObj = Object.freeze({ length: 1, item(i) { return i === 0 ? pdfMime : null; }, namedItem(n) { return n === "application/pdf" ? pdfMime : null; }, [Symbol.iterator]: function* () { yield pdfMime; } });
+      defineRO(Navigator.prototype, "plugins", () => pluginsObj);
+      defineRO(Navigator.prototype, "mimeTypes", () => mimesObj);
+      defineRO(Navigator.prototype, "pdfViewerEnabled", true);
+    }
   }
 
   // ── Fonts ─────────────────────────────────────────────────────────────────────
