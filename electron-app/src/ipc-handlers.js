@@ -1,6 +1,6 @@
 "use strict";
 
-const { ipcMain, BrowserWindow, WebContentsView, net, nativeImage, dialog, app } = require("electron");
+const { ipcMain, BrowserWindow, WebContentsView, net, nativeImage, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -22,18 +22,13 @@ function logError(err) {
 const FINGERPRINT_PRELOAD = path.join(__dirname, "preload-fingerprint.js");
 const RENDERER_PRELOAD    = path.join(__dirname, "renderer-preload.js");
 
-// HTML files are served via file:// URLs in BrowserWindow renderer processes.
-// Electron's ASAR interception is unreliable for file:// in Electron 31, so we use
-// asarUnpack to extract renderer files to app.asar.unpacked/ as real filesystem files.
-function resolveAppFile(relPath) {
-  const appRoot = app.getAppPath();
-  return appRoot.endsWith(".asar")
-    ? path.join(appRoot + ".unpacked", relPath)
-    : path.join(appRoot, relPath);
-}
-
-const BROWSER_START_HTML = resolveAppFile("renderer/browser-start.html");
-const TAB_STRIP_HTML     = resolveAppFile("renderer/tab-strip.html");
+// HTML files load via the psapp:// custom protocol (registered in main.js).
+// file:// URLs to anything containing ".asar" in the path (including .asar.unpacked)
+// fail with ERR_FAILED (-2) in Electron 31 BrowserWindow. psapp:// reads the bundled
+// files via fs.readFileSync (which Node.js handles ASAR transparently for) and
+// serves them as a normal HTTP response — no ASAR interception involved.
+const BROWSER_START_URL = "psapp://app/renderer/browser-start.html";
+const TAB_STRIP_URL     = "psapp://app/renderer/tab-strip.html";
 
 const TAB_STRIP_HEIGHT = 78; // tabs row (38) + url row (40)
 
@@ -70,9 +65,8 @@ function createProfileIcon(profile) {
 }
 
 function startPageUrl(errorMsg, failedUrl) {
-  const fileUrl = "file:///" + BROWSER_START_HTML.replace(/\\/g, "/");
-  if (!errorMsg) return fileUrl;
-  return fileUrl + "?error=" + encodeURIComponent(errorMsg) + (failedUrl ? "&url=" + encodeURIComponent(failedUrl) : "");
+  if (!errorMsg) return BROWSER_START_URL;
+  return BROWSER_START_URL + "?error=" + encodeURIComponent(errorMsg) + (failedUrl ? "&url=" + encodeURIComponent(failedUrl) : "");
 }
 
 // profileId → BrowserWindow reference for profile browser windows
@@ -1086,11 +1080,7 @@ async function openProfileWindow(profileId, customUrl) {
   });
 
   try {
-    // Use loadURL with forward slashes so Electron's ASAR interceptor can find the
-    // file. loadFile() on Windows generates backslash URLs (file:///C:\...\app.asar\...)
-    // which bypasses the ASAR check and causes ERR_FAILED (-2).
-    const tabStripUrl = "file:///" + TAB_STRIP_HTML.replace(/\\/g, "/");
-    await win.loadURL(tabStripUrl);
+    await win.loadURL(TAB_STRIP_URL);
     showProfileWindow();
   } catch (err) {
     logError(err);

@@ -1,8 +1,17 @@
 "use strict";
 
-const { app, BrowserWindow, Menu, Tray, nativeImage, dialog } = require("electron");
+const { app, BrowserWindow, Menu, Tray, nativeImage, dialog, protocol } = require("electron");
 const path = require("path");
 const fs = require("fs");
+
+// Register a custom protocol BEFORE app.ready so it can be used to load HTML files.
+// file:// URLs into app.asar.unpacked/ confuse Electron's ASAR interceptor (the path
+// contains ".asar" which triggers archive-handling logic), causing ERR_FAILED (-2)
+// in BrowserWindow. psapp:// bypasses all of that — it reads via fs.readFileSync,
+// which Node.js handles ASAR transparently for.
+protocol.registerSchemesAsPrivileged([
+  { scheme: "psapp", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, codeCache: true } }
+]);
 
 // Log errors to a file. Don't exit the app — but DO surface critical
 // startup errors so the user knows something went wrong instead of
@@ -48,8 +57,11 @@ let loginWindow = null;
 let tray = null;
 
 const RENDERER_PRELOAD = path.join(__dirname, "renderer-preload.js");
-const PROFILES_HTML = path.join(__dirname, "..", "renderer", "profiles.html");
-const LOGIN_HTML = path.join(__dirname, "..", "renderer", "login.html");
+// HTML files load via the custom psapp:// protocol (registered in app.whenReady)
+// instead of file:// because Electron 31 fails to load file:// URLs that contain
+// ".asar" in the path (asarUnpack adds .asar.unpacked which trips the same code path).
+const PROFILES_URL = "psapp://app/renderer/profiles.html";
+const LOGIN_URL    = "psapp://app/renderer/login.html";
 
 // Single-instance lock
 if (!app.requestSingleInstanceLock()) {
@@ -70,6 +82,42 @@ app.on("second-instance", () => {
 
 app.whenReady().then(async () => {
   appReady = true;
+
+  // Wire up the psapp:// protocol handler. Reads bundled files via fs (ASAR-aware)
+  // and returns them as a fetch Response. This is the only reliable way to load
+  // local HTML/JS/CSS in Electron 31 BrowserWindow when the app is packed.
+  const MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".svg": "image/svg+xml",
+    ".gif": "image/gif",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".map": "application/json"
+  };
+  protocol.handle("psapp", (request) => {
+    try {
+      const u = new URL(request.url);
+      // psapp://app/renderer/tab-strip.html -> renderer/tab-strip.html
+      // Strip leading slash from pathname; host segment is just a placeholder.
+      const rel = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+      const filePath = path.join(app.getAppPath(), rel);
+      const data = fs.readFileSync(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      return new Response(data, { headers: { "Content-Type": MIME[ext] || "application/octet-stream" } });
+    } catch (err) {
+      logError(err);
+      return new Response("psapp not found: " + request.url + "\n" + (err.message || err), { status: 404 });
+    }
+  });
+
   registerIpcHandlers();
 
   // After successful auth, open the profile manager and close the login window
@@ -132,7 +180,7 @@ function createLoginWindow() {
       sandbox: false
     }
   });
-  loginWindow.loadFile(LOGIN_HTML);
+  loginWindow.loadURL(LOGIN_URL);
   loginWindow.setMenuBarVisibility(false);
   loginWindow.on("closed", () => { loginWindow = null; });
 }
@@ -158,7 +206,7 @@ function createMainWindow() {
     }
   });
 
-  mainWindow.loadFile(PROFILES_HTML);
+  mainWindow.loadURL(PROFILES_URL);
   mainWindow.setMenuBarVisibility(false);
 
   // Hide to tray instead of destroying — keeps app alive and prevents
