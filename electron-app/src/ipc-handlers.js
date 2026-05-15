@@ -469,6 +469,33 @@ function registerIpcHandlers() {
     return testProxy(host, port, scheme, username, password);
   });
 
+  ipcMain.handle("PROXY_DETECT_LOCATION", async (_ev, { host, port, scheme, username, password } = {}) => {
+    if (!host || !port) return { ok: false, error: "missing host or port" };
+    const { session: electronSession } = require("electron");
+    const partitionId = "proxy-geo-" + Date.now();
+    const tempSess = electronSession.fromPartition(partitionId, { cache: false });
+    await tempSess.setProxy({ proxyRules: `${scheme || "socks5"}://${host}:${port}` });
+    const GEO_URLS = [
+      "http://ip-api.com/json/?fields=status,message,continent,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,query",
+      "https://ipwho.is/",
+      "https://ipapi.co/json/"
+    ];
+    let lastError = "";
+    for (const geoUrl of GEO_URLS) {
+      const result = await fetchJsonViaProxy(geoUrl, tempSess, username, password);
+      if (result.ok && result.data) {
+        const n = normalizeNetworkCapture(result.data);
+        if (n.ip) {
+          n.proxyType = detectProxyType(n.ispName, n.ispAsn, n.organization);
+          return { ok: true, network: n };
+        }
+      }
+      lastError = result.error || lastError;
+      if (result.fatal) break;
+    }
+    return { ok: false, error: lastError || "Could not detect proxy location" };
+  });
+
   ipcMain.handle("NETWORK_CAPTURE_CURRENT", async () => {
     try {
       const network = await captureCurrentNetwork();
@@ -891,6 +918,28 @@ async function openProfileWindow(profileId, customUrl) {
   const profiles = store.getProfiles();
   const profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
   if (!profile) return { ok: false, error: "Profile not found" };
+
+  // ── Required fields & consistency checks ─────────────────────────────────────
+  const px = profile.proxy || {};
+  const networkMode = px.networkMode || (px.enabled ? "proxy" : "direct");
+  if (networkMode === "proxy") {
+    if (!px.host || !px.port) {
+      return { ok: false, error: "Proxy is enabled but host/port are missing. Fill them in the Proxy tab and click Test, then save." };
+    }
+    // Geo consistency: if we have a detected country, verify timezone matches
+    if (px.detectedCountryCode && profile.fingerprint) {
+      const fp = profile.fingerprint;
+      const tzMode = fp.timezone || "auto";
+      if (tzMode === "manual" && fp.timezoneValue) {
+        const tzCountry = guessCountryFromTimezone(fp.timezoneValue);
+        const proxyCountry = String(px.detectedCountryCode).toLowerCase();
+        if (tzCountry && tzCountry !== proxyCountry) {
+          const proxyLabel = px.detectedCountry || proxyCountry.toUpperCase();
+          return { ok: false, error: `Geo mismatch: proxy is in ${proxyLabel} but timezone "${fp.timezoneValue}" belongs to ${tzCountry.toUpperCase()}. Fix timezone in the Fingerprint tab (or set it to Auto) and save.` };
+        }
+      }
+    }
+  }
 
   const sess = sessionMgr.getSessionForProfile(profileId);
   try {
@@ -1458,6 +1507,85 @@ async function testProxy(host, port, scheme, username, password) {
   }
   // Return the specific error from the test attempts instead of a generic message
   return { ok: false, error: lastError || "Proxy unreachable — check host, port, and credentials" };
+}
+
+function fetchJsonViaProxy(url, session, username, password) {
+  return new Promise((resolve) => {
+    const req = net.request({ url, session, useSessionCookies: false });
+    let authChallenged = false;
+    req.on("login", (authInfo, callback) => {
+      if (authInfo.isProxy) { authChallenged = true; callback(username || "", password || ""); }
+      else callback("", "");
+    });
+    let body = "";
+    req.on("response", (res) => {
+      clearTimeout(timer);
+      res.on("data", (d) => { body += d.toString(); });
+      res.on("end", () => {
+        try { resolve({ ok: true, data: JSON.parse(body.trim()) }); }
+        catch (_) { resolve({ ok: false, error: "Invalid JSON from geo API" }); }
+      });
+    });
+    req.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: err.message || String(err), fatal: String(err.message).includes("not supported") });
+    });
+    const timer = setTimeout(() => { try { req.abort(); } catch (_) {} resolve({ ok: false, error: "Geo lookup timed out" }); }, 12000);
+    req.end();
+  });
+}
+
+const _DC_RE = /hostin|server|cloud|vps|digitalocean|vultr|linode|hetzner|ovh|amazon|google|microsoft|azure|cloudflare|fastly|akamai|leaseweb|psychz|quadranet|coloc|colocation|datacenter|data\s?ctr|idc\b|teraserver|wholesale|dedicated/i;
+const _MOBILE_RE = /mobile|4g|lte|5g|gsm|cellular|wireless/i;
+const _RESI_RE = /comcast|xfinity|verizon|at&t|att\b|t-mobile|sprint|cox|charter|spectrum|rogers|bell\s|telus|vodafone|o2\b|\bee\b|orange\b|telecom|telefonica|telstra|optus|singtel|airtel|jio\b|bsnl|reliance|mtn\b|safaricom|etisalat|zain\b|celcom|indosat/i;
+function detectProxyType(ispName, ispAsn, org) {
+  const t = `${ispName || ""} ${org || ""}`;
+  if (_MOBILE_RE.test(t)) return "mobile";
+  if (_RESI_RE.test(t)) return "residential";
+  if (_DC_RE.test(t)) return "datacenter";
+  return "unknown";
+}
+
+const _TZ_COUNTRY = {
+  "America/New_York":"us","America/Chicago":"us","America/Denver":"us","America/Los_Angeles":"us",
+  "America/Phoenix":"us","America/Anchorage":"us","America/Honolulu":"us","America/Detroit":"us",
+  "America/Indiana/Indianapolis":"us","America/Puerto_Rico":"us","Pacific/Honolulu":"us",
+  "America/Toronto":"ca","America/Vancouver":"ca","America/Montreal":"ca","America/Edmonton":"ca",
+  "America/Winnipeg":"ca","America/Halifax":"ca",
+  "America/Sao_Paulo":"br","America/Manaus":"br","America/Fortaleza":"br","America/Recife":"br",
+  "America/Argentina/Buenos_Aires":"ar","America/Buenos_Aires":"ar",
+  "America/Mexico_City":"mx","America/Monterrey":"mx","America/Tijuana":"mx",
+  "America/Bogota":"co","America/Lima":"pe","America/Santiago":"cl","America/Caracas":"ve",
+  "Europe/London":"gb","Europe/Berlin":"de","Europe/Paris":"fr","Europe/Amsterdam":"nl",
+  "Europe/Zurich":"ch","Europe/Vienna":"at","Europe/Brussels":"be","Europe/Madrid":"es",
+  "Europe/Lisbon":"pt","Europe/Rome":"it","Europe/Stockholm":"se","Europe/Oslo":"no",
+  "Europe/Copenhagen":"dk","Europe/Helsinki":"fi","Europe/Warsaw":"pl","Europe/Prague":"cz",
+  "Europe/Budapest":"hu","Europe/Bucharest":"ro","Europe/Athens":"gr","Europe/Istanbul":"tr",
+  "Europe/Moscow":"ru","Europe/Kiev":"ua","Europe/Kyiv":"ua","Europe/Minsk":"by",
+  "Europe/Riga":"lv","Europe/Tallinn":"ee","Europe/Vilnius":"lt","Europe/Dublin":"ie",
+  "Europe/Sofia":"bg","Europe/Bratislava":"sk","Europe/Ljubljana":"si","Europe/Zagreb":"hr",
+  "Europe/Belgrade":"rs","Europe/Tirane":"al","Europe/Luxembourg":"lu","Europe/Malta":"mt",
+  "Asia/Tokyo":"jp","Asia/Seoul":"kr","Asia/Shanghai":"cn","Asia/Chongqing":"cn",
+  "Asia/Harbin":"cn","Asia/Urumqi":"cn","Asia/Hong_Kong":"hk","Asia/Taipei":"tw",
+  "Asia/Singapore":"sg","Asia/Bangkok":"th","Asia/Jakarta":"id","Asia/Manila":"ph",
+  "Asia/Kuala_Lumpur":"my","Asia/Ho_Chi_Minh":"vn","Asia/Yangon":"mm","Asia/Dhaka":"bd",
+  "Asia/Karachi":"pk","Asia/Kolkata":"in","Asia/Colombo":"lk","Asia/Kathmandu":"np",
+  "Asia/Kabul":"af","Asia/Tehran":"ir","Asia/Baghdad":"iq","Asia/Riyadh":"sa",
+  "Asia/Dubai":"ae","Asia/Kuwait":"kw","Asia/Doha":"qa","Asia/Muscat":"om",
+  "Asia/Beirut":"lb","Asia/Jerusalem":"il","Asia/Amman":"jo","Asia/Damascus":"sy",
+  "Asia/Tashkent":"uz","Asia/Almaty":"kz","Asia/Baku":"az","Asia/Tbilisi":"ge",
+  "Asia/Yerevan":"am","Asia/Ulaanbaatar":"mn",
+  "Africa/Cairo":"eg","Africa/Casablanca":"ma","Africa/Algiers":"dz","Africa/Tunis":"tn",
+  "Africa/Tripoli":"ly","Africa/Lagos":"ng","Africa/Nairobi":"ke","Africa/Johannesburg":"za",
+  "Africa/Harare":"zw","Africa/Accra":"gh","Africa/Abidjan":"ci","Africa/Addis_Ababa":"et",
+  "Africa/Kampala":"ug","Africa/Dar_es_Salaam":"tz","Africa/Khartoum":"sd",
+  "Pacific/Auckland":"nz","Pacific/Fiji":"fj","Pacific/Guam":"gu","Pacific/Port_Moresby":"pg",
+  "Australia/Sydney":"au","Australia/Melbourne":"au","Australia/Brisbane":"au",
+  "Australia/Perth":"au","Australia/Adelaide":"au","Australia/Darwin":"au",
+  "Atlantic/Reykjavik":"is","Indian/Mauritius":"mu","Indian/Maldives":"mv"
+};
+function guessCountryFromTimezone(tz) {
+  return _TZ_COUNTRY[tz] || null;
 }
 
 async function captureCurrentNetwork() {

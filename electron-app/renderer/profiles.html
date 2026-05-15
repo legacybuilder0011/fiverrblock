@@ -668,12 +668,16 @@
               <input type="text" id="px-bypassList" class="pm-input" placeholder="localhost, 127.0.0.1" />
             </div>
             <div class="pm-btn-row">
-              <button type="button" class="pm-btn-sm" id="btnTestProxy">Test connection</button>
+              <button type="button" class="pm-btn-sm" id="btnTestProxy">Test &amp; Detect location</button>
               <span id="proxyTestResult" class="pm-proxy-result"></span>
             </div>
+            <div id="datacenterWarn" class="pm-proxy-warn" hidden>
+              &#9888; Datacenter IP detected. Platforms flag datacenter IPs as bots — use a residential or mobile proxy for best results.
+            </div>
+            <div id="proxyDetectResult" class="pm-proxy-detect" hidden></div>
           </div>
           <div class="pm-hint">
-            When this profile browser starts, its proxy/VPN routing is applied to that profile's isolated browser session.
+            Proxy URL is <b>required</b> when proxy mode is on. After entering credentials, click <b>Test &amp; Detect</b> to verify connectivity and auto-fill timezone, language, and geolocation from the proxy IP.
           </div>
         </div>
 
@@ -725,6 +729,7 @@
             <span class="pw-dot closed" id="windowDot"></span>
             <span id="windowStatusText">Window closed</span>
           </div>
+          <div id="launchError" class="pm-launch-error" hidden></div>
           <div class="pm-window-actions">
             <button class="pm-btn primary large" id="btnOpenWindow">Start</button>
             <button class="pm-btn-sm danger large" id="btnCloseWindow" hidden>Stop</button>

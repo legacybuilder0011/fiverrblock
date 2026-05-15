@@ -75,6 +75,8 @@ let selectedId = null;
 let activeTabId = null;
 let tabAssignedProfileId = null;
 const selected = new Set();
+// Proxy geo-detection data for the currently-edited profile (persisted to proxy object on save)
+let currentProxyDetection = null;
 
 // WebGL presets list loaded from background
 let webglPresets = [];
@@ -349,6 +351,7 @@ function escHtml(s) {
 // =========================================================
 async function selectProfile(id) {
   creatingNew = false;
+  currentProxyDetection = null;
   const saveBtn = $("btnSave");
   if (saveBtn) saveBtn.textContent = "Save";
   selectedId = id;
@@ -361,6 +364,7 @@ async function selectProfile(id) {
   }
   $("emptyState").hidden = true;
   $("formWrap").hidden = false;
+  setLaunchError(null);
   populateForm(p);
   renderList();
   updateSessionTab();
@@ -482,6 +486,17 @@ function populateForm(p) {
   setVal("px-rotationUrl", px.rotationUrl || "");
   setVal("px-bypassList", (px.bypassList || []).join(", "));
 
+  // Restore saved detection data and render the detect result panel
+  currentProxyDetection = px.detectedCountryCode ? {
+    detectedCountryCode: px.detectedCountryCode,
+    detectedCountry: px.detectedCountry || "",
+    detectedCity: px.detectedCity || "",
+    detectedTimezone: px.detectedTimezone || "",
+    proxyType: px.proxyType || "unknown",
+    detectedAt: px.detectedAt || null
+  } : null;
+  renderProxyDetectResult(currentProxyDetection);
+
   updateConditionalRows();
   updateCookiePanel(p);
   updateUAPreview();
@@ -595,7 +610,9 @@ function collectForm() {
       username: $("px-username").value,
       password: $("px-password").value,
       rotationUrl: $("px-rotationUrl").value.trim(),
-      bypassList: $("px-bypassList").value.split(",").map((s) => s.trim()).filter(Boolean)
+      bypassList: $("px-bypassList").value.split(",").map((s) => s.trim()).filter(Boolean),
+      // Preserved from last PROXY_DETECT_LOCATION run — do not wipe on form collect
+      ...(currentProxyDetection || {})
     }
   };
 }
@@ -917,39 +934,133 @@ async function injectCookies(profileId) {
 // =========================================================
 async function testProxy() {
   const res = $("proxyTestResult");
+  const dcWarn = $("datacenterWarn");
   res.textContent = "Testing…";
   res.className = "pm-proxy-result";
-  // Save profile first, then test via existing CONNECT_PROXY flow
+  if (dcWarn) dcWarn.hidden = true;
+  renderProxyDetectResult(null);
+
   const data = collectForm();
   if (selectedId) await msg("PROFILE_UPDATE", { id: selectedId, data });
   const px = data.proxy;
   const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+
   if (mode === "vpn") {
     const captured = await captureCurrentVpnLocation(res);
     if (captured?.ok) {
-      res.textContent = `VPN mode OK - current IP: ${captured.network.ip}${captured.network.country ? " - " + captured.network.country : ""}`;
+      res.textContent = `VPN mode OK — IP: ${captured.network.ip}${captured.network.country ? " · " + captured.network.country : ""}`;
       res.className = "pm-proxy-result ok";
     }
     return;
   }
   if (mode === "direct") {
-    res.textContent = "Direct mode uses this computer's current connection. Use VPN mode to capture an active VPN IP.";
+    res.textContent = "Direct mode — no proxy applied.";
     res.className = "pm-proxy-result ok";
     return;
   }
   if (!px.host || !px.port) {
-    res.textContent = "Enter host and port first.";
+    res.textContent = "Proxy host and port are required when proxy mode is on.";
     res.className = "pm-proxy-result err";
     return;
   }
+
+  // Step 1: connectivity check (fast)
   const r = await msg("TEST_PROXY", { host: px.host, port: px.port, scheme: px.scheme, username: px.username, password: px.password });
-  if (r.ok) {
-    res.textContent = "OK — IP: " + r.ip;
-    res.className = "pm-proxy-result ok";
-  } else {
+  if (!r.ok) {
     res.textContent = "Failed: " + (r.error || "unknown");
     res.className = "pm-proxy-result err";
+    return;
   }
+  res.textContent = `Connected — IP: ${r.ip}. Detecting location…`;
+  res.className = "pm-proxy-result ok";
+
+  // Step 2: geo detection through the proxy
+  const geo = await msg("PROXY_DETECT_LOCATION", { host: px.host, port: px.port, scheme: px.scheme, username: px.username, password: px.password });
+  if (!geo.ok || !geo.network) {
+    res.textContent = `Connected — IP: ${r.ip} (location lookup failed)`;
+    return;
+  }
+  const n = geo.network;
+  res.textContent = `Connected — IP: ${r.ip} · ${n.city ? n.city + ", " : ""}${n.country || ""}`;
+
+  // Show datacenter warning
+  if (dcWarn) dcWarn.hidden = n.proxyType !== "datacenter";
+
+  // Store detection data and render result panel
+  currentProxyDetection = {
+    detectedCountryCode: n.countryCode || "",
+    detectedCountry: n.country || "",
+    detectedCity: n.city || "",
+    detectedTimezone: n.timezone || "",
+    proxyType: n.proxyType || "unknown",
+    detectedAt: Date.now()
+  };
+  renderProxyDetectResult(currentProxyDetection, n, () => applyProxyGeoToFingerprint(n));
+
+  // Auto-populate fingerprint fields silently
+  applyProxyGeoToFingerprint(n);
+
+  // Save updated profile (now includes detection data)
+  if (selectedId) {
+    await msg("PROFILE_UPDATE", { id: selectedId, data: collectForm() });
+    await loadProfiles();
+    renderList();
+  }
+}
+
+function applyProxyGeoToFingerprint(n) {
+  if (!n) return;
+  if (n.timezone) {
+    setVal("fp-timezone", "manual");
+    setVal("fp-timezoneValue", n.timezone);
+    // Rough UTC offset from IANA id isn't needed — profile-store computes it
+  }
+  if (n.countryCode) {
+    setVal("fp-language", "manual");
+    setVal("fp-languageValue", languageForCountry(n.countryCode));
+  }
+  setVal("fp-geolocation", "manual");
+  if (n.latitude) setVal("fp-geoLat", n.latitude);
+  if (n.longitude) setVal("fp-geoLng", n.longitude);
+  setVal("fp-geoAccuracy", 50);
+  if (n.city) setVal("fp-city", n.city);
+  if (n.state) setVal("fp-state", n.state);
+  if (n.ispName) setVal("fp-ispName", n.ispName);
+  if (n.ispAsn) setVal("fp-ispAsn", n.ispAsn);
+  if (n.ispOrg || n.organization) setVal("fp-ispOrg", n.ispOrg || n.organization);
+  // Mobile proxy → lock to Android
+  if (n.proxyType === "mobile") {
+    const os = $("fp-os")?.value;
+    if (os && !["android", "ios"].includes(os)) {
+      setVal("fp-os", "android");
+      setVal("fp-browserApp", "chrome");
+      toast("Mobile proxy detected → OS locked to Android");
+    }
+  }
+  updateConditionalRows();
+  updateUAPreview();
+}
+
+function renderProxyDetectResult(detection, network, onFillClick) {
+  const el = $("proxyDetectResult");
+  if (!el) return;
+  if (!detection || !detection.detectedCountryCode) { el.hidden = true; return; }
+
+  const typeLabel = { mobile: "Mobile proxy", residential: "Residential", datacenter: "Datacenter", unknown: "Unknown type" };
+  const typeClass = { mobile: "mobile", residential: "residential", datacenter: "datacenter", unknown: "" };
+  const t = detection.proxyType || "unknown";
+  const when = detection.detectedAt ? ` · detected ${new Date(detection.detectedAt).toLocaleTimeString()}` : "";
+
+  el.innerHTML = `
+    <div class="pdt-row">
+      <span class="pdt-chip ${typeClass[t] || ""}">${typeLabel[t] || t}</span>
+      <span class="pdt-chip">${detection.detectedCity ? detection.detectedCity + ", " : ""}${detection.detectedCountry || detection.detectedCountryCode.toUpperCase()}</span>
+      ${detection.detectedTimezone ? `<span class="pdt-chip">${detection.detectedTimezone}</span>` : ""}
+      <span class="pdt-chip" style="color:var(--muted)">${when}</span>
+    </div>
+    <div style="margin-top:6px;font-size:11px;color:var(--muted)">Timezone, language, and geolocation have been auto-filled from this location.</div>
+  `;
+  el.hidden = false;
 }
 
 async function captureCurrentVpnLocation(targetResult) {
@@ -1109,6 +1220,20 @@ function bindFormEvents() {
   $("btnAssignTab").addEventListener("click", () => selectedId && assignToTab(selectedId));
   $("btnTestProxy").addEventListener("click", testProxy);
   $("btnRandDeviceName").addEventListener("click", () => { $("fp-deviceNameValue").value = randDeviceName(); });
+
+  // Mobile proxy detection: rotation URL filled → suggest Android
+  $("px-rotationUrl")?.addEventListener("change", () => {
+    const url = ($("px-rotationUrl")?.value || "").trim();
+    if (!url) return;
+    const os = $("fp-os")?.value;
+    if (os && !["android", "ios"].includes(os)) {
+      setVal("fp-os", "android");
+      setVal("fp-browserApp", "chrome");
+      updateConditionalRows();
+      updateUAPreview();
+      toast("Mobile proxy (rotation URL) detected → OS set to Android");
+    }
+  });
 
   // Cookie buttons
   $("btnCaptureCookies").addEventListener("click", () => selectedId && captureCookies(selectedId));
@@ -1322,12 +1447,35 @@ function isProfileRunning(profileId) {
   return profileId in openWindows;
 }
 
+function setLaunchError(msg) {
+  const el = $("launchError");
+  if (!el) return;
+  if (!msg) { el.hidden = true; el.textContent = ""; return; }
+  el.textContent = msg;
+  el.hidden = false;
+}
+
 async function openProfileWindow(profileId) {
   const btn = $("btnOpenWindow");
+  setLaunchError(null);
+
+  // Client-side required-field check (mirrors main-process check)
+  const p = profiles.find((p) => p.id === profileId);
+  if (p) {
+    const px = p.proxy || {};
+    const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+    if (mode === "proxy" && (!px.host || !px.port)) {
+      setLaunchError("Proxy host and port are required. Go to the Proxy tab, fill in the credentials, click Test & Detect, then save.");
+      return;
+    }
+  }
+
   if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
   const r = await msg("PROFILE_OPEN_WINDOW", { profileId });
   if (!r.ok) {
-    toast("Failed to start: " + (r.error || "unknown"));
+    const errText = r.error || "unknown error";
+    setLaunchError(errText);
+    toast("Failed to start — see error above");
   } else if (r.preview) {
     toast("Preview window opened. Run the desktop app for real isolated browsing.");
   } else if (r.existing) {

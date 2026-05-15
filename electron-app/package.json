@@ -1,6 +1,6 @@
 {
   "name": "privacy-shield",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "description": "Privacy Shield Browser - Profile Identity Manager Desktop App",
   "author": "Privacy Shield",
   "main": "src/main.js",
