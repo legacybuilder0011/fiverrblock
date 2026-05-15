@@ -939,6 +939,22 @@ async function openProfileWindow(profileId, customUrl) {
     }
   } catch (_) {}
 
+  // If the tab strip renderer crashes, save the session and destroy the window so
+  // profileWindows is cleaned up and the user can click "Start" again immediately.
+  win.webContents.on("render-process-gone", (_ev, details) => {
+    logError(`Tab strip renderer gone (${details.reason}) for profile ${profileId}`);
+    const state = windowTabState.get(win.id);
+    if (state) {
+      const tabs = state.tabs
+        .map((t) => ({ url: !t.view.webContents.isDestroyed() ? t.view.webContents.getURL() : t.url, title: t.title }))
+        .filter((t) => t.url && (t.url.startsWith("http://") || t.url.startsWith("https://")));
+      if (tabs.length) {
+        try { store.updateProfile(profileId, { session: { tabs, lastSaved: Date.now() } }); } catch (_) {}
+      }
+    }
+    try { win.destroy(); } catch (_) {}
+  });
+
   // Init the tab state for this window
   windowTabState.set(win.id, { profileId, tabs: [], activeTabId: null });
 
@@ -1060,6 +1076,13 @@ function addTab(windowId, url) {
     if (code === -3) return;
     if (validatedURL && validatedURL.startsWith("file://")) return;
     wc.loadURL(startPageUrl(desc || "Page failed to load", validatedURL || ""));
+  });
+
+  // If this tab's renderer crashes, close just the tab (which closes the window
+  // if it was the last one). This keeps profileWindows clean so Start works again.
+  wc.on("render-process-gone", (_ev, details) => {
+    logError(`Tab renderer gone (${details.reason}) for profile ${profileId}, tab ${tabId}`);
+    closeTab(windowId, tabId);
   });
 
   win.contentView.addChildView(view);
