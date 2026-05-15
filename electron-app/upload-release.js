@@ -6,12 +6,12 @@ const path = require("path");
 // Never commit the real token — keep it local or use an env var:
 //   TOKEN = process.env.GITHUB_TOKEN || "ghp_your_token_here"
 const TOKEN = process.env.GITHUB_TOKEN || "ghp_your_token_here";
-const RELEASE_ID = "323524829";
+const RELEASE_ID = "323536815";
 const REPO = "legacybuilder0011/fiverrblock";
 
 const FILES = [
-  { src: "dist/Privacy Shield Browser Setup 1.9.4.exe", name: "PrivacyShield-Setup-1.9.4.exe" },
-  { src: "dist/Privacy Shield Browser 1.9.4.exe",       name: "PrivacyShield-Portable-1.9.4.exe" }
+  { src: "dist/Privacy Shield Browser Setup 1.9.5.exe", name: "PrivacyShield-Setup-1.9.5.exe" },
+  { src: "dist/Privacy Shield Browser 1.9.5.exe",       name: "PrivacyShield-Portable-1.9.5.exe" }
 ];
 
 // Bypass TLS inspection on response — we only need to verify upload succeeded via poll

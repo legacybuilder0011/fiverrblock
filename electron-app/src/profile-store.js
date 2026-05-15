@@ -1425,14 +1425,27 @@ function buildConfigFromProfile(profile) {
     cfg._gpuRenderer = preset.renderer;
   }
 
+  // Auto mode: pull from the VPN/proxy detection saved on the profile.
+  // This makes "Auto (from VPN / proxy IP)" actually do something rather than
+  // leaving the field default. Manual overrides anything that's set.
+  const px = profile.proxy || {};
   if (fp.timezone === "manual") {
     cfg.timezone = fp.timezoneValue || "UTC";
     cfg.localeOffsetMinutes = typeof fp.timezoneOffset === "number" ? fp.timezoneOffset : 0;
+  } else if (fp.timezone === "auto" && px.detectedTimezone) {
+    cfg.timezone = px.detectedTimezone;
   }
 
   if (fp.language === "manual" && fp.languageValue) {
     cfg.language = fp.languageValue;
     cfg.languages = [fp.languageValue, fp.languageValue.split("-")[0]].filter(Boolean);
+  } else if (fp.language === "auto" && px.detectedCountryCode) {
+    const langMap = { us:"en-US", gb:"en-GB", ca:"en-CA", au:"en-AU", de:"de-DE", nl:"nl-NL", fr:"fr-FR", ch:"de-DE", se:"sv-SE", jp:"ja-JP", sg:"en-SG", br:"pt-BR", in:"hi-IN", ae:"ar-AE", ru:"ru-RU", tr:"tr-TR", ng:"en-US", it:"it-IT", es:"es-ES", pt:"pt-PT", kr:"ko-KR", cn:"zh-CN" };
+    const auto = langMap[String(px.detectedCountryCode).toLowerCase()];
+    if (auto) {
+      cfg.language = auto;
+      cfg.languages = [auto, auto.split("-")[0]].filter(Boolean);
+    }
   }
 
   if (fp.geolocation === "manual") {
@@ -1440,6 +1453,13 @@ function buildConfigFromProfile(profile) {
       latitude: Number(fp.geoLat) || 0,
       longitude: Number(fp.geoLng) || 0,
       accuracy: Number(fp.geoAccuracy) || 50,
+      altitude: null, altitudeAccuracy: null, heading: null, speed: null
+    };
+  } else if (fp.geolocation === "auto" && (px.detectedLatitude || px.detectedLat)) {
+    cfg.geo = {
+      latitude: Number(px.detectedLatitude || px.detectedLat) || 0,
+      longitude: Number(px.detectedLongitude || px.detectedLng) || 0,
+      accuracy: 50,
       altitude: null, altitudeAccuracy: null, heading: null, speed: null
     };
   }

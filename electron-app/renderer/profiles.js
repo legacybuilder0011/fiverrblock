@@ -992,6 +992,9 @@ async function testProxy() {
     detectedCountry: n.country || "",
     detectedCity: n.city || "",
     detectedTimezone: n.timezone || "",
+    detectedLatitude: n.latitude || "",
+    detectedLongitude: n.longitude || "",
+    detectedIp: n.ip || "",
     proxyType: n.proxyType || "unknown",
     detectedAt: Date.now()
   };
@@ -1101,12 +1104,15 @@ async function captureCurrentVpnLocation(targetResult) {
     ip: n.ip || currentFingerprintMeta.ip || ""
   };
 
-  // Persist VPN detection so the consistency validator can use it
+  // Persist VPN detection so the consistency validator and auto-mode can use it
   currentProxyDetection = {
     detectedCountryCode: n.countryCode || "",
     detectedCountry: n.country || "",
     detectedCity: n.city || "",
     detectedTimezone: n.timezone || "",
+    detectedLatitude: n.latitude || "",
+    detectedLongitude: n.longitude || "",
+    detectedIp: n.ip || "",
     proxyType: "vpn",
     detectedAt: Date.now()
   };
