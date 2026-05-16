@@ -15,32 +15,37 @@ protocol.registerSchemesAsPrivileged([
 
 // Log errors to a file. Don't exit the app — but DO surface critical
 // startup errors so the user knows something went wrong instead of
-// silently failing to open. Pick the first writable location so OneDrive-
-// redirected Desktops still get a log (previously we wrote to
-// homedir/Desktop which doesn't exist when Desktop is in OneDrive).
-function resolveLogPath() {
-  const os = require("os");
+// silently failing to open. Write to BOTH OneDrive/Desktop (visible) and
+// userData/log.txt (always-writable). OneDrive Files-On-Demand can silently
+// drop appendFileSync writes, so the userData copy is the source of truth.
+const os = require("os");
+function pickLogTargets() {
+  const targets = [];
   const candidates = [
     path.join(os.homedir(), "OneDrive", "Desktop"),
-    path.join(os.homedir(), "Desktop"),
-    os.tmpdir()
+    path.join(os.homedir(), "Desktop")
   ];
   for (const dir of candidates) {
-    try { if (fs.existsSync(dir)) return path.join(dir, "privacy-shield-error.txt"); } catch (_) {}
+    try { if (fs.existsSync(dir)) { targets.push(path.join(dir, "privacy-shield-error.txt")); break; } } catch (_) {}
   }
-  return path.join(os.tmpdir(), "privacy-shield-error.txt");
-}
-const LOG_PATH = resolveLogPath();
-function logError(err) {
   try {
-    fs.appendFileSync(LOG_PATH, new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8");
+    const ud = app.getPath("userData");
+    fs.mkdirSync(ud, { recursive: true });
+    targets.push(path.join(ud, "privacy-shield-error.txt"));
   } catch (_) {}
+  if (!targets.length) targets.push(path.join(os.tmpdir(), "privacy-shield-error.txt"));
+  return targets;
 }
-function logInfo(msg) {
-  try {
-    fs.appendFileSync(LOG_PATH, new Date().toISOString() + " [info] " + msg + "\n", "utf8");
-  } catch (_) {}
+const LOG_TARGETS = pickLogTargets();
+const LOG_PATH = LOG_TARGETS[0]; // for legacy callers that reference the constant
+function logWrite(prefix, msg) {
+  const line = new Date().toISOString() + " " + prefix + msg + "\n";
+  for (const t of LOG_TARGETS) {
+    try { fs.appendFileSync(t, line, "utf8"); } catch (_) {}
+  }
 }
+function logError(err) { logWrite("", String(err?.stack || err)); }
+function logInfo(msg) { logWrite("[info] ", msg); }
 let appReady = false;
 
 // Keep WebRTC from bypassing the selected profile network path with direct UDP.
@@ -178,6 +183,12 @@ function openLoginOrMain() {
     createLoginWindow();
   }
 }
+
+// Prevent the default Windows/Linux behavior of quitting when the last
+// window closes. The logout flow synchronously destroys mainWindow before
+// creating the new login window — that 1-tick gap was firing the default
+// quit handler and silently killing the app on every logout.
+app.on("window-all-closed", () => { /* keep the app alive; tray manages it */ });
 
 app.on("activate", () => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();

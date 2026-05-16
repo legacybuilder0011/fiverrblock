@@ -15,21 +15,25 @@ const SUPABASE_KEY = "sb_publishable_tu-E950ukBD0lJ3z7OKfXg_DUSpzhdX";
 const BASE_DIR     = path.join(app.getPath("userData"), "privacy-shield");
 const SESSION_FILE = path.join(BASE_DIR, "supabase-session.json");
 
-// Resolve a writable Desktop path (OneDrive-aware) for diagnostic logging.
-function resolveLogPath() {
-  const candidates = [
-    path.join(os.homedir(), "OneDrive", "Desktop"),
-    path.join(os.homedir(), "Desktop"),
-    os.tmpdir()
-  ];
-  for (const dir of candidates) {
-    try { if (fs.existsSync(dir)) return path.join(dir, "privacy-shield-error.txt"); } catch (_) {}
+// Write to BOTH OneDrive Desktop AND userData. OneDrive Files-On-Demand
+// can silently swallow appendFileSync writes; userData is the reliable copy.
+const LOG_TARGETS = (() => {
+  const targets = [];
+  for (const dir of [path.join(os.homedir(), "OneDrive", "Desktop"), path.join(os.homedir(), "Desktop")]) {
+    try { if (fs.existsSync(dir)) { targets.push(path.join(dir, "privacy-shield-error.txt")); break; } } catch (_) {}
   }
-  return path.join(os.tmpdir(), "privacy-shield-error.txt");
-}
-const LOG_PATH = resolveLogPath();
+  try {
+    fs.mkdirSync(BASE_DIR, { recursive: true });
+    targets.push(path.join(BASE_DIR, "privacy-shield-error.txt"));
+  } catch (_) {}
+  if (!targets.length) targets.push(path.join(os.tmpdir(), "privacy-shield-error.txt"));
+  return targets;
+})();
 function logLine(msg) {
-  try { fs.appendFileSync(LOG_PATH, new Date().toISOString() + " [cloud] " + msg + "\n", "utf8"); } catch (_) {}
+  const line = new Date().toISOString() + " [cloud] " + msg + "\n";
+  for (const t of LOG_TARGETS) {
+    try { fs.appendFileSync(t, line, "utf8"); } catch (_) {}
+  }
 }
 
 function ensureDir(dir) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); }

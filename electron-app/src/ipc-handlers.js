@@ -9,24 +9,32 @@ const sessionMgr = require("./session-manager");
 const authStore = require("./auth-store");
 const vpsProxy = require("./vps-proxy-manager");
 
-// Resolve a Desktop path that actually exists — OneDrive-redirected Desktops
-// don't have ~/Desktop, so we'd silently log nowhere.
-function resolveLogPath() {
-  const candidates = [
-    path.join(os.homedir(), "OneDrive", "Desktop"),
-    path.join(os.homedir(), "Desktop"),
-    os.tmpdir()
-  ];
-  for (const dir of candidates) {
-    try { if (fs.existsSync(dir)) return path.join(dir, "privacy-shield-error.txt"); } catch (_) {}
+// Write to BOTH OneDrive Desktop and userData. OneDrive Files-On-Demand
+// can silently swallow appendFileSync writes, so userData is the reliable
+// copy. Defer userData resolution until first write because app may not
+// be fully ready when this module is first required.
+let LOG_TARGETS = null;
+function getLogTargets() {
+  if (LOG_TARGETS) return LOG_TARGETS;
+  const { app } = require("electron");
+  const targets = [];
+  for (const dir of [path.join(os.homedir(), "OneDrive", "Desktop"), path.join(os.homedir(), "Desktop")]) {
+    try { if (fs.existsSync(dir)) { targets.push(path.join(dir, "privacy-shield-error.txt")); break; } } catch (_) {}
   }
-  return path.join(os.tmpdir(), "privacy-shield-error.txt");
-}
-const LOG_PATH = resolveLogPath();
-function logError(err) {
   try {
-    fs.appendFileSync(LOG_PATH, new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8");
+    const ud = app.getPath("userData");
+    fs.mkdirSync(ud, { recursive: true });
+    targets.push(path.join(ud, "privacy-shield-error.txt"));
   } catch (_) {}
+  if (!targets.length) targets.push(path.join(os.tmpdir(), "privacy-shield-error.txt"));
+  LOG_TARGETS = targets;
+  return targets;
+}
+function logError(err) {
+  const line = new Date().toISOString() + " " + String(err?.stack || err) + "\n";
+  for (const t of getLogTargets()) {
+    try { fs.appendFileSync(t, line, "utf8"); } catch (_) {}
+  }
 }
 
 // Preload scripts are loaded by Electron via Node.js fs (ASAR-aware) — __dirname works fine.
@@ -235,7 +243,15 @@ function registerIpcHandlers() {
   // ── Window management ─────────────────────────────────────────────────────────
 
   ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url } = {}) => {
-    return openProfileWindow(profileId, url);
+    logError(`PROFILE_OPEN_WINDOW start profileId=${profileId} url=${url || "<none>"}`);
+    try {
+      const result = await openProfileWindow(profileId, url);
+      logError(`PROFILE_OPEN_WINDOW result ok=${result?.ok} err=${result?.error || ""}`);
+      return result;
+    } catch (err) {
+      logError(`PROFILE_OPEN_WINDOW threw: ${err.stack || err}`);
+      return { ok: false, error: "Failed to open window: " + (err.message || err) };
+    }
   });
 
   // Bulk profile generation
@@ -1009,18 +1025,33 @@ async function openProfileWindow(profileId, customUrl) {
 
   // If the tab strip renderer crashes, save the session and destroy the window so
   // profileWindows is cleaned up and the user can click "Start" again immediately.
+  // Wrap the whole handler so a throw here can't propagate as an uncaughtException
+  // and kill the main process (which would close the entire app silently).
   win.webContents.on("render-process-gone", (_ev, details) => {
-    logError(`Tab strip renderer gone (${details.reason}) for profile ${profileId}`);
-    const state = windowTabState.get(win.id);
-    if (state) {
-      const tabs = state.tabs
-        .map((t) => ({ url: !t.view.webContents.isDestroyed() ? t.view.webContents.getURL() : t.url, title: t.title }))
-        .filter((t) => t.url && (t.url.startsWith("http://") || t.url.startsWith("https://")));
-      if (tabs.length) {
-        try { store.updateProfile(profileId, { session: { tabs, lastSaved: Date.now() } }); } catch (_) {}
+    try {
+      const reason = (details && details.reason) || "unknown";
+      const exitCode = (details && details.exitCode) != null ? details.exitCode : "?";
+      logError(`Tab strip renderer gone reason=${reason} exitCode=${exitCode} profile=${profileId}`);
+      const state = windowTabState.get(win.id);
+      if (state && Array.isArray(state.tabs)) {
+        const tabs = [];
+        for (const t of state.tabs) {
+          try {
+            const wc = t && t.view && t.view.webContents;
+            const url = wc && !wc.isDestroyed() ? wc.getURL() : (t && t.url) || "";
+            if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
+              tabs.push({ url, title: (t && t.title) || "" });
+            }
+          } catch (_) {}
+        }
+        if (tabs.length) {
+          try { store.updateProfile(profileId, { session: { tabs, lastSaved: Date.now() } }); } catch (_) {}
+        }
       }
+    } catch (err) {
+      try { logError(`render-process-gone handler threw: ${err.stack || err}`); } catch (_) {}
     }
-    try { win.destroy(); } catch (_) {}
+    try { if (!win.isDestroyed()) win.destroy(); } catch (_) {}
   });
 
   // Init the tab state for this window
@@ -1092,12 +1123,27 @@ async function openProfileWindow(profileId, customUrl) {
 
   // Capture the underlying failure reason if loadURL rejects — the rejected
   // promise only gives us "ERR_FAILED (-2)" which is not actionable.
+  // Wrap the handlers themselves in try/catch so a logging mishap can't
+  // bring down the main process.
   win.webContents.on("did-fail-load", (_e, code, desc, validatedURL, isMainFrame) => {
-    if (!isMainFrame) return;
-    logError(`tab-strip did-fail-load code=${code} desc=${desc} url=${validatedURL}`);
+    try {
+      if (!isMainFrame) return;
+      logError(`tab-strip did-fail-load code=${code} desc=${desc} url=${validatedURL}`);
+    } catch (_) {}
   });
-  win.webContents.on("console-message", (_e, level, msg, line, sourceId) => {
-    logError(`tab-strip console L${level} ${sourceId}:${line} ${msg}`);
+  win.webContents.on("console-message", (...args) => {
+    try {
+      // Electron 28+ changed signature from (e,level,msg,line,sourceId) to (e,details).
+      // Handle both shapes so we don't crash on unexpected args.
+      const a = args[1];
+      let level, msg, line, sourceId;
+      if (a && typeof a === "object" && "message" in a) {
+        ({ level, message: msg, lineNumber: line, sourceId } = a);
+      } else {
+        [, level, msg, line, sourceId] = args;
+      }
+      logError(`tab-strip console L${level} ${sourceId || ""}:${line || ""} ${msg || ""}`);
+    } catch (_) {}
   });
 
   try {
