@@ -1197,10 +1197,13 @@ function closeTab(windowId, tabId, { crashRecovery = false } = {}) {
   state.tabs.splice(idx, 1);
 
   if (state.tabs.length === 0) {
-    if (crashRecovery) {
-      // Renderer crashed on the only open tab — open a start-page tab so the
-      // window stays alive and the user can navigate away rather than losing it.
-      addTab(windowId, startPageUrl());
+    // Recovery is limited to 1 attempt per window. If the recovery tab also
+    // crashes (= 2nd crash in this window), close the window rather than
+    // looping forever — infinite addTab -> render-process-gone -> closeTab
+    // recursion was crashing the whole app.
+    state.crashCount = (state.crashCount || 0) + (crashRecovery ? 1 : 0);
+    if (crashRecovery && state.crashCount <= 1) {
+      addTab(windowId, startPageUrl("Browser tab crashed — recovered", ""));
     } else {
       win.close();
     }
