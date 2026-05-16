@@ -15,11 +15,30 @@ protocol.registerSchemesAsPrivileged([
 
 // Log errors to a file. Don't exit the app — but DO surface critical
 // startup errors so the user knows something went wrong instead of
-// silently failing to open.
-const LOG_PATH = path.join(require("os").homedir(), "Desktop", "privacy-shield-error.txt");
+// silently failing to open. Pick the first writable location so OneDrive-
+// redirected Desktops still get a log (previously we wrote to
+// homedir/Desktop which doesn't exist when Desktop is in OneDrive).
+function resolveLogPath() {
+  const os = require("os");
+  const candidates = [
+    path.join(os.homedir(), "OneDrive", "Desktop"),
+    path.join(os.homedir(), "Desktop"),
+    os.tmpdir()
+  ];
+  for (const dir of candidates) {
+    try { if (fs.existsSync(dir)) return path.join(dir, "privacy-shield-error.txt"); } catch (_) {}
+  }
+  return path.join(os.tmpdir(), "privacy-shield-error.txt");
+}
+const LOG_PATH = resolveLogPath();
 function logError(err) {
   try {
     fs.appendFileSync(LOG_PATH, new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8");
+  } catch (_) {}
+}
+function logInfo(msg) {
+  try {
+    fs.appendFileSync(LOG_PATH, new Date().toISOString() + " [info] " + msg + "\n", "utf8");
   } catch (_) {}
 }
 let appReady = false;
@@ -103,20 +122,23 @@ app.whenReady().then(async () => {
     ".map": "application/json"
   };
   protocol.handle("psapp", (request) => {
+    let filePath = "<unresolved>";
     try {
       const u = new URL(request.url);
       // psapp://app/renderer/tab-strip.html -> renderer/tab-strip.html
       // Strip leading slash from pathname; host segment is just a placeholder.
       const rel = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
-      const filePath = path.join(app.getAppPath(), rel);
+      filePath = path.join(app.getAppPath(), rel);
       const data = fs.readFileSync(filePath);
       const ext = path.extname(filePath).toLowerCase();
+      logInfo(`psapp served ${request.url} -> ${filePath} (${data.length} bytes)`);
       return new Response(data, { headers: { "Content-Type": MIME[ext] || "application/octet-stream" } });
     } catch (err) {
-      logError(err);
+      logError(`psapp FAILED for ${request.url} (filePath=${filePath}): ${err.stack || err}`);
       return new Response("psapp not found: " + request.url + "\n" + (err.message || err), { status: 404 });
     }
   });
+  logInfo(`psapp protocol registered. appPath=${app.getAppPath()} LOG_PATH=${LOG_PATH}`);
 
   registerIpcHandlers();
 

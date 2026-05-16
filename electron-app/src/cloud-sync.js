@@ -6,6 +6,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { app } = require("electron");
 
 const SUPABASE_URL = "https://tlavlrntgzsqvgicyzzz.supabase.co";
@@ -13,6 +14,23 @@ const SUPABASE_KEY = "sb_publishable_tu-E950ukBD0lJ3z7OKfXg_DUSpzhdX";
 
 const BASE_DIR     = path.join(app.getPath("userData"), "privacy-shield");
 const SESSION_FILE = path.join(BASE_DIR, "supabase-session.json");
+
+// Resolve a writable Desktop path (OneDrive-aware) for diagnostic logging.
+function resolveLogPath() {
+  const candidates = [
+    path.join(os.homedir(), "OneDrive", "Desktop"),
+    path.join(os.homedir(), "Desktop"),
+    os.tmpdir()
+  ];
+  for (const dir of candidates) {
+    try { if (fs.existsSync(dir)) return path.join(dir, "privacy-shield-error.txt"); } catch (_) {}
+  }
+  return path.join(os.tmpdir(), "privacy-shield-error.txt");
+}
+const LOG_PATH = resolveLogPath();
+function logLine(msg) {
+  try { fs.appendFileSync(LOG_PATH, new Date().toISOString() + " [cloud] " + msg + "\n", "utf8"); } catch (_) {}
+}
 
 function ensureDir(dir) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); }
 function readJson(file, fallback) {
@@ -36,7 +54,18 @@ try {
   // Use Electron's net.fetch (Chromium network stack) instead of Node.js global fetch.
   // This respects system certificates including corporate TLS inspection (DPI),
   // avoiding "fetch failed" errors that the undici-based Node.js fetch produces.
-  const electronFetch = (...args) => net.fetch(...args);
+  // Wrap with error logging so a failure surfaces the real cause (DNS, TLS, etc).
+  const electronFetch = async (input, init) => {
+    const url = typeof input === "string" ? input : (input && input.url) || String(input);
+    try {
+      const res = await net.fetch(input, init);
+      if (!res.ok) logLine(`fetch ${init?.method || "GET"} ${url} -> ${res.status}`);
+      return res;
+    } catch (err) {
+      logLine(`fetch ${init?.method || "GET"} ${url} threw: ${err.code || ""} ${err.message || err}`);
+      throw err;
+    }
+  };
 
   supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
     global: { fetch: electronFetch },
@@ -66,11 +95,7 @@ try {
 } catch (err) {
   const msg = "Cloud sync disabled — Supabase failed to load: " + (err.message || err);
   console.error(msg);
-  try {
-    const os = require("os");
-    fs.appendFileSync(path.join(os.homedir(), "Desktop", "privacy-shield-error.txt"),
-      new Date().toISOString() + " [cloud-sync] " + msg + "\n", "utf8");
-  } catch (_) {}
+  logLine(msg);
   supabase = null;
 }
 

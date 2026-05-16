@@ -9,12 +9,23 @@ const sessionMgr = require("./session-manager");
 const authStore = require("./auth-store");
 const vpsProxy = require("./vps-proxy-manager");
 
+// Resolve a Desktop path that actually exists — OneDrive-redirected Desktops
+// don't have ~/Desktop, so we'd silently log nowhere.
+function resolveLogPath() {
+  const candidates = [
+    path.join(os.homedir(), "OneDrive", "Desktop"),
+    path.join(os.homedir(), "Desktop"),
+    os.tmpdir()
+  ];
+  for (const dir of candidates) {
+    try { if (fs.existsSync(dir)) return path.join(dir, "privacy-shield-error.txt"); } catch (_) {}
+  }
+  return path.join(os.tmpdir(), "privacy-shield-error.txt");
+}
+const LOG_PATH = resolveLogPath();
 function logError(err) {
   try {
-    fs.appendFileSync(
-      path.join(os.homedir(), "Desktop", "privacy-shield-error.txt"),
-      new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8"
-    );
+    fs.appendFileSync(LOG_PATH, new Date().toISOString() + " " + String(err?.stack || err) + "\n", "utf8");
   } catch (_) {}
 }
 
@@ -1079,11 +1090,21 @@ async function openProfileWindow(profileId, customUrl) {
     notifyManagerWindows("WINDOWS_CHANGED");
   });
 
+  // Capture the underlying failure reason if loadURL rejects — the rejected
+  // promise only gives us "ERR_FAILED (-2)" which is not actionable.
+  win.webContents.on("did-fail-load", (_e, code, desc, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    logError(`tab-strip did-fail-load code=${code} desc=${desc} url=${validatedURL}`);
+  });
+  win.webContents.on("console-message", (_e, level, msg, line, sourceId) => {
+    logError(`tab-strip console L${level} ${sourceId}:${line} ${msg}`);
+  });
+
   try {
     await win.loadURL(TAB_STRIP_URL);
     showProfileWindow();
   } catch (err) {
-    logError(err);
+    logError(`win.loadURL(${TAB_STRIP_URL}) rejected: ${err.stack || err}`);
     try { win.destroy(); } catch (_) {}
     return { ok: false, error: "Browser window failed to load: " + (err.message || err) };
   }
