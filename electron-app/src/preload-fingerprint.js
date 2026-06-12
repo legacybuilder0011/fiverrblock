@@ -66,6 +66,57 @@
 
   if (!config.enabled) return;
 
+  // ── Stealth / per-site allowlist softening ───────────────────────────────────
+  // Two routes turn off the "noisy" hardware-fingerprint layers (canvas, WebGL,
+  // audio, screen, fonts, plugins, hardware, WebRTC) while KEEPING the passive
+  // identity layer (UA, timezone, language, geo) that has to match the proxy IP:
+  //   1. config._stealth === true     → whole profile runs minimal-spoof.
+  //   2. config._spoofSkipHosts list  → only the listed hostnames run minimal.
+  // The point is to present a native-Chromium hardware signature on sites with
+  // aggressive bot detection (Google, Fiverr/PerimeterX, Cloudflare Turnstile),
+  // where any JS-injected canvas/WebGL override is itself the thing that flags us.
+  (function applySoftening() {
+    const hostMatches = (host, list) => {
+      if (!host || !Array.isArray(list) || !list.length) return false;
+      const h = String(host).toLowerCase().replace(/^www\./, "");
+      for (const raw of list) {
+        const entry = String(raw || "").toLowerCase().trim().replace(/^\*?\.?/, "").replace(/^www\./, "");
+        if (!entry) continue;
+        if (h === entry || h.endsWith("." + entry)) return true;
+      }
+      return false;
+    };
+    let soften = config._stealth === true;
+    let reason = soften ? "stealth" : "";
+    try {
+      if (!soften && hostMatches(location.hostname, config._spoofSkipHosts)) {
+        soften = true;
+        reason = "allowlist";
+      }
+    } catch (_) {}
+    if (!soften) return;
+    // Drop the detectable hardware-fingerprint overrides → real Chromium values.
+    config.blockCanvas = false;
+    config.blockWebGL = false;
+    config.blockAudio = false;
+    config.blockScreen = false;
+    config.blockHardware = false;
+    config.blockPlugins = false;
+    config.blockFonts = false;
+    config.blockBattery = false;
+    // NOTE: WebRTC guard stays ON deliberately — native WebRTC would leak the
+    // real IP behind the proxy, the fastest way to get a proxied session flagged.
+    config._clientRects = "real";
+    config._webgpu = true; // let native WebGPU through rather than faking absence
+    // Keep spoofUA / spoofTimezone / spoofGeo ON: those must match the proxy IP
+    // and carry no detectable JS-execution footprint once toString is cloaked.
+    try {
+      Object.defineProperty(window, "__privacyShieldSoftened", {
+        value: reason, configurable: false, enumerable: false
+      });
+    } catch (_) {}
+  })();
+
   // ── Deterministic noise ──────────────────────────────────────────────────────
   function seedToInt(value) {
     const text = String(value || "");
@@ -131,6 +182,85 @@
   const brandName = () => browserName() === "edge" ? "Microsoft Edge" : browserName() === "brave" ? "Brave" : browserName() === "privacy" ? "Privacy Shield Browser" : "Google Chrome";
   const vendorName = () => browserName() === "safari" ? "Apple Computer, Inc." : browserName() === "firefox" ? "" : "Google Inc.";
 
+  // ── Automation markers: webdriver, CDP, Selenium/Puppeteer fingerprints ─────
+  // Pixelscan, fp-collect, CreepJS, fingerprintjs all check navigator.webdriver
+  // and several window-level automation markers. We attach Chromium DevTools
+  // Protocol for fingerprint emulation, which flips navigator.webdriver = true
+  // — the single biggest "you are a bot" signal in the wild. Override it here.
+  try {
+    // Use Navigator.prototype so descriptor lookups (getOwnPropertyDescriptor)
+    // see a real getter, not just an own value on the instance.
+    const wdGetter = function () { return false; };
+    fakeNative(wdGetter, "get webdriver");
+    Object.defineProperty(Navigator.prototype, "webdriver", { get: wdGetter, configurable: true, enumerable: true });
+  } catch (_) {}
+  // Selenium/Puppeteer/Playwright drop these on window. Real browsers never have them.
+  // CRITICAL: only delete — do NOT redefine as a getter. Detectors check
+  // `'callPhantom' in window` and `Object.getOwnPropertyDescriptor(window, "callPhantom")`,
+  // both of which return TRUE if we defineProperty (even returning undefined).
+  // A real browser has these names absent entirely.
+  const AUTOMATION_MARKERS = [
+    "cdc_adoQpoasnfa76pfcZLmcfl_Array", "cdc_adoQpoasnfa76pfcZLmcfl_Promise", "cdc_adoQpoasnfa76pfcZLmcfl_Symbol", "cdc_adoQpoasnfa76pfcZLmcfl_JSON", "cdc_adoQpoasnfa76pfcZLmcfl_Object", "cdc_adoQpoasnfa76pfcZLmcfl_Proxy",
+    "__webdriver_evaluate", "__selenium_evaluate", "__webdriver_script_function", "__webdriver_script_func", "__webdriver_script_fn",
+    "__fxdriver_evaluate", "__driver_unwrapped", "__webdriver_unwrapped", "__driver_evaluate", "__selenium_unwrapped", "__fxdriver_unwrapped",
+    "_Selenium_IDE_Recorder", "_selenium", "calledSelenium", "$cdc_asdjflasutopfhvcZLmcfl_", "$chrome_asyncScriptInfo", "__$webdriverAsyncExecutor",
+    "__nightmare", "_phantomas", "callPhantom", "_phantom", "phantom", "domAutomation", "domAutomationController"
+  ];
+  for (const marker of AUTOMATION_MARKERS) {
+    try { delete window[marker]; } catch (_) {}
+  }
+  // Real Chrome has window.chrome with chrome.runtime, chrome.loadTimes etc.
+  // Headless / heavily-locked-down Chromium misses these. Restore a minimal shim
+  // so the "missing window.chrome.runtime" check passes.
+  try {
+    if (!window.chrome || typeof window.chrome !== "object") {
+      Object.defineProperty(window, "chrome", { value: {}, writable: true, configurable: true });
+    }
+    if (!window.chrome.runtime) {
+      window.chrome.runtime = {
+        OnInstalledReason: { CHROME_UPDATE: "chrome_update", INSTALL: "install", SHARED_MODULE_UPDATE: "shared_module_update", UPDATE: "update" },
+        OnRestartRequiredReason: { APP_UPDATE: "app_update", OS_UPDATE: "os_update", PERIODIC: "periodic" },
+        PlatformArch: { ARM: "arm", ARM64: "arm64", MIPS: "mips", MIPS64: "mips64", X86_32: "x86-32", X86_64: "x86-64" },
+        PlatformOs: { ANDROID: "android", CROS: "cros", LINUX: "linux", MAC: "mac", OPENBSD: "openbsd", WIN: "win" },
+        RequestUpdateCheckStatus: { NO_UPDATE: "no_update", THROTTLED: "throttled", UPDATE_AVAILABLE: "update_available" },
+        connect: fakeNative(function connect() { return undefined; }, "connect"),
+        sendMessage: fakeNative(function sendMessage() { return undefined; }, "sendMessage")
+      };
+    }
+    if (!window.chrome.loadTimes) {
+      window.chrome.loadTimes = fakeNative(function loadTimes() {
+        return { requestTime: Date.now() / 1000 - 1, startLoadTime: Date.now() / 1000 - 0.5, commitLoadTime: Date.now() / 1000 - 0.3, finishDocumentLoadTime: Date.now() / 1000 - 0.1, finishLoadTime: Date.now() / 1000, firstPaintTime: Date.now() / 1000 - 0.2, firstPaintAfterLoadTime: 0, navigationType: "Other", wasFetchedViaSpdy: true, wasNpnNegotiated: true, npnNegotiatedProtocol: "h3", wasAlternateProtocolAvailable: false, connectionInfo: "h3" };
+      }, "loadTimes");
+    }
+    if (!window.chrome.csi) {
+      window.chrome.csi = fakeNative(function csi() {
+        return { startE: Date.now(), onloadT: Date.now(), pageT: Math.random() * 1000, tran: 15 };
+      }, "csi");
+    }
+  } catch (_) {}
+  // fp-collect's "HEADCHR_PERMISSIONS" check: it compares Notification.permission
+  // against permissions.query({name:"notifications"}).state. Real Chrome has them
+  // match (both "default" / "granted" / "denied"). Our env reports
+  // Notification.permission === "denied" but permissions API returns "prompt" —
+  // classic headless signature. Force both to "default" and have query match.
+  try {
+    if (typeof Notification !== "undefined") {
+      Object.defineProperty(Notification, "permission", { get: () => "default", configurable: true });
+    }
+  } catch (_) {}
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      const origQuery = navigator.permissions.query.bind(navigator.permissions);
+      const patchedQuery = fakeNative(function query(parameters) {
+        if (parameters && parameters.name === "notifications") {
+          return Promise.resolve({ state: "prompt", onchange: null });
+        }
+        return origQuery(parameters);
+      }, "query");
+      navigator.permissions.query = patchedQuery;
+    }
+  } catch (_) {}
+
   // ── Navigator spoofing ───────────────────────────────────────────────────────
   if (config.spoofUA) {
     defineRO(Navigator.prototype, "userAgent", () => config.userAgent);
@@ -188,8 +318,10 @@
         },
         toJSON() { return { brands: fakeBrands, mobile: isMobile, platform: os }; }
       };
-      Object.defineProperty(Navigator.prototype, "userAgentData", { get: () => uaData, configurable: true });
-      Object.defineProperty(navigator, "userAgentData", { get: () => uaData, configurable: true });
+      const uaDataGetter = function () { return uaData; };
+      fakeNative(uaDataGetter, "get userAgentData");
+      Object.defineProperty(Navigator.prototype, "userAgentData", { get: uaDataGetter, configurable: true });
+      Object.defineProperty(navigator, "userAgentData", { get: uaDataGetter, configurable: true });
     } catch (_) {}
 
     if (browserName() === "brave") {
@@ -200,6 +332,17 @@
         });
       } catch (_) {}
     }
+  }
+
+  // ── navigator.brave shim for Brave-identified profiles ──────────────────────
+  // Brave's official detection: `navigator.brave.isBrave()` returns Promise<true>.
+  // Brave intentionally keeps the UA identical to Chrome; sites that need to detect
+  // Brave call this API. Expose it whenever the profile identity is Brave.
+  if (browserName() === "brave") {
+    try {
+      const braveShim = Object.freeze({ isBrave: () => Promise.resolve(true) });
+      defineRO(Navigator.prototype, "brave", braveShim);
+    } catch (_) {}
   }
 
   // ── Hardware ─────────────────────────────────────────────────────────────────
@@ -423,25 +566,84 @@
     const _chgTime   = _charging  ? (_isMobBat ? Math.round(1800 + stableNoise(90) * 5400) : Infinity) : Infinity;
     const _dischTime = !_charging ? Math.round(10800 + stableNoise(91) * 10800) : Infinity;
     const fakeBattery = { charging: _charging, chargingTime: _chgTime, dischargingTime: _dischTime, level: _level, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } };
-    try { Navigator.prototype.getBattery = function () { return Promise.resolve(fakeBattery); }; } catch (_) {}
+    try {
+      const patchedGetBattery = fakeNative(function getBattery() { return Promise.resolve(fakeBattery); }, "getBattery");
+      Navigator.prototype.getBattery = patchedGetBattery;
+    } catch (_) {}
     try { delete navigator.battery; defineRO(Navigator.prototype, "battery", undefined); } catch (_) {}
   }
 
   // ── Plugins / MIME types ──────────────────────────────────────────────────────
   if (config.blockPlugins) {
     if (config._mobile) {
-      // Mobile Safari/Chrome expose zero plugins — showing PDF Viewer is a desktop fingerprint tell
-      const emptyPlugins = Object.freeze({ length: 0, item() { return null; }, namedItem() { return null; }, refresh() {}, [Symbol.iterator]: function* () {} });
-      const emptyMimes   = Object.freeze({ length: 0, item() { return null; }, namedItem() { return null; }, [Symbol.iterator]: function* () {} });
+      // Mobile Chrome/Safari expose zero plugins, but the OBJECT must still be a
+      // PluginArray / MimeTypeArray instance — fp-collect checks instanceof.
+      const emptyPlugins = Object.create(window.PluginArray ? window.PluginArray.prototype : Object.prototype);
+      Object.defineProperty(emptyPlugins, "length", { value: 0, enumerable: true });
+      emptyPlugins.item = fakeNative(function item() { return null; }, "item");
+      emptyPlugins.namedItem = fakeNative(function namedItem() { return null; }, "namedItem");
+      emptyPlugins.refresh = fakeNative(function refresh() {}, "refresh");
+      emptyPlugins[Symbol.iterator] = function* () {};
+      const emptyMimes = Object.create(window.MimeTypeArray ? window.MimeTypeArray.prototype : Object.prototype);
+      Object.defineProperty(emptyMimes, "length", { value: 0, enumerable: true });
+      emptyMimes.item = fakeNative(function item() { return null; }, "item");
+      emptyMimes.namedItem = fakeNative(function namedItem() { return null; }, "namedItem");
+      emptyMimes[Symbol.iterator] = function* () {};
       defineRO(Navigator.prototype, "plugins", () => emptyPlugins);
       defineRO(Navigator.prototype, "mimeTypes", () => emptyMimes);
       defineRO(Navigator.prototype, "pdfViewerEnabled", false);
     } else {
-      const pdfMime = Object.freeze({ type: "application/pdf", suffixes: "pdf", description: "Portable Document Format", enabledPlugin: null });
-      const pluginNames = ["PDF Viewer", "Chrome PDF Viewer", "Chromium PDF Viewer", "Microsoft Edge PDF Viewer", "WebKit built-in PDF"];
-      const fakePluginList = pluginNames.map((name) => Object.freeze({ name, filename: "internal-pdf-viewer", description: "Portable Document Format", length: 1, item: (i) => i === 0 ? pdfMime : null, namedItem: (n) => n === "application/pdf" ? pdfMime : null, [Symbol.iterator]: function* () { yield pdfMime; } }));
-      const pluginsObj = Object.freeze({ length: 5, item(i) { return fakePluginList[i] || null; }, namedItem(n) { return fakePluginList.find((p) => p.name === n) || null; }, refresh() {}, [Symbol.iterator]: function* () { for (const p of fakePluginList) yield p; } });
-      const mimesObj = Object.freeze({ length: 1, item(i) { return i === 0 ? pdfMime : null; }, namedItem(n) { return n === "application/pdf" ? pdfMime : null; }, [Symbol.iterator]: function* () { yield pdfMime; } });
+      // navigator.plugins MUST be `instanceof PluginArray` and each item must be
+      // `instanceof Plugin` for fp-collect/bot.sannysoft to recognize them as
+      // real. Plain objects with the right shape FAIL the instanceof check.
+      // Build with Object.create(PluginArray.prototype) + indexed properties.
+      const pdfMime = Object.create(window.MimeType ? window.MimeType.prototype : Object.prototype);
+      Object.defineProperties(pdfMime, {
+        type: { value: "application/pdf", enumerable: true },
+        suffixes: { value: "pdf", enumerable: true },
+        description: { value: "Portable Document Format", enumerable: true },
+        enabledPlugin: { value: null, enumerable: true }
+      });
+      const pluginNames = [
+        "PDF Viewer",
+        "Chrome PDF Viewer",
+        "Chromium PDF Viewer",
+        "Microsoft Edge PDF Viewer",
+        "WebKit built-in PDF"
+      ];
+      const fakePluginList = pluginNames.map((name) => {
+        const p = Object.create(window.Plugin ? window.Plugin.prototype : Object.prototype);
+        Object.defineProperties(p, {
+          name: { value: name, enumerable: true },
+          filename: { value: "internal-pdf-viewer", enumerable: true },
+          description: { value: "Portable Document Format", enumerable: true },
+          length: { value: 1, enumerable: true }
+        });
+        p[0] = pdfMime;
+        Object.defineProperty(pdfMime, "enabledPlugin", { value: p, configurable: true });
+        p.item = fakeNative(function item(i) { return i === 0 ? pdfMime : null; }, "item");
+        p.namedItem = fakeNative(function namedItem(n) { return n === "application/pdf" ? pdfMime : null; }, "namedItem");
+        return p;
+      });
+      const pluginsObj = Object.create(window.PluginArray ? window.PluginArray.prototype : Object.prototype);
+      Object.defineProperty(pluginsObj, "length", { value: fakePluginList.length, enumerable: true });
+      fakePluginList.forEach((p, i) => {
+        Object.defineProperty(pluginsObj, i, { value: p, enumerable: true });
+        Object.defineProperty(pluginsObj, p.name, { value: p });
+      });
+      pluginsObj.item = fakeNative(function item(i) { return fakePluginList[i] || null; }, "item");
+      pluginsObj.namedItem = fakeNative(function namedItem(n) { return fakePluginList.find((p) => p.name === n) || null; }, "namedItem");
+      pluginsObj.refresh = fakeNative(function refresh() {}, "refresh");
+      pluginsObj[Symbol.iterator] = function* () { for (const p of fakePluginList) yield p; };
+
+      const mimesObj = Object.create(window.MimeTypeArray ? window.MimeTypeArray.prototype : Object.prototype);
+      Object.defineProperty(mimesObj, "length", { value: 1, enumerable: true });
+      Object.defineProperty(mimesObj, 0, { value: pdfMime, enumerable: true });
+      Object.defineProperty(mimesObj, "application/pdf", { value: pdfMime });
+      mimesObj.item = fakeNative(function item(i) { return i === 0 ? pdfMime : null; }, "item");
+      mimesObj.namedItem = fakeNative(function namedItem(n) { return n === "application/pdf" ? pdfMime : null; }, "namedItem");
+      mimesObj[Symbol.iterator] = function* () { yield pdfMime; };
+
       defineRO(Navigator.prototype, "plugins", () => pluginsObj);
       defineRO(Navigator.prototype, "mimeTypes", () => mimesObj);
       defineRO(Navigator.prototype, "pdfViewerEnabled", true);
@@ -505,15 +707,106 @@
   }
 
   // ── Timezone ─────────────────────────────────────────────────────────────────
+  // Multiple surfaces have to agree, or pixelscan/CreepJS flag "timezone spoofed":
+  //   - Intl.DateTimeFormat().resolvedOptions().timeZone
+  //   - Date.prototype.getTimezoneOffset()
+  //   - Date.prototype.toString() (includes the GMT offset + tz name)
+  //   - Date.prototype.toTimeString() (same)
+  //   - Date.prototype.toLocaleString() (uses DTF under the hood, OK once DTF is fixed)
   if (config.spoofTimezone) {
     const fakeTZ = config.timezone || "UTC";
     const offsetMin = Number(config.localeOffsetMinutes) || 0;
     try {
       const OriginalDTF = Intl.DateTimeFormat;
       const OriginalResolved = OriginalDTF.prototype.resolvedOptions;
-      OriginalDTF.prototype.resolvedOptions = function () { const r = OriginalResolved.call(this); r.timeZone = fakeTZ; return r; };
+      const patchedResolved = fakeNative(function resolvedOptions() {
+        const r = OriginalResolved.call(this);
+        r.timeZone = fakeTZ;
+        return r;
+      }, "resolvedOptions");
+      OriginalDTF.prototype.resolvedOptions = patchedResolved;
     } catch (_) {}
-    try { Date.prototype.getTimezoneOffset = function () { return offsetMin; }; } catch (_) {}
+    // Derive the offset LIVE from the spoofed IANA zone, per-date, so it stays
+    // DST-correct and always agrees with resolvedOptions().timeZone. A static
+    // offset (the old behaviour) was wrong for non-Eastern zones and for half
+    // the year on any DST zone — the single most reliable timezone-spoof tell.
+    const offsetForDate = (function () {
+      let probe;
+      try {
+        probe = new Intl.DateTimeFormat("en-US", { timeZone: fakeTZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      } catch (_) { probe = null; }
+      return function (date) {
+        if (!probe) return offsetMin;
+        try {
+          const p = probe.formatToParts(date).reduce((a, x) => (a[x.type] = x.value, a), {});
+          const asUTC = Date.UTC(+p.year, p.month - 1, +p.day, +p.hour === 24 ? 0 : +p.hour, +p.minute, +p.second);
+          return Math.round((date.getTime() - asUTC) / 60000);
+        } catch (_) { return offsetMin; }
+      };
+    })();
+    try {
+      const patchedOffset = fakeNative(function getTimezoneOffset() {
+        const d = this instanceof Date ? this : new Date();
+        return offsetForDate(d);
+      }, "getTimezoneOffset");
+      Date.prototype.getTimezoneOffset = patchedOffset;
+    } catch (_) {}
+    // Rebuild Date.toString output using DateTimeFormat under the spoofed zone
+    // so "Mon May 19 2026 23:30:00 GMT-0500 (Central Daylight Time)" stays consistent.
+    try {
+      const tzAbbrFromName = (name) => {
+        try {
+          const dtf = new Intl.DateTimeFormat("en-US", { timeZone: name, timeZoneName: "short" });
+          const parts = dtf.formatToParts(new Date());
+          const tzPart = parts.find((p) => p.type === "timeZoneName");
+          return tzPart ? tzPart.value : "UTC";
+        } catch (_) { return "UTC"; }
+      };
+      const tzLongFromName = (name) => {
+        try {
+          const dtf = new Intl.DateTimeFormat("en-US", { timeZone: name, timeZoneName: "long" });
+          const parts = dtf.formatToParts(new Date());
+          const tzPart = parts.find((p) => p.type === "timeZoneName");
+          return tzPart ? tzPart.value : "Coordinated Universal Time";
+        } catch (_) { return "Coordinated Universal Time"; }
+      };
+      // GMT offset string is per-date (DST-aware) and matches getTimezoneOffset.
+      const offsetStrForDate = (date) => {
+        const off = offsetForDate(date instanceof Date ? date : new Date());
+        const sign = off <= 0 ? "+" : "-";
+        const abs = Math.abs(off);
+        const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+        const mm = String(abs % 60).padStart(2, "0");
+        return `GMT${sign}${hh}${mm}`;
+      };
+      const tzAbbr = tzAbbrFromName(fakeTZ);
+      const tzLong = tzLongFromName(fakeTZ);
+      const fmtDate = new Intl.DateTimeFormat("en-US", { timeZone: fakeTZ, weekday: "short", month: "short", day: "2-digit", year: "numeric" });
+      const fmtTime = new Intl.DateTimeFormat("en-GB", { timeZone: fakeTZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+      const patchedToString = fakeNative(function toString() {
+        try {
+          const d = this;
+          const dParts = fmtDate.formatToParts(d).reduce((a, p) => (a[p.type] = p.value, a), {});
+          const tParts = fmtTime.formatToParts(d).reduce((a, p) => (a[p.type] = p.value, a), {});
+          return `${dParts.weekday} ${dParts.month} ${dParts.day} ${dParts.year} ${tParts.hour}:${tParts.minute}:${tParts.second} ${offsetStrForDate(d)} (${tzLong})`;
+        } catch (_) { return Date.prototype.toUTCString.call(this); }
+      }, "toString");
+      const patchedToTimeString = fakeNative(function toTimeString() {
+        try {
+          const tParts = fmtTime.formatToParts(this).reduce((a, p) => (a[p.type] = p.value, a), {});
+          return `${tParts.hour}:${tParts.minute}:${tParts.second} ${offsetStrForDate(this)} (${tzLong})`;
+        } catch (_) { return ""; }
+      }, "toTimeString");
+      const patchedToDateString = fakeNative(function toDateString() {
+        try {
+          const dParts = fmtDate.formatToParts(this).reduce((a, p) => (a[p.type] = p.value, a), {});
+          return `${dParts.weekday} ${dParts.month} ${dParts.day} ${dParts.year}`;
+        } catch (_) { return ""; }
+      }, "toDateString");
+      Date.prototype.toString = patchedToString;
+      Date.prototype.toTimeString = patchedToTimeString;
+      Date.prototype.toDateString = patchedToDateString;
+    } catch (_) {}
   }
 
   // ── Geolocation ───────────────────────────────────────────────────────────────

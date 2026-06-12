@@ -374,6 +374,8 @@ function getDefaultFingerprint() {
     doNotTrack: false,
     webrtc: "altered", webrtcIP: "",
     blockStorage: false, blockCookies: false,
+    tlsSpoof: false,
+    spoofingLevel: "full", spoofSkipHosts: [],
     browserVersion: "148",
     ispName: "", ispAsn: "", ispOrg: "", city: "", state: ""
   };
@@ -436,7 +438,13 @@ function updateProfile(id, data) {
   const existing = profiles[idx];
   profiles[idx] = { ...existing, ...data, id, updatedAt: Date.now() };
   if (data.fingerprint) profiles[idx].fingerprint = { ...existing.fingerprint, ...data.fingerprint };
-  if (data.proxy) profiles[idx].proxy = { ...existing.proxy, ...data.proxy };
+  if (data.proxy) {
+    const nextProxy = { ...existing.proxy, ...data.proxy };
+    if (Object.prototype.hasOwnProperty.call(data.proxy, "password") && data.proxy.password === "" && existing.proxy?.password) {
+      nextProxy.password = existing.proxy.password;
+    }
+    profiles[idx].proxy = nextProxy;
+  }
   profiles[idx].fingerprint = normalizeProfileFingerprint(profiles[idx], { randomizeDefaultGpu: false });
   saveProfiles(profiles);
   syncProfileBg(profiles[idx]);
@@ -940,6 +948,50 @@ function findAndroidDeviceByModel(model) {
   return ANDROID_DEVICE_PROFILES.find((device) => device.model.toLowerCase() === target) || null;
 }
 
+function findIOSDeviceByModel(model) {
+  const target = String(model || "").trim().toLowerCase();
+  if (!target) return null;
+  return IOS_DEVICE_PROFILES.find((device) => device.model.toLowerCase() === target) || null;
+}
+
+function applyMobileDeviceDefaults(fp, osName) {
+  const catalog = osName === "ios" ? IOS_DEVICE_PROFILES : ANDROID_DEVICE_PROFILES;
+  const findByModel = osName === "ios" ? findIOSDeviceByModel : findAndroidDeviceByModel;
+
+  const w = Number(fp.screenWidth) || 0;
+  const h = Number(fp.screenHeight) || 0;
+  const matchingDevice = catalog.find((d) => d.screen[0] === w && d.screen[1] === h);
+
+  if (matchingDevice) {
+    if (!fp.mobileModel || !findByModel(fp.mobileModel)) {
+      fp.mobileModel = matchingDevice.model;
+      fp.mobileManufacturer = matchingDevice.manufacturer;
+      fp.platformVersion = matchingDevice.ios || matchingDevice.android || "";
+      fp.androidBuild = matchingDevice.build || "";
+    }
+    return;
+  }
+
+  let device = findByModel(fp.mobileModel);
+  if (!device) device = randomChoice(catalog);
+
+  fp.screen = "manual";
+  fp.screenWidth = device.screen[0];
+  fp.screenHeight = device.screen[1];
+  fp.devicePixelRatio = device.dpr;
+  if (!fp.cpuCoresValue || Number(fp.cpuCoresValue) > 8) fp.cpuCoresValue = device.cores;
+  if (!fp.ramValue || Number(fp.ramValue) > 12) fp.ramValue = device.ram;
+  fp.mobileModel = device.model;
+  fp.mobileManufacturer = device.manufacturer;
+  fp.platformVersion = device.ios || device.android || "";
+  fp.androidBuild = device.build || "";
+  if (!gpuLooksCompatibleWithOs(osName, fp.webglVendor, fp.webglRenderer)) {
+    fp.webglVendor = device.gpuVendor;
+    fp.webglRenderer = device.gpuRenderer;
+    fp.webglInfo = "manual";
+  }
+}
+
 function osForCountry(countryCode, deviceClass = "desktop") {
   if (deviceClass === "mobile") return "android";
   if (countryCode === "au" || countryCode === "ch") return randomChoice(["macos", "windows", "windows"]);
@@ -1024,6 +1076,7 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
   if (!Array.isArray(fp.installedFonts) || !fp.installedFonts.length || fp.fontProfile !== (profile.fingerprint || {}).fontProfile) {
     fp.installedFonts = resolvedFontListForProfile(fp, osName);
   }
+  fp.tlsSpoof = false;
   if (options.randomizeDefaultGpu && isDefaultGpuFingerprint(fp)) {
     const webgl = randomWebglForOs(osName);
     fp.webglInfo = "manual";
@@ -1043,6 +1096,7 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
     fp.viewportMobile = true;
     fp.pointerType = "coarse";
     fp.hoverType = "none";
+    applyMobileDeviceDefaults(fp, osName);
   }
   return fp;
 }
@@ -1310,9 +1364,94 @@ function buildProfileUA(os, version, browser, fingerprint = {}) {
   }
 }
 
+// Deterministic per-profile fingerprint derivation. Without these, every
+// profile reports the same hardwareConcurrency=4, deviceMemory=8, en-US,
+// America/New_York — which lets Fiverr/Instagram cluster all your profiles
+// together as "same person". Seed each value from the profile's fingerprintSeed
+// so it's stable across launches but unique per profile.
+function profileSeededInt(seedStr, salt) {
+  const s = String(seedStr || "default") + ":" + String(salt || "");
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function pickWeighted(seedInt, choices) {
+  const total = choices.reduce((a, c) => a + c[1], 0);
+  let r = seedInt % total;
+  for (const [val, w] of choices) {
+    if (r < w) return val;
+    r -= w;
+  }
+  return choices[choices.length - 1][0];
+}
+function pickHardwareConcurrency(seed, isMobile) {
+  return pickWeighted(profileSeededInt(seed, "cpu"),
+    isMobile ? [[4, 20], [6, 25], [8, 55]]
+             : [[4, 15], [6, 20], [8, 40], [12, 15], [16, 10]]);
+}
+function pickDeviceMemory(seed, isMobile) {
+  // Chromium clamps the API to 0.25/0.5/1/2/4/8. Above-8GB devices report 8.
+  return pickWeighted(profileSeededInt(seed, "ram"),
+    isMobile ? [[2, 25], [4, 45], [8, 30]]
+             : [[4, 30], [8, 70]]);
+}
+const TZ_BY_COUNTRY = {
+  us: ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix"],
+  gb: ["Europe/London"],
+  ca: ["America/Toronto", "America/Vancouver", "America/Edmonton"],
+  au: ["Australia/Sydney", "Australia/Melbourne", "Australia/Perth", "Australia/Brisbane"],
+  de: ["Europe/Berlin"], nl: ["Europe/Amsterdam"], fr: ["Europe/Paris"],
+  ch: ["Europe/Zurich"], se: ["Europe/Stockholm"], jp: ["Asia/Tokyo"],
+  sg: ["Asia/Singapore"], br: ["America/Sao_Paulo"], in: ["Asia/Kolkata"],
+  ae: ["Asia/Dubai"], ru: ["Europe/Moscow"], tr: ["Europe/Istanbul"],
+  ng: ["Africa/Lagos"], it: ["Europe/Rome"], es: ["Europe/Madrid"],
+  pt: ["Europe/Lisbon"], kr: ["Asia/Seoul"], cn: ["Asia/Shanghai"]
+};
+const LANG_BY_COUNTRY = {
+  us: ["en-US"], gb: ["en-GB"], ca: ["en-CA", "fr-CA"], au: ["en-AU"],
+  de: ["de-DE"], nl: ["nl-NL"], fr: ["fr-FR"], ch: ["de-CH", "fr-CH", "it-CH"],
+  se: ["sv-SE"], jp: ["ja-JP"], sg: ["en-SG"], br: ["pt-BR"],
+  in: ["en-IN", "hi-IN"], ae: ["ar-AE", "en-AE"], ru: ["ru-RU"], tr: ["tr-TR"],
+  ng: ["en-US"], it: ["it-IT"], es: ["es-ES"], pt: ["pt-PT"], kr: ["ko-KR"], cn: ["zh-CN"]
+};
+// Country-centre coordinates so the default geolocation stays coherent with the
+// resolved timezone/language when a profile has no manual or proxy-detected geo.
+const GEO_BY_COUNTRY = {
+  us: [40.7128, -74.006], gb: [51.5074, -0.1278], ca: [43.6532, -79.3832],
+  au: [-33.8688, 151.2093], de: [52.52, 13.405], nl: [52.3676, 4.9041],
+  fr: [48.8566, 2.3522], ch: [47.3769, 8.5417], se: [59.3293, 18.0686],
+  jp: [35.6762, 139.6503], sg: [1.3521, 103.8198], br: [-23.5505, -46.6333],
+  in: [19.076, 72.8777], ae: [25.2048, 55.2708], ru: [55.7558, 37.6173],
+  tr: [41.0082, 28.9784], ng: [6.5244, 3.3792], it: [41.9028, 12.4964],
+  es: [40.4168, -3.7038], pt: [38.7223, -9.1393], kr: [37.5665, 126.978],
+  cn: [39.9042, 116.4074]
+};
+function geoForCountry(seed, countryCode) {
+  const c = GEO_BY_COUNTRY[String(countryCode || "").toLowerCase()] || GEO_BY_COUNTRY.us;
+  // small deterministic jitter so co-country profiles aren't pixel-identical
+  const j = (salt) => ((profileSeededInt(seed, salt) % 1000) / 1000 - 0.5) * 0.18;
+  return { latitude: +(c[0] + j("lat")).toFixed(4), longitude: +(c[1] + j("lng")).toFixed(4) };
+}
+function pickTimezoneForCountry(seed, countryCode) {
+  const list = TZ_BY_COUNTRY[String(countryCode || "").toLowerCase()] || TZ_BY_COUNTRY.us;
+  return list[profileSeededInt(seed, "tz") % list.length];
+}
+function pickLanguageForCountry(seed, countryCode) {
+  const list = LANG_BY_COUNTRY[String(countryCode || "").toLowerCase()] || LANG_BY_COUNTRY.us;
+  return list[profileSeededInt(seed, "lang") % list.length];
+}
+
 function buildConfigFromProfile(profile) {
   if (!profile) return null;
   const fp = profile.fingerprint || {};
+  const _seedDef = fp.fingerprintSeed || profile.id || "default";
+  const _isMobileDef = (profile.os === "android" || profile.os === "ios") || fp.deviceClass === "mobile";
+  const _ccDef = String((profile.proxy && profile.proxy.detectedCountryCode) || fp.countryCode || "us").toLowerCase();
+  const _defLang = pickLanguageForCountry(_seedDef, _ccDef);
+  const _defTz = pickTimezoneForCountry(_seedDef, _ccDef);
   const cfg = {
     enabled: true,
     rotateFingerprint: false,
@@ -1373,6 +1512,8 @@ function buildConfigFromProfile(profile) {
     _webrtcMode: fp.webrtc || "altered",
     _webrtcIP: fp.webrtcIP || "",
     _fingerprintSeed: fp.fingerprintSeed || profile.id || "",
+    _stealth: fp.spoofingLevel === "stealth",
+    _spoofSkipHosts: Array.isArray(fp.spoofSkipHosts) ? fp.spoofSkipHosts.filter(Boolean) : [],
     _browserApp: fp.browser || profile.browserApp || "chrome",
     _countryCode: fp.countryCode || "",
     _country: fp.country || "",
@@ -1384,13 +1525,13 @@ function buildConfigFromProfile(profile) {
     _ip: fp.ip || "",
     _profileId: profile.id,
     _profileName: profile.name,
-    hardwareConcurrency: 4,
-    deviceMemory: 8,
-    language: "en-US",
-    languages: ["en-US", "en"],
-    timezone: "America/New_York",
+    hardwareConcurrency: pickHardwareConcurrency(_seedDef, _isMobileDef),
+    deviceMemory: pickDeviceMemory(_seedDef, _isMobileDef),
+    language: _defLang,
+    languages: [_defLang, _defLang.split("-")[0]].filter(Boolean),
+    timezone: _defTz,
     localeOffsetMinutes: 300,
-    geo: { latitude: 40.7128, longitude: -74.006, accuracy: 50, altitude: null, altitudeAccuracy: null, heading: null, speed: null },
+    geo: (() => { const g = geoForCountry(_seedDef, _ccDef); return { latitude: g.latitude, longitude: g.longitude, accuracy: 50, altitude: null, altitudeAccuracy: null, heading: null, speed: null }; })(),
     screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 }
   };
 
@@ -1418,9 +1559,14 @@ function buildConfigFromProfile(profile) {
     cfg._gpuVendor = fp.webglVendor;
     cfg._gpuRenderer = fp.webglRenderer || "";
   } else {
+    // Pick a GPU coherent with the profile OS. A macOS/Linux profile must never
+    // report a Windows "Direct3D11" renderer (or vice-versa) — an instant tell.
+    const osKey = profile.os === "macos" ? "macos" : profile.os === "linux" ? "linux" : "windows";
+    const osPresets = PROFILE_WEBGL_PRESETS.filter((p) => p.platform === osKey);
+    const pool = osPresets.length ? osPresets : PROFILE_WEBGL_PRESETS;
     const rawIndex = parseInt(String(profile.id || "").slice(-4), 36);
-    const gi = (Number.isFinite(rawIndex) ? rawIndex : 0) % PROFILE_WEBGL_PRESETS.length;
-    const preset = PROFILE_WEBGL_PRESETS[gi] || PROFILE_WEBGL_PRESETS[0];
+    const gi = (Number.isFinite(rawIndex) ? rawIndex : 0) % pool.length;
+    const preset = pool[gi] || pool[0];
     cfg._gpuVendor = preset.vendor;
     cfg._gpuRenderer = preset.renderer;
   }

@@ -5,6 +5,44 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Profile Manager — Privacy Shield</title>
   <link rel="stylesheet" href="profiles.css" />
+  <style>
+    /* Mobile-profile lockdown: hide desktop-only options when OS is mobile so
+       you can't accidentally pick "iPhone with NVIDIA GPU + 32 GB RAM" which
+       fingerprinting libraries instantly flag as fake. */
+    #mobileLockBanner {
+      display: none;
+      background: linear-gradient(90deg, #1e3a5f, #1a2840);
+      color: #cdebff;
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin: 0 0 12px;
+      font-size: 12.5px;
+      font-weight: 600;
+      border: 1px solid #2a4a7a;
+    }
+    body.mobile-profile #mobileLockBanner { display: block; }
+    body.mobile-profile .pm-section[data-desktop-only],
+    body.mobile-profile [data-desktop-only] { display: none !important; }
+    body:not(.mobile-profile) [data-mobile-only] { display: none !important; }
+    body.mobile-profile #fp-windowMode option[value="incognito"] { display: none; }
+    body.mobile-profile #fp-browserApp option[value="brave"],
+    body.mobile-profile #fp-browserApp option[value="privacy"] { display: none; }
+    body.mobile-profile #fp-cpuCoresValue option[value="10"],
+    body.mobile-profile #fp-cpuCoresValue option[value="12"],
+    body.mobile-profile #fp-cpuCoresValue option[value="16"],
+    body.mobile-profile #fp-cpuCoresValue option[value="24"],
+    body.mobile-profile #fp-cpuCoresValue option[value="32"],
+    body.mobile-profile #fp-cpuCoresValue option[value="64"] { display: none; }
+    body.mobile-profile #fp-ramValue option[value="1"],
+    body.mobile-profile #fp-ramValue option[value="16"],
+    body.mobile-profile #fp-ramValue option[value="32"],
+    body.mobile-profile #fp-ramValue option[value="64"],
+    body.mobile-profile #fp-ramValue option[value="128"] { display: none; }
+    body.mobile-profile #screenPresetSel option { display: none; }
+    body.mobile-profile #screenPresetSel option[data-mobile-only],
+    body.mobile-profile #screenPresetSel option[value=""] { display: block; }
+    body.mobile-profile #fp-webglVendor option:not([data-mobile-only]) { display: none; }
+  </style>
 </head>
 <body>
 <div class="pm-root">
@@ -41,6 +79,13 @@
         <option value="android">Android</option>
         <option value="ios">iOS</option>
       </select>
+    </div>
+
+    <div class="pm-select-all-row">
+      <label class="pm-select-all-label">
+        <input type="checkbox" id="selectAllCheck" />
+        <span id="selectAllText">Select all</span>
+      </label>
     </div>
 
     <div class="pm-bulk-bar" id="bulkBar" hidden>
@@ -134,6 +179,8 @@
 
       <!-- ========= FINGERPRINT TAB ========= -->
       <div class="pm-tab-panel active" id="tab-fingerprint">
+
+        <div id="mobileLockBanner">📱 Mobile profile — desktop-only options hidden. CPU/RAM/GPU/screen locked to mobile-realistic values so the identity stays consistent.</div>
 
         <div class="pm-section">
           <div class="pm-section-title-row">
@@ -449,6 +496,14 @@
                 <option value="1280,720">1280×720</option>
                 <option value="1680,1050">1680×1050</option>
                 <option value="2560,1600">2560×1600</option>
+                <option value="390,844" data-mobile-only>390×844 (iPhone 14/15)</option>
+                <option value="393,852" data-mobile-only>393×852 (iPhone 15 Pro)</option>
+                <option value="375,667" data-mobile-only>375×667 (iPhone SE)</option>
+                <option value="412,915" data-mobile-only>412×915 (Pixel 8)</option>
+                <option value="412,919" data-mobile-only>412×919 (OnePlus)</option>
+                <option value="384,854" data-mobile-only>384×854 (Galaxy S23)</option>
+                <option value="360,800" data-mobile-only>360×800 (Galaxy A54)</option>
+                <option value="393,873" data-mobile-only>393×873 (Xiaomi 13)</option>
               </select>
             </div>
             <div class="pm-row">
@@ -523,7 +578,7 @@
           </div>
         </div>
 
-        <div class="pm-section">
+        <div class="pm-section" data-desktop-only>
           <div class="pm-section-title">Ports</div>
           <div class="pm-row">
             <label class="pm-label">Mode</label>
@@ -580,6 +635,34 @@
               <option value="true">Yes (neuter storage APIs)</option>
             </select>
           </div>
+          <div class="pm-row">
+            <label class="pm-label">TLS fingerprint spoof</label>
+            <select id="fp-tlsSpoof" class="pm-sel">
+              <option value="false">Off (recommended — works with all proxies)</option>
+              <option value="true">On (experimental — may break authenticated proxies)</option>
+            </select>
+          </div>
+          <div class="pm-hint" style="margin-top:4px;">Off: Chromium's native TLS handshake (works through any proxy). On: per-profile JA3 via local MITM bridge — gives a unique TLS fingerprint per profile, but cycletls's HTTPS-through-authenticated-proxy support is unreliable and may render pages as empty <code>""</code>. Only enable for profiles using direct/VPN or unauthenticated proxies.</div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Stealth &amp; Bot Detection</div>
+          <div class="pm-row">
+            <label class="pm-label">Spoofing level</label>
+            <select id="fp-spoofingLevel" class="pm-sel">
+              <option value="full">Full (default — unique canvas/WebGL/audio per profile)</option>
+              <option value="stealth">Stealth (minimal — native Chromium hardware signature)</option>
+            </select>
+          </div>
+          <div class="pm-hint" style="margin-top:4px;">
+            <b>Full</b> gives every profile its own stable, unique hardware fingerprint — best for farming many accounts that must look like different devices.
+            <b>Stealth</b> turns off the canvas/WebGL/audio/font/screen overrides and lets the real Chromium values through, keeping only UA, timezone, language, geo and the WebRTC-leak guard (which stay matched to your proxy). Use Stealth for sites with aggressive bot detection (Google reCAPTCHA, Fiverr / PerimeterX, Cloudflare Turnstile) where the JS-injected spoof is itself what gets flagged. Trade-off: Stealth profiles on the same PC share one hardware signature, so don't use it to farm many accounts on the <i>same</i> site.
+          </div>
+          <div class="pm-row" style="margin-top:8px;">
+            <label class="pm-label">Skip-spoof on sites</label>
+            <input type="text" id="fp-spoofSkipHosts" class="pm-input" placeholder="e.g. fiverr.com, google.com, accounts.google.com" />
+          </div>
+          <div class="pm-hint" style="margin-top:4px;">Comma-separated hostnames. On these sites only, this profile behaves as if <b>Stealth</b> is on (native hardware signature) while staying Full everywhere else. Subdomains are matched automatically (<code>fiverr.com</code> also covers <code>www.fiverr.com</code>). Leave blank to spoof everywhere.</div>
         </div>
 
         <div class="pm-section">
@@ -659,6 +742,10 @@
               <input type="password" id="px-password" class="pm-input" placeholder="from your proxy provider" autocomplete="off" />
             </div>
             <div class="pm-hint" style="padding:0 0 8px 4px">Most bought proxies require username and password — leave blank only for public/free proxies.</div>
+            <div class="pm-hint" style="padding:0 8px 8px 4px;background:rgba(56,189,248,.08);border-left:3px solid var(--accent, #3b82f6);border-radius:4px;margin:0 0 10px 0;line-height:1.5">
+              <strong>Reuse one proxy across many profiles:</strong> put <code>&#123;&#123;profile&#125;&#125;</code> in the username where the session ID goes. Privacy Shield replaces it with this profile's slug at launch, so each profile gets its own sticky IP from the same SOAX/Bright Data/etc. account.<br>
+              <span style="opacity:.85">Example:</span> <code style="font-size:11px">package-345436-country-us-region-texas-city-dallas-sessionid-&#123;&#123;profile&#125;&#125;-sessionlength-1800</code>
+            </div>
             <div class="pm-row">
               <label class="pm-label">Rotation URL</label>
               <input type="text" id="px-rotationUrl" class="pm-input" placeholder="https://… (for mobile proxies)" />

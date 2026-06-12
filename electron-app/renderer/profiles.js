@@ -147,22 +147,94 @@ async function init() {
   }, 10000);
 }
 
+// Mobile GPU presets — these are what real iPhones/Pixels/Samsungs actually
+// report. We inject them as <option data-mobile-only> so the CSS rules can
+// show only the matching set based on body.mobile-profile.
+const MOBILE_WEBGL_PRESETS = [
+  { vendor: "Apple Inc.", renderer: "Apple GPU", platform: "ios" },
+  { vendor: "Qualcomm", renderer: "Adreno (TM) 740", platform: "android" },
+  { vendor: "Qualcomm", renderer: "Adreno (TM) 750", platform: "android" },
+  { vendor: "Qualcomm", renderer: "Adreno (TM) 619", platform: "android" },
+  { vendor: "ARM", renderer: "Mali-G710", platform: "android" },
+  { vendor: "ARM", renderer: "Mali-G68", platform: "android" },
+  { vendor: "ARM", renderer: "Immortalis-G715", platform: "android" }
+];
+
 function buildWebglVendorSelect() {
   const sel = $("fp-webglVendor");
   if (!sel) return;
   sel.innerHTML = "";
-  const vendors = [...new Set(webglPresets.map((p) => p.vendor))];
-  for (const v of vendors) {
+  const seen = new Set();
+  // Desktop vendors first (hidden when mobile via CSS), then mobile vendors
+  // tagged data-mobile-only so they only show on mobile profiles.
+  for (const preset of webglPresets) {
+    if (seen.has(preset.vendor)) continue;
+    seen.add(preset.vendor);
     const o = document.createElement("option");
-    o.value = v;
-    o.textContent = v;
+    o.value = preset.vendor;
+    o.textContent = preset.vendor;
+    sel.appendChild(o);
+  }
+  for (const preset of MOBILE_WEBGL_PRESETS) {
+    const key = "mobile:" + preset.vendor;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const o = document.createElement("option");
+    o.value = preset.vendor;
+    o.textContent = preset.vendor + " (mobile)";
+    o.setAttribute("data-mobile-only", "");
     sel.appendChild(o);
   }
   sel.addEventListener("change", () => {
     const vendor = sel.value;
-    const match = webglPresets.find((p) => p.vendor === vendor);
-    if (match) $("fp-webglRenderer").value = match.renderer;
+    const isMobile = document.body.classList.contains("mobile-profile");
+    const pool = isMobile
+      ? MOBILE_WEBGL_PRESETS.filter((p) => p.vendor === vendor)
+      : webglPresets.filter((p) => p.vendor === vendor);
+    if (pool.length) $("fp-webglRenderer").value = pool[0].renderer;
   });
+}
+
+// Apply or remove the mobile-profile UI lockdown. Toggles a body class so CSS
+// can hide desktop-only options/sections, and snaps any out-of-range value
+// (e.g. CPU=16 cores) back into the mobile-realistic range so when the user
+// saves, the backend doesn't get a "iPhone with 16 cores" mismatch.
+function applyMobileUIMode(os) {
+  const isMobile = os === "android" || os === "ios";
+  document.body.classList.toggle("mobile-profile", isMobile);
+  document.body.classList.toggle("os-android", os === "android");
+  document.body.classList.toggle("os-ios", os === "ios");
+  if (!isMobile) return;
+
+  // Snap dropdowns into mobile-valid ranges
+  const cpu = $("fp-cpuCoresValue");
+  if (cpu && Number(cpu.value) > 8) cpu.value = "8";
+  const ram = $("fp-ramValue");
+  if (ram && (Number(ram.value) > 12 || Number(ram.value) < 3)) ram.value = "8";
+  const windowMode = $("fp-windowMode");
+  if (windowMode && windowMode.value === "incognito") windowMode.value = "normal";
+  const browserApp = $("fp-browserApp");
+  if (browserApp && (browserApp.value === "brave" || browserApp.value === "privacy")) {
+    browserApp.value = os === "ios" ? "safari" : "chrome";
+  }
+  // If WebGL vendor is a desktop GPU, switch to a mobile one matching the OS
+  const vendorSel = $("fp-webglVendor");
+  if (vendorSel) {
+    const mobilePool = MOBILE_WEBGL_PRESETS.filter((p) => p.platform === os);
+    const currentIsDesktop = !MOBILE_WEBGL_PRESETS.some((p) => p.vendor === vendorSel.value);
+    if (currentIsDesktop && mobilePool.length) {
+      vendorSel.value = mobilePool[0].vendor;
+      $("fp-webglRenderer").value = mobilePool[0].renderer;
+    }
+  }
+  // If screen looks desktop-sized, snap to a sensible mobile preset
+  const w = Number($("fp-screenWidth")?.value || 0);
+  const h = Number($("fp-screenHeight")?.value || 0);
+  if (w >= 1000 || h >= 1200) {
+    const preset = os === "ios" ? { w: 390, h: 844 } : { w: 412, h: 915 };
+    setVal("fp-screenWidth", preset.w);
+    setVal("fp-screenHeight", preset.h);
+  }
 }
 
 // =========================================================
@@ -214,6 +286,7 @@ async function saveCurrentProfile() {
     profiles.push(r.profile);
     creatingNew = false;
     selectedId = r.profile.id;
+    populateForm(r.profile);
     const saveBtn = $("btnSave");
     if (saveBtn) saveBtn.textContent = "Save";
     renderList();
@@ -225,6 +298,8 @@ async function saveCurrentProfile() {
   const r = await msg("PROFILE_UPDATE", { id: selectedId, data });
   if (!r.ok) { toast("Save failed: " + (r.error || "unknown error")); return; }
   await loadProfiles();
+  const savedProfile = profiles.find((p) => p.id === selectedId);
+  if (savedProfile) populateForm(savedProfile);
   renderList();
   toast("Profile saved");
 }
@@ -374,6 +449,7 @@ function populateForm(p) {
   $("fp-name").value = p.name || "";
   $("fp-status").value = p.status || "new";
   $("fp-os").value = p.os || "windows";
+  applyMobileUIMode(p.os || "windows");
   setVal("fp-browserApp",  p.browserApp  || "chrome");
   setVal("fp-windowMode",  p.windowMode  || "normal");
   $("fp-tags").value = (p.tags || []).join(", ");
@@ -388,6 +464,7 @@ function populateForm(p) {
     organization: fp.organization || fp.ispOrg || "",
     ip: fp.ip || "",
     domain: fp.domain || "",
+    fingerprintSeed: fp.fingerprintSeed || "",
     hardwareId: fp.hardwareId || "",
     fontProfile: fp.fontProfile || p.os || "windows",
     installedFonts: Array.isArray(fp.installedFonts) ? fp.installedFonts : [],
@@ -456,6 +533,9 @@ function populateForm(p) {
   setVal("fp-webrtcIP", fp.webrtcIP || "");
   setVal("fp-blockCookies", String(Boolean(fp.blockCookies)));
   setVal("fp-blockStorage", String(Boolean(fp.blockStorage)));
+  setVal("fp-tlsSpoof", String(Boolean(fp.tlsSpoof)));
+  setVal("fp-spoofingLevel", fp.spoofingLevel || "full");
+  setVal("fp-spoofSkipHosts", (fp.spoofSkipHosts || []).join(", "));
 
   // Browser + ISP
   const bv = fp.browserVersion || "148";
@@ -559,6 +639,9 @@ function collectForm() {
       webrtcIP: $("fp-webrtcIP").value.trim(),
       blockCookies: $("fp-blockCookies").value === "true",
       blockStorage: $("fp-blockStorage").value === "true",
+      tlsSpoof: $("fp-tlsSpoof")?.value === "true",
+      spoofingLevel: $("fp-spoofingLevel")?.value || "full",
+      spoofSkipHosts: ($("fp-spoofSkipHosts")?.value || "").split(/[\s,]+/).map((s) => s.trim().toLowerCase()).filter(Boolean),
       browserVersion: (() => {
         const sel = $("fp-browserVersion")?.value || "148";
         if (sel === "custom") return ($("fp-browserVersionCustom")?.value.trim() || "148");
@@ -575,6 +658,7 @@ function collectForm() {
       organization: currentFingerprintMeta.organization || ($("fp-ispOrg")?.value || "").trim(),
       ip: currentFingerprintMeta.ip || "",
       domain: currentFingerprintMeta.domain || "",
+      fingerprintSeed: currentFingerprintMeta.fingerprintSeed || "",
       hardwareId: currentFingerprintMeta.hardwareId || "",
       fontProfile: currentFingerprintMeta.fontProfile || $("fp-os")?.value || "windows",
       installedFonts: Array.isArray(currentFingerprintMeta.installedFonts) ? currentFingerprintMeta.installedFonts : [],
@@ -628,9 +712,15 @@ async function auditCurrentProfile() {
     box.textContent = "Form error: " + (err.message || err);
     return;
   }
+  const storedProfile = selectedId ? profiles.find((p) => p.id === selectedId) : null;
   const candidate = {
+    ...(storedProfile || {}),
     id: selectedId || "__new__",
-    ...data
+    ...data,
+    fingerprint: {
+      ...(storedProfile?.fingerprint || {}),
+      ...(data.fingerprint || {})
+    }
   };
   box.className = "pm-audit-result";
   box.textContent = "Running audit...";
@@ -650,7 +740,6 @@ function renderProfileAudit(audit) {
   box.className = "pm-audit-result " + level;
   const rows = [];
   rows.push(`<span class="pm-audit-line ${audit.ok ? "pass" : "warn"}">Score: ${Number(audit.score) || 0}/100. Runtime: ${escHtml(audit.profile?.actualRuntime || "Electron Chromium")}.</span>`);
-  rows.push(`<span class="pm-audit-line warn">Engine note: Firefox/Safari are identity templates only; profile windows run on bundled Chromium.</span>`);
   if (audit.summary) {
     rows.push(`<span class="pm-audit-line pass">Storage: ${escHtml(audit.summary.storage || audit.profile?.sessionPartition || "profile partition")}.</span>`);
     rows.push(`<span class="pm-audit-line pass">Screen: ${escHtml(audit.summary.screen || "missing")}.</span>`);
@@ -772,6 +861,29 @@ function updateBrowserVersionOptions() {
       <option value="custom">Custom…</option>`;
     if (!verSel.value) verSel.value = "17.5";
     if (hint) hint.textContent = "Sets the Safari version in the auto-generated User-Agent string.";
+  } else if (br === "brave") {
+    verSel.innerHTML = `
+      <option value="120">Brave 1.62 / Chromium 120</option>
+      <option value="122">Brave 1.64 / Chromium 122</option>
+      <option value="124">Brave 1.66 / Chromium 124</option>
+      <option value="128">Brave 1.70 / Chromium 128</option>
+      <option value="131">Brave 1.73 / Chromium 131</option>
+      <option value="136">Brave 1.78 / Chromium 136</option>
+      <option value="148">Brave 1.90 / Chromium 148 (latest)</option>
+      <option value="custom">Custom…</option>`;
+    if (!verSel.value) verSel.value = "148";
+    if (hint) hint.textContent = "Brave uses Chromium's UA (intentional, for anti-fingerprinting). Sites detect Brave via navigator.brave.isBrave(), which Privacy Shield enables automatically for Brave profiles.";
+  } else if (br === "edge") {
+    verSel.innerHTML = `
+      <option value="120">120</option>
+      <option value="122">122</option>
+      <option value="124">124</option>
+      <option value="131">131</option>
+      <option value="136">136</option>
+      <option value="148">148 (latest)</option>
+      <option value="custom">Custom…</option>`;
+    if (!verSel.value) verSel.value = "148";
+    if (hint) hint.textContent = "Edge appends Edg/<version> to the UA so sites can detect it.";
   } else {
     verSel.innerHTML = `
       <option value="120">120</option>
@@ -858,6 +970,39 @@ function updateBulkBar() {
   const count = $("selectedCount");
   bar.hidden = selected.size === 0;
   count.textContent = `${selected.size} selected`;
+  syncSelectAllCheckbox();
+}
+
+// Visible-profile ids = what's currently rendered in the sidebar (after filters)
+function visibleProfileIds() {
+  const list = $("profileList");
+  if (!list) return [];
+  return Array.from(list.querySelectorAll(".pm-card-check")).map((cb) => cb.dataset.id).filter(Boolean);
+}
+
+function syncSelectAllCheckbox() {
+  const master = $("selectAllCheck");
+  const label = $("selectAllText");
+  if (!master) return;
+  const visible = visibleProfileIds();
+  if (!visible.length) {
+    master.checked = false;
+    master.indeterminate = false;
+    if (label) label.textContent = "Select all";
+    return;
+  }
+  const selectedVisible = visible.filter((id) => selected.has(id));
+  if (selectedVisible.length === 0) {
+    master.checked = false;
+    master.indeterminate = false;
+  } else if (selectedVisible.length === visible.length) {
+    master.checked = true;
+    master.indeterminate = false;
+  } else {
+    master.checked = false;
+    master.indeterminate = true;
+  }
+  if (label) label.textContent = `Select all (${visible.length})`;
 }
 
 // =========================================================
@@ -981,6 +1126,10 @@ async function testProxy() {
     return;
   }
   const n = geo.network;
+  const stableProxyType = n.proxyType && n.proxyType !== "unknown"
+    ? n.proxyType
+    : (px.proxyType && px.proxyType !== "unknown" ? px.proxyType : "unknown");
+  n.proxyType = stableProxyType;
   res.textContent = `Connected — IP: ${r.ip} · ${n.city ? n.city + ", " : ""}${n.country || ""}`;
 
   // Show datacenter warning
@@ -1198,6 +1347,17 @@ function bindSidebarEvents() {
 
   $("bulkClear").addEventListener("click", () => { selected.clear(); renderList(); });
 
+  // Select All master checkbox — toggles all currently-visible profiles
+  $("selectAllCheck")?.addEventListener("change", (e) => {
+    const visible = visibleProfileIds();
+    if (e.target.checked) {
+      for (const id of visible) selected.add(id);
+    } else {
+      for (const id of visible) selected.delete(id);
+    }
+    renderList();
+  });
+
   $("btnExportAll").addEventListener("click", exportAll);
   $("btnImport").addEventListener("click", () => $("importFile").click());
   $("importFile").addEventListener("change", (e) => { if (e.target.files[0]) importProfiles(e.target.files[0]); e.target.value = ""; });
@@ -1263,6 +1423,29 @@ function bindFormEvents() {
     const el = $(id);
     if (el) el.addEventListener("change", () => { updateConditionalRows(); updateUAPreview(); updateBrowserVersionOptions(); });
   }
+
+  // When the OS changes, force a coherent screen resolution. iPhone/Android
+  // profiles get real device pixel sizes; desktop OSes get a sensible default.
+  // Without this you can end up with "iPhone 1920x1080" which is impossible
+  // and every fingerprinting library flags it as a bot.
+  $("fp-os")?.addEventListener("change", () => {
+    const os = $("fp-os")?.value;
+    const presets = {
+      ios:     { w: 390,  h: 844,  label: "iPhone 15" },         // also: 414x896, 428x926, 393x852
+      android: { w: 412,  h: 915,  label: "Pixel 8" },           // also: 360x800, 393x873, 412x892
+      windows: { w: 1920, h: 1080, label: "Windows 1080p" },
+      macos:   { w: 1440, h: 900,  label: "MacBook 13\"" },
+      linux:   { w: 1920, h: 1080, label: "Linux desktop" }
+    };
+    const preset = presets[os];
+    if (!preset) return;
+    setVal("fp-screen", "manual");
+    setVal("fp-screenWidth", preset.w);
+    setVal("fp-screenHeight", preset.h);
+    if (typeof toast === "function") toast(`Screen set to ${preset.w}×${preset.h} (${preset.label})`);
+    applyMobileUIMode(os);
+    updateConditionalRows();
+  });
   $("px-networkMode")?.addEventListener("change", () => {
     const mode = $("px-networkMode")?.value || "proxy";
     if (mode === "proxy") setVal("px-enabled", "true");
@@ -1721,6 +1904,9 @@ function applyGeneratedIdentityToForm(data) {
   setVal("fp-webrtcIP", fp.webrtcIP || "");
   setVal("fp-blockCookies", String(Boolean(fp.blockCookies)));
   setVal("fp-blockStorage", String(Boolean(fp.blockStorage)));
+  setVal("fp-tlsSpoof", String(Boolean(fp.tlsSpoof)));
+  setVal("fp-spoofingLevel", fp.spoofingLevel || "full");
+  setVal("fp-spoofSkipHosts", (fp.spoofSkipHosts || []).join(", "));
   setVal("fp-city", fp.city || "");
   setVal("fp-state", fp.state || "");
   setVal("fp-ispName", fp.ispName || "");

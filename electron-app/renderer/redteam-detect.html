@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy Shield — Red-Team Detector</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; background:#0d1117; color:#c9d1d9; padding:20px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:#8b949e; margin-bottom:16px; }
+  .score { font-size:42px; font-weight:700; }
+  .score small { font-size:14px; color:#8b949e; font-weight:400; }
+  table { border-collapse:collapse; width:100%; margin-top:14px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid #21262d; vertical-align:top; }
+  th { color:#8b949e; font-weight:600; }
+  td.v { font-family:ui-monospace,Consolas,monospace; font-size:12px; color:#a5d6ff; word-break:break-all; }
+  .pass { color:#3fb950; font-weight:600; }
+  .fail { color:#f85149; font-weight:600; }
+  .warn { color:#d29922; font-weight:600; }
+  .hashbox { margin-top:16px; padding:12px; background:#161b22; border:1px solid #21262d; border-radius:8px; }
+  .hashbox code { color:#ff7b72; font-size:14px; }
+  .note { color:#8b949e; font-size:12px; margin-top:6px; }
+  button { background:#238636; color:#fff; border:0; padding:8px 14px; border-radius:6px; cursor:pointer; font-size:13px; }
+</style>
+</head>
+<body>
+  <h1>🕵️ Red-Team Detector</h1>
+  <div class="sub">Plays the role of Fiverr / Google / Instagram bot-detection. Run this <b>inside a profile window</b>. Lower score = easier to detect/link.</div>
+  <div><span class="score" id="score">…</span></div>
+  <div class="hashbox">
+    Linkability hash (canvas+WebGL+audio+fonts+screen):<br>
+    <code id="linkhash">computing…</code>
+    <div class="note">Open this page in two different profiles. If the hash is <b>identical</b>, the two profiles are linkable as the same device. Different hashes = good isolation.</div>
+  </div>
+  <table id="results"><thead><tr><th>Vector</th><th>Result</th><th>Observed</th></tr></thead><tbody></tbody></table>
+
+<script>
+"use strict";
+(function () {
+  const rows = [];
+  let earned = 0, total = 0;
+  function check(name, weight, ok, observed) {
+    total += weight;
+    if (ok === true) earned += weight;
+    else if (ok === "warn") earned += weight / 2;
+    rows.push({ name, ok, observed: String(observed) });
+  }
+
+  // ── 1. Timezone coherence (the strongest single tell) ──────────────────────
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const now = new Date();
+    const jan = new Date(now.getFullYear(), 0, 15);
+    const jul = new Date(now.getFullYear(), 6, 15);
+    function truth(tzName, d) {
+      const p = new Intl.DateTimeFormat("en-US",{timeZone:tzName,hourCycle:"h23",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"}).formatToParts(d).reduce((a,x)=>(a[x.type]=x.value,a),{});
+      const asUTC = Date.UTC(+p.year,p.month-1,+p.day,+p.hour===24?0:+p.hour,+p.minute,+p.second);
+      return Math.round((d.getTime()-asUTC)/60000);
+    }
+    const okNow = now.getTimezoneOffset() === truth(tz, now);
+    const okJan = jan.getTimezoneOffset() === truth(tz, jan);
+    const okJul = jul.getTimezoneOffset() === truth(tz, jul);
+    const dstOk = /GMT[+-]\d{4}/.test(now.toString());
+    check("Timezone offset vs IANA zone (now)", 18, okNow, `${tz}, getTimezoneOffset=${now.getTimezoneOffset()}, expected=${truth(tz,now)}`);
+    check("Timezone offset across DST (Jan+Jul)", 10, okJan && okJul, `Jan ${okJan?"ok":"BAD"}, Jul ${okJul?"ok":"BAD"}`);
+    check("Date.toString carries GMT offset", 4, dstOk, now.toString());
+  } catch (e) { check("Timezone", 32, false, e.message); }
+
+  // ── 2. UA ↔ platform ↔ touch ↔ screen coherence ────────────────────────────
+  try {
+    const ua = navigator.userAgent;
+    const plat = navigator.platform;
+    const isMobileUA = /Android|iPhone|iPad|Mobile/.test(ua);
+    const touch = navigator.maxTouchPoints;
+    const w = screen.width, h = screen.height, dpr = window.devicePixelRatio;
+    // mobile UA must have touch + small screen; desktop UA must have 0 touch
+    const touchOk = isMobileUA ? touch > 0 : touch === 0;
+    const screenOk = isMobileUA ? (Math.min(w, h) <= 600) : (Math.min(w, h) >= 600);
+    const platOk = /iPhone|iPad/.test(ua) ? plat === "iPhone" || plat === "iPad"
+      : /Android/.test(ua) ? /Linux|arm/i.test(plat)
+      : /Windows/.test(ua) ? plat === "Win32"
+      : /Mac OS X/.test(ua) ? plat === "MacIntel"
+      : true;
+    check("UA ↔ touch points coherence", 10, touchOk, `mobileUA=${isMobileUA}, maxTouchPoints=${touch}`);
+    check("UA ↔ screen size coherence", 8, screenOk, `${w}x${h} dpr=${dpr}`);
+    check("UA ↔ navigator.platform coherence", 8, platOk, `platform=${plat}`);
+  } catch (e) { check("UA coherence", 26, false, e.message); }
+
+  // ── 3. Automation markers ──────────────────────────────────────────────────
+  try {
+    const wd = navigator.webdriver;
+    const cdc = Object.keys(window).some(k => /cdc_|\$cdc|__webdriver|__selenium|__nightmare|domAutomation/.test(k));
+    check("navigator.webdriver false", 6, wd === false || wd === undefined, "webdriver=" + wd);
+    check("No CDP/Selenium globals", 5, !cdc, cdc ? "automation global present" : "clean");
+  } catch (e) { check("Automation", 11, false, e.message); }
+
+  // ── 4. WebGL renderer ↔ platform coherence ─────────────────────────────────
+  try {
+    const gl = document.createElement("canvas").getContext("webgl");
+    let vendor = "", renderer = "";
+    if (gl) {
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      vendor = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+      renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    }
+    const ua = navigator.userAgent;
+    const r = String(renderer || "");
+    let glOk = true, why = r || "(none)";
+    if (/Windows/.test(ua) && r && !/Direct3D|D3D11|ANGLE/.test(r)) { glOk = false; why = "Windows UA but non-D3D renderer: " + r; }
+    if (/Mac OS X/.test(ua) && /Direct3D|D3D11/.test(r)) { glOk = false; why = "macOS UA but Direct3D renderer: " + r; }
+    if (/Linux(?!.*Android)/.test(ua) && /Direct3D|D3D11/.test(r)) { glOk = false; why = "Linux UA but Direct3D renderer: " + r; }
+    if (/iPhone|iPad/.test(ua) && r && !/Apple|WebKit/i.test(r)) { glOk = "warn"; why = "iOS UA, renderer: " + r; }
+    check("WebGL renderer ↔ OS coherence", 10, glOk, why);
+  } catch (e) { check("WebGL coherence", 10, false, e.message); }
+
+  // ── 5. toString cloak — spoofed natives must look native ───────────────────
+  try {
+    const targets = [
+      ["getTimezoneOffset", Date.prototype.getTimezoneOffset],
+      ["Intl.resolvedOptions", Intl.DateTimeFormat.prototype.resolvedOptions],
+      ["navigator.userAgent getter", Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent") && Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent").get]
+    ].filter(t => t[1]);
+    let leaks = [];
+    for (const [n, fn] of targets) {
+      const s = Function.prototype.toString.call(fn);
+      if (!/\[native code\]/.test(s)) leaks.push(n);
+    }
+    check("Spoofed fns report [native code]", 12, leaks.length === 0, leaks.length ? "LEAKS: " + leaks.join(", ") : "all native-looking");
+  } catch (e) { check("toString cloak", 12, false, e.message); }
+
+  // ── 6. Worker scope consistency (CDP should inject all frames; workers?) ────
+  try {
+    const code = "self.onmessage=function(){postMessage({ua:navigator.userAgent,hc:navigator.hardwareConcurrency,tz:Intl.DateTimeFormat().resolvedOptions().timeZone});}";
+    const w = new Worker(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
+    w.onmessage = function (ev) {
+      const d = ev.data;
+      const uaOk = d.ua === navigator.userAgent;
+      const tzOk = d.tz === Intl.DateTimeFormat().resolvedOptions().timeZone;
+      addLateRow("Worker UA matches main thread", uaOk ? "pass" : "fail", d.ua.slice(0, 50) + "…");
+      addLateRow("Worker timezone matches main thread", tzOk ? "pass" : "fail", d.tz);
+      w.terminate();
+    };
+    w.postMessage(1);
+  } catch (e) { /* workers may be blocked */ }
+
+  // ── 7. WebRTC IP leak ──────────────────────────────────────────────────────
+  try {
+    if (window.RTCPeerConnection) {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      pc.createDataChannel("x");
+      let leaked = [];
+      pc.onicecandidate = function (e) {
+        if (e && e.candidate) {
+          const m = e.candidate.candidate.match(/(\d{1,3}\.){3}\d{1,3}/);
+          if (m && !/^(0\.|127\.)/.test(m[0])) leaked.push(m[0]);
+        } else {
+          addLateRow("WebRTC does not leak a public IP", leaked.filter(ip=>!/^(10\.|192\.168|172\.)/.test(ip)).length ? "fail" : "pass", leaked.join(", ") || "no candidates");
+          try { pc.close(); } catch (_) {}
+        }
+      };
+      pc.createOffer().then(o => pc.setLocalDescription(o)).catch(()=>{});
+    }
+  } catch (e) { /* webrtc off */ }
+
+  // ── Linkability hash ───────────────────────────────────────────────────────
+  function fnv(str) { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16).padStart(8, "0"); }
+  function canvasFp() {
+    try { const c = document.createElement("canvas"); c.width = 240; c.height = 60; const x = c.getContext("2d"); x.textBaseline = "top"; x.font = "16px Arial"; x.fillStyle = "#f60"; x.fillRect(10, 10, 100, 30); x.fillStyle = "#069"; x.fillText("PrivacyShield🛡 red-team", 12, 12); return c.toDataURL(); } catch (e) { return "err"; }
+  }
+  function webglFp() {
+    try { const gl = document.createElement("canvas").getContext("webgl"); const ext = gl.getExtension("WEBGL_debug_renderer_info"); return [gl.getParameter(ext ? ext.UNMASKED_VENDOR_WEBGL : gl.VENDOR), gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER), (gl.getSupportedExtensions() || []).join(",")].join("|"); } catch (e) { return "err"; }
+  }
+  function audioFp() {
+    try { const C = window.OfflineAudioContext || window.webkitOfflineAudioContext; const ctx = new C(1, 4096, 44100); const o = ctx.createOscillator(); o.type = "triangle"; o.frequency.value = 10000; const cp = ctx.createDynamicsCompressor(); o.connect(cp); cp.connect(ctx.destination); o.start(0); let sum = 0; return new Promise(res => { ctx.oncomplete = ev => { const d = ev.renderedBuffer.getChannelData(0); for (let i = 0; i < d.length; i += 100) sum += Math.abs(d[i]); res(sum.toString()); }; ctx.startRendering(); }); } catch (e) { return Promise.resolve("err"); }
+  }
+  Promise.resolve(audioFp()).then(audio => {
+    const parts = [canvasFp(), webglFp(), audio, [screen.width, screen.height, screen.colorDepth, window.devicePixelRatio].join("x"), (navigator.languages || []).join(",")];
+    document.getElementById("linkhash").textContent = fnv(parts.join("##"));
+  });
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  function cls(ok) { return ok === true ? "pass" : ok === "warn" ? "warn" : "fail"; }
+  function label(ok) { return ok === true ? "PASS" : ok === "warn" ? "WARN" : "FAIL"; }
+  const tbody = document.querySelector("#results tbody");
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.name}</td><td class="${cls(r.ok)}">${label(r.ok)}</td><td class="v">${r.observed.replace(/</g,"&lt;")}</td>`;
+    tbody.appendChild(tr);
+  }
+  function addLateRow(name, kind, observed) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${name}</td><td class="${kind}">${kind.toUpperCase()}</td><td class="v">${String(observed).replace(/</g,"&lt;")}</td>`;
+    tbody.appendChild(tr);
+  }
+  const pct = Math.round((earned / total) * 100);
+  const el = document.getElementById("score");
+  el.innerHTML = pct + "<small>/100 stealth</small>";
+  el.style.color = pct >= 85 ? "#3fb950" : pct >= 65 ? "#d29922" : "#f85149";
+})();
+</script>
+</body>
+</html>
