@@ -1312,14 +1312,16 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   }
 
   // ── VPN location lock ───────────────────────────────────────────────────────
-  // For VPN-mode profiles the OS network (and therefore Electron's net.request)
-  // is already routed through the VPN, so the live capture reflects the VPN exit
-  // IP. We lock each profile to the location it first launched on: if the VPN is
+  // Runs for BOTH "vpn" and "direct" profiles: in either case the browser uses
+  // the OS network (and so does Electron's net.request), so the live capture
+  // reflects the real exit IP — which is whatever system-wide VPN is active.
+  // (Skipped for "proxy" mode, where the exit is the proxy, not the system net.)
+  // We lock each profile to the location it first launched on: if the exit is
   // now in a different place we DO NOT launch — we hand the renderer the old vs
   // new location and let the user either switch the VPN back or accept the new
   // one. This both prevents an accidental location swap and guards against
   // launching with no/leaky network when the VPN is actually down.
-  if (networkMode === "vpn") {
+  if (networkMode === "vpn" || networkMode === "direct") {
     let current;
     try {
       current = await captureCurrentNetwork();
