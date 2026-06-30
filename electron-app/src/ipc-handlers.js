@@ -1,6 +1,6 @@
 "use strict";
 
-const { ipcMain, BrowserWindow, WebContentsView, net, nativeImage, dialog } = require("electron");
+const { ipcMain, BrowserWindow, WebContentsView, Menu, net, nativeImage, dialog, screen, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -8,6 +8,8 @@ const store = require("./profile-store");
 const sessionMgr = require("./session-manager");
 const authStore = require("./auth-store");
 const vpsProxy = require("./vps-proxy-manager");
+const proxyBridge = require("./local-proxy-bridge");
+const extensionManager = require("./extension-manager");
 
 // Write to BOTH OneDrive Desktop and userData. OneDrive Files-On-Demand
 // can silently swallow appendFileSync writes, so userData is the reliable
@@ -36,10 +38,50 @@ function logError(err) {
     try { fs.appendFileSync(t, line, "utf8"); } catch (_) {}
   }
 }
+function logInfo(msg) {
+  const line = new Date().toISOString() + " [info] " + String(msg) + "\n";
+  for (const t of getLogTargets()) {
+    try { fs.appendFileSync(t, line, "utf8"); } catch (_) {}
+  }
+}
+
+async function loadExtensionIntoProfile(profileId, selectedPath, options = {}) {
+  const prepared = options.archive
+    ? await extensionManager.installZip(selectedPath, profileId)
+    : extensionManager.resolveExtensionDirectory(selectedPath);
+  const extensionPath = prepared.directory;
+  const sess = sessionMgr.getSessionForProfile(profileId);
+  if (typeof sess.loadExtension !== "function") {
+    throw new Error("This Electron build does not support unpacked extensions");
+  }
+
+  const loaded = await sess.loadExtension(extensionPath, { allowFileAccess: true });
+  const profile = store.getProfiles().find((entry) => entry.id === profileId && !entry.deletedAt);
+  if (profile) {
+    const existing = Array.isArray(profile.extensions) ? profile.extensions : [];
+    const next = existing.filter((item) => item.path !== extensionPath && item.id !== loaded.id);
+    next.push({
+      id: loaded.id,
+      name: loaded.name || prepared.manifest?.name || path.basename(extensionPath),
+      path: extensionPath,
+      sourceArchive: prepared.sourceArchive || null,
+      loadedAt: Date.now()
+    });
+    store.updateProfile(profileId, { extensions: next });
+  }
+  logInfo(`extension loaded profile=${profileId} id=${loaded.id || ""} path=${extensionPath}`);
+  return {
+    id: loaded.id,
+    name: loaded.name || prepared.manifest?.name || path.basename(extensionPath),
+    path: extensionPath
+  };
+}
 
 // Preload scripts are loaded by Electron via Node.js fs (ASAR-aware) — __dirname works fine.
 const FINGERPRINT_PRELOAD = path.join(__dirname, "preload-fingerprint.js");
 const RENDERER_PRELOAD    = path.join(__dirname, "renderer-preload.js");
+
+const cdpStealth = require("./cdp-stealth");
 
 // HTML files load via the psapp:// custom protocol (registered in main.js).
 // file:// URLs to anything containing ".asar" in the path (including .asar.unpacked)
@@ -49,7 +91,9 @@ const RENDERER_PRELOAD    = path.join(__dirname, "renderer-preload.js");
 const BROWSER_START_URL = "psapp://app/renderer/browser-start.html";
 const TAB_STRIP_URL     = "psapp://app/renderer/tab-strip.html";
 
-const TAB_STRIP_HEIGHT = 78; // tabs row (38) + url row (40)
+const DESKTOP_CHROME_HEIGHT = 78; // tabs row (38) + url row (40)
+const MOBILE_CHROME_HEIGHT = 56;  // compact address bar only
+const MOBILE_BOTTOM_NAV_HEIGHT = 42; // phone-style bottom navigation bar
 
 function profileInitials(name) {
   const words = String(name || "Profile").trim().split(/\s+/).filter(Boolean);
@@ -67,17 +111,92 @@ function profileAccentColor(profile) {
   return palette[Math.abs(hash) % palette.length];
 }
 
+// SVG icons are silently ignored by the Windows taskbar — we have to hand it
+// raster PNG bytes via `nativeImage.toPNG()`. Without the explicit `resize`,
+// the SVG rasterizer falls back to native pixel size which on HiDPI screens
+// often comes out as a 1x1 dot, hence the "all green, no letter" symptom.
+function buildProfileSvg(initials, color, size) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 256 256">
+    <rect width="256" height="256" rx="56" fill="#0c0f14"/>
+    <rect x="18" y="18" width="220" height="220" rx="44" fill="${color}"/>
+    <text x="128" y="172" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="148" font-weight="800" fill="#ffffff">${initials}</text>
+  </svg>`;
+}
+
 function createProfileIcon(profile) {
   try {
     const initials = profileInitials(profile?.name);
     const color = profileAccentColor(profile);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-      <rect width="256" height="256" rx="56" fill="#0c0f14"/>
-      <rect x="18" y="18" width="220" height="220" rx="44" fill="${color}"/>
-      <path d="M64 81c0-13 11-24 24-24h80c13 0 24 11 24 24v94c0 13-11 24-24 24H88c-13 0-24-11-24-24V81z" fill="rgba(255,255,255,.16)"/>
-      <text x="128" y="148" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="76" font-weight="700" fill="#ffffff">${initials}</text>
+    const svg = buildProfileSvg(initials, color, 256);
+    const img = nativeImage.createFromDataURL("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg));
+    // Force a raster pass at a Windows-friendly size; `toPNG()` returns the
+    // encoded bytes so we can hand them back as a native PNG image.
+    try {
+      const png = img.resize({ width: 256, height: 256 }).toPNG();
+      if (png && png.length) return nativeImage.createFromBuffer(png);
+    } catch (_) {}
+    return img;
+  } catch (_) {
+    return undefined;
+  }
+}
+
+// Raw 16x16 BGRA buffer fallback: a filled circle in the profile's accent color.
+// This bypasses the SVG rasterizer entirely and is guaranteed to produce a
+// non-empty nativeImage on every platform. No text — that needs a font renderer.
+function createOverlayDiskFallback(profile) {
+  try {
+    const size = 16;
+    const hex = profileAccentColor(profile).replace("#", "");
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    const buf = Buffer.alloc(size * size * 4);
+    const cx = (size - 1) / 2;
+    const cy = (size - 1) / 2;
+    const radius = size / 2;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const dx = x - cx;
+        const dy = y - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const i = (y * size + x) * 4;
+        if (dist <= radius - 0.5) {
+          // BGRA on Windows, RGBA elsewhere — nativeImage.createFromBitmap expects BGRA
+          buf[i] = b;
+          buf[i + 1] = g;
+          buf[i + 2] = r;
+          buf[i + 3] = 255;
+        } else if (dist <= radius + 0.5) {
+          // anti-aliased edge
+          const a = Math.round(255 * (radius + 0.5 - dist));
+          buf[i] = b;
+          buf[i + 1] = g;
+          buf[i + 2] = r;
+          buf[i + 3] = a;
+        }
+      }
+    }
+    return nativeImage.createFromBitmap(buf, { width: size, height: size });
+  } catch (_) {
+    return undefined;
+  }
+}
+
+function createProfileOverlayIcon(profile) {
+  try {
+    const initials = profileInitials(profile?.name).slice(0, 2);
+    const color = profileAccentColor(profile);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 32 32">
+      <circle cx="16" cy="16" r="15" fill="${color}" stroke="#ffffff" stroke-width="1.5"/>
+      <text x="16" y="22" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="${initials.length > 1 ? 14 : 18}" font-weight="800" fill="#ffffff">${initials}</text>
     </svg>`;
-    return nativeImage.createFromDataURL("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg));
+    const img = nativeImage.createFromDataURL("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg));
+    try {
+      const png = img.resize({ width: 16, height: 16 }).toPNG();
+      if (png && png.length) return nativeImage.createFromBuffer(png);
+    } catch (_) {}
+    return img;
   } catch (_) {
     return undefined;
   }
@@ -242,10 +361,10 @@ function registerIpcHandlers() {
 
   // ── Window management ─────────────────────────────────────────────────────────
 
-  ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url } = {}) => {
-    logError(`PROFILE_OPEN_WINDOW start profileId=${profileId} url=${url || "<none>"}`);
+  ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url, acceptNewLocation } = {}) => {
+    logError(`PROFILE_OPEN_WINDOW start profileId=${profileId} url=${url || "<none>"} acceptNewLocation=${Boolean(acceptNewLocation)}`);
     try {
-      const result = await openProfileWindow(profileId, url);
+      const result = await openProfileWindow(profileId, url, { acceptNewLocation: Boolean(acceptNewLocation) });
       logError(`PROFILE_OPEN_WINDOW result ok=${result?.ok} err=${result?.error || ""}`);
       return result;
     } catch (err) {
@@ -499,7 +618,11 @@ function registerIpcHandlers() {
   // ── Proxy test ────────────────────────────────────────────────────────────────
 
   ipcMain.handle("TEST_PROXY", async (_ev, { host, port, scheme, username, password } = {}) => {
-    return testProxy(host, port, scheme, username, password);
+    // Substitute {{profile}} placeholders with a stand-in so the test still
+    // exercises a real session ID against the upstream — otherwise sticky
+    // providers reject the request and the user can't validate their template.
+    const expandedUsername = expandProxyTestUsername(username);
+    return testProxy(host, port, scheme, expandedUsername, password);
   });
 
   ipcMain.handle("PROXY_DETECT_LOCATION", async (_ev, { host, port, scheme, username, password } = {}) => {
@@ -507,24 +630,29 @@ function registerIpcHandlers() {
     const { session: electronSession } = require("electron");
     const partitionId = "proxy-geo-" + Date.now();
     const tempSess = electronSession.fromPartition(partitionId, { cache: false });
-    await tempSess.setProxy({ proxyRules: `${scheme || "socks5"}://${host}:${port}` });
+    const expandedUsername = expandProxyTestUsername(username);
+    const cleanupProxy = await configureTempProxySession(tempSess, partitionId, { host, port, scheme, username: expandedUsername, password });
     const GEO_URLS = [
-      "http://ip-api.com/json/?fields=status,message,continent,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,query",
       "https://ipwho.is/",
-      "https://ipapi.co/json/"
+      "https://ipapi.co/json/",
+      "http://ip-api.com/json/?fields=status,message,continent,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,query"
     ];
     let lastError = "";
-    for (const geoUrl of GEO_URLS) {
-      const result = await fetchJsonViaProxy(geoUrl, tempSess, username, password);
-      if (result.ok && result.data) {
-        const n = normalizeNetworkCapture(result.data);
-        if (n.ip) {
-          n.proxyType = detectProxyType(n.ispName, n.ispAsn, n.organization);
-          return { ok: true, network: n };
+    try {
+      for (const geoUrl of GEO_URLS) {
+        const result = await fetchJsonViaProxy(geoUrl, tempSess, expandedUsername, password);
+        if (result.ok && result.data) {
+          const n = normalizeNetworkCapture(result.data);
+          if (n.ip) {
+            n.proxyType = detectProxyType(n.ispName, n.ispAsn, n.organization);
+            return { ok: true, network: n };
+          }
         }
+        lastError = result.error || lastError;
+        if (result.fatal) break;
       }
-      lastError = result.error || lastError;
-      if (result.fatal) break;
+    } finally {
+      cleanupProxy();
     }
     return { ok: false, error: lastError || "Could not detect proxy location" };
   });
@@ -608,19 +736,52 @@ function registerIpcHandlers() {
 
   ipcMain.handle("TAB_BACK", async (ev) => {
     const active = getActiveTab(getCallerWindowId(ev));
-    if (active && active.view.webContents.navigationHistory.canGoBack()) active.view.webContents.navigationHistory.goBack();
+    if (active) {
+      const wc = active.view.webContents;
+      if (wcCanGoBack(wc)) {
+        try { if (wc.navigationHistory && typeof wc.navigationHistory.goBack === "function") wc.navigationHistory.goBack(); else if (typeof wc.goBack === "function") wc.goBack(); } catch (_) {}
+      }
+    }
     return { ok: true };
   });
 
   ipcMain.handle("TAB_FORWARD", async (ev) => {
     const active = getActiveTab(getCallerWindowId(ev));
-    if (active && active.view.webContents.navigationHistory.canGoForward()) active.view.webContents.navigationHistory.goForward();
+    if (active) {
+      const wc = active.view.webContents;
+      if (wcCanGoForward(wc)) {
+        try { if (wc.navigationHistory && typeof wc.navigationHistory.goForward === "function") wc.navigationHistory.goForward(); else if (typeof wc.goForward === "function") wc.goForward(); } catch (_) {}
+      }
+    }
     return { ok: true };
   });
 
   ipcMain.handle("TAB_RELOAD", async (ev) => {
     const active = getActiveTab(getCallerWindowId(ev));
     if (active) active.view.webContents.reload();
+    return { ok: true };
+  });
+
+  ipcMain.handle("TAB_STOP", async (ev) => {
+    const active = getActiveTab(getCallerWindowId(ev));
+    if (active) {
+      try { active.view.webContents.stop(); } catch (_) {}
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle("BROWSER_SHOW_MESSAGE", async (ev, opts = {}) => {
+    const winId = getCallerWindowId(ev);
+    const win = winId != null ? BrowserWindow.fromId(winId) : null;
+    const type = opts.type === "error" || opts.type === "warning" || opts.type === "info" ? opts.type : "info";
+    try {
+      await dialog.showMessageBox(win || undefined, {
+        type,
+        title: String(opts.title || "Privacy Shield"),
+        message: String(opts.message || ""),
+        buttons: ["OK"]
+      });
+    } catch (_) {}
     return { ok: true };
   });
 
@@ -633,12 +794,14 @@ function registerIpcHandlers() {
       meta: getProfileBrowserMeta(state.profileId),
       tabs: state.tabs.map((t) => {
         const wc = t.view.webContents;
+        const alive = !wc.isDestroyed();
         return {
           id: t.id,
-          title: !wc.isDestroyed() ? (wc.getTitle() || t.url || "New tab") : t.title,
-          url: !wc.isDestroyed() ? wc.getURL() : t.url,
-          canBack: !wc.isDestroyed() ? wc.navigationHistory.canGoBack() : false,
-          canForward: !wc.isDestroyed() ? wc.navigationHistory.canGoForward() : false
+          title: alive ? (wc.getTitle() || t.url || "New tab") : t.title,
+          url: alive ? wc.getURL() : t.url,
+          canBack: alive ? wcCanGoBack(wc) : false,
+          canForward: alive ? wcCanGoForward(wc) : false,
+          loading: alive ? wc.isLoadingMainFrame() : false
         };
       })
     };
@@ -662,27 +825,50 @@ function registerIpcHandlers() {
     });
     if (picked.canceled || !picked.filePaths?.[0]) return { ok: false, canceled: true };
 
-    const extensionPath = picked.filePaths[0];
-    const sess = sessionMgr.getSessionForProfile(state.profileId);
     try {
-      const loaded = await sess.loadExtension(extensionPath, { allowFileAccess: true });
-      const profile = store.getProfiles().find((p) => p.id === state.profileId && !p.deletedAt);
-      if (profile) {
-        const existing = Array.isArray(profile.extensions) ? profile.extensions : [];
-        const next = existing.filter((item) => item.path !== extensionPath && item.id !== loaded.id);
-        next.push({
-          id: loaded.id,
-          name: loaded.name || path.basename(extensionPath),
-          path: extensionPath,
-          loadedAt: Date.now()
-        });
-        store.updateProfile(state.profileId, { extensions: next });
-      }
+      const loaded = await loadExtensionIntoProfile(state.profileId, picked.filePaths[0]);
       emitTabState(winId);
       return { ok: true, extension: loaded };
     } catch (err) {
+      logError(`Load extension failed: ${err?.stack || err}`);
       return { ok: false, error: err.message || String(err) };
     }
+  });
+
+  ipcMain.handle("BROWSER_INSTALL_EXTENSION_ZIP", async (ev) => {
+    const winId = getCallerWindowId(ev);
+    const state = winId != null ? windowTabState.get(winId) : null;
+    const win = winId != null ? BrowserWindow.fromId(winId) : null;
+    if (!state) return { ok: false, error: "Profile browser window not found" };
+
+    const picked = await dialog.showOpenDialog(win || undefined, {
+      title: "Install extension ZIP",
+      properties: ["openFile"],
+      filters: [
+        { name: "Extension ZIP", extensions: ["zip"] },
+        { name: "All files", extensions: ["*"] }
+      ]
+    });
+    if (picked.canceled || !picked.filePaths?.[0]) return { ok: false, canceled: true };
+
+    try {
+      const loaded = await loadExtensionIntoProfile(state.profileId, picked.filePaths[0], { archive: true });
+      emitTabState(winId);
+      return { ok: true, extension: loaded };
+    } catch (err) {
+      logError(`Install extension ZIP failed: ${err?.stack || err}`);
+      return { ok: false, error: err.message || String(err) };
+    }
+  });
+
+  ipcMain.handle("BROWSER_OPEN_DOWNLOADS", async (ev) => {
+    const winId = getCallerWindowId(ev);
+    const state = winId != null ? windowTabState.get(winId) : null;
+    if (!state) return { ok: false, error: "Profile browser window not found" };
+    const profile = store.getProfiles().find((entry) => entry.id === state.profileId && !entry.deletedAt);
+    const directory = sessionMgr.getDownloadDirectory(profile || state.profileId);
+    const error = await shell.openPath(directory);
+    return error ? { ok: false, error } : { ok: true, path: directory };
   });
 
   ipcMain.handle("BROWSER_LIST_EXTENSIONS", async (ev) => {
@@ -697,6 +883,102 @@ function registerIpcHandlers() {
       extensions: loaded.map((ext) => ({ id: ext.id, name: ext.name, path: ext.path })),
       saved: Array.isArray(profile?.extensions) ? profile.extensions : []
     };
+  });
+
+  // Popup a native menu showing extensions + a Load Unpacked entry. Used by the
+  // tab-strip gear button — the HTML dropdown is invisible because the tab-strip
+  // BrowserWindow is only 78px tall, so we open a real OS context menu instead.
+  ipcMain.handle("BROWSER_EXTENSIONS_MENU", async (ev) => {
+    const winId = getCallerWindowId(ev);
+    const win = winId != null ? BrowserWindow.fromId(winId) : null;
+    const state = winId != null ? windowTabState.get(winId) : null;
+    if (!win || !state) return { ok: false, error: "Profile browser window not found" };
+
+    const sess = sessionMgr.getSessionForProfile(state.profileId);
+    const loaded = typeof sess.getAllExtensions === "function" ? sess.getAllExtensions() : [];
+    const profile = store.getProfiles().find((p) => p.id === state.profileId && !p.deletedAt);
+    const saved = Array.isArray(profile?.extensions) ? profile.extensions : [];
+
+    const items = loaded.length ? loaded.map((e) => ({ name: e.name || e.id, path: e.path || "" })) : saved.map((e) => ({ name: e.name || e.id || "Extension", path: e.path || "" }));
+
+    const template = [
+      { label: items.length ? `${items.length} extension${items.length === 1 ? "" : "s"} for this profile` : "No extensions loaded", enabled: false },
+      { type: "separator" }
+    ];
+    for (const it of items) {
+      template.push({ label: `  • ${it.name}${it.path ? "  —  " + it.path : ""}`, enabled: false });
+    }
+    if (items.length) template.push({ type: "separator" });
+    template.push({
+      label: "Load unpacked extension folder...",
+      click: async () => {
+        try {
+          const r = await dialog.showOpenDialog(win, {
+            properties: ["openDirectory"],
+            title: "Choose extension folder"
+          });
+          if (r.canceled || !r.filePaths.length) return;
+          try {
+            const extension = await loadExtensionIntoProfile(state.profileId, r.filePaths[0]);
+            emitTabState(winId);
+            await dialog.showMessageBox(win, {
+              type: "info",
+              title: "Extension loaded",
+              message: `Loaded: ${extension.name || r.filePaths[0]}`
+            });
+          } catch (err) {
+            logError(`Load extension failed: ${err.stack || err}`);
+            await dialog.showMessageBox(win, { type: "error", title: "Extension load failed", message: (err && err.message) || String(err) });
+          }
+        } catch (err) {
+          logError(`Load extension flow failed: ${err.stack || err}`);
+        }
+      }
+    });
+    template.push({
+      label: "Install extension from ZIP...",
+      click: async () => {
+        try {
+          const r = await dialog.showOpenDialog(win, {
+            properties: ["openFile"],
+            title: "Choose extension ZIP",
+            filters: [
+              { name: "Extension ZIP", extensions: ["zip"] },
+              { name: "All files", extensions: ["*"] }
+            ]
+          });
+          if (r.canceled || !r.filePaths.length) return;
+          try {
+            const extension = await loadExtensionIntoProfile(state.profileId, r.filePaths[0], { archive: true });
+            emitTabState(winId);
+            await dialog.showMessageBox(win, {
+              type: "info",
+              title: "Extension installed",
+              message: `Installed: ${extension.name || r.filePaths[0]}`
+            });
+          } catch (err) {
+            logError(`Install extension ZIP failed: ${err.stack || err}`);
+            await dialog.showMessageBox(win, { type: "error", title: "Extension install failed", message: (err && err.message) || String(err) });
+          }
+        } catch (err) {
+          logError(`Install extension ZIP flow failed: ${err.stack || err}`);
+        }
+      }
+    });
+    template.push({ type: "separator" });
+    template.push({
+      label: "Open this profile's downloads",
+      click: async () => {
+        const currentProfile = store.getProfiles().find((entry) => entry.id === state.profileId && !entry.deletedAt);
+        const directory = sessionMgr.getDownloadDirectory(currentProfile || state.profileId);
+        const error = await shell.openPath(directory);
+        if (error) {
+          await dialog.showMessageBox(win, { type: "error", title: "Could not open downloads", message: error });
+        }
+      }
+    });
+    Menu.buildFromTemplate(template).popup({ window: win });
+    return { ok: true };
   });
 }
 
@@ -733,6 +1015,9 @@ function getProfileBrowserMeta(profileId) {
   const proxy = profile.proxy || {};
   const mode = proxy.networkMode || (proxy.enabled ? "proxy" : "direct");
   const browser = fp.browser || profile.browserApp || "chrome";
+  const mobileModelLooksReal = Boolean(fp.mobileModel && String(fp.mobileModel).trim());
+  const screenLooksMobile = Number(fp.screenWidth) > 0 && Number(fp.screenWidth) <= 480 && Number(fp.screenHeight) <= 1100;
+  const deviceClass = (fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios" || (mobileModelLooksReal && screenLooksMobile)) ? "mobile" : "desktop";
   const browserLabels = {
     privacy: "Privacy Shield",
     chrome: "Google Chrome",
@@ -756,7 +1041,7 @@ function getProfileBrowserMeta(profileId) {
     country: fp.country || "",
     countryCode: fp.countryCode || "",
     city: fp.city || "",
-    deviceClass: fp.deviceClass || ((profile.os === "android" || profile.os === "ios") ? "mobile" : "desktop"),
+    deviceClass,
     os: profile.os || "windows",
     osLabel: osLabels[profile.os || "windows"] || "Windows",
     browser,
@@ -851,7 +1136,7 @@ function buildUserAgentMetadata(config) {
   };
 }
 
-async function applyTabEmulation(webContents, profile) {
+async function applyTabEmulation(webContents, profile, hostWindow) {
   const config = store.buildConfigFromProfile(profile);
   if (config.userAgent) {
     try { webContents.setUserAgent(config.userAgent); } catch (_) {}
@@ -859,12 +1144,53 @@ async function applyTabEmulation(webContents, profile) {
 
   const screen = config.screen || {};
   const isMobile = Boolean(config._mobile || config._viewportMobile || config._touchEmulation);
-  const width = isMobile
-    ? Math.max(320, Math.min(1200, Number(screen.width) || 412))
-    : Math.max(1024, Math.min(3840, Number(screen.width) || 1366));
-  const height = isMobile
-    ? Math.max(480, Math.min(1600, Number(screen.height) || 915))
-    : Math.max(640, Math.min(2160, Number(screen.height) || 768));
+  const rawW = Number(screen.width) || (isMobile ? 412 : 1366);
+  const rawH = Number(screen.height) || (isMobile ? 915 : 768);
+
+  // Separate viewport (CSS pixels the page renders at) from screen (what
+  // window.screen.* reports). Conflating them caused pages to render at the
+  // user's chosen "screen" size (e.g. 3840) inside a 1280px window — content
+  // overflowed off-screen because the page believed it had a 4K viewport.
+  const screenW = isMobile
+    ? Math.max(320, Math.min(480, rawW > 600 ? 412 : rawW))
+    : Math.max(800, Math.min(7680, rawW));
+  const screenH = isMobile
+    ? Math.max(640, Math.min(960, rawH > 1100 ? 915 : rawH))
+    : Math.max(600, Math.min(4320, rawH));
+
+  // Viewport = actual window content size for desktop (let Chromium use what
+  // fits the window); mobile keeps the clamped phone width because the window
+  // is sized to match.
+  let viewportW = screenW;
+  let viewportH = screenH;
+  if (!isMobile) {
+    try {
+      const hostWin = hostWindow || BrowserWindow.fromWebContents(webContents);
+      if (hostWin && !hostWin.isDestroyed()) {
+        const [cw, ch] = hostWin.getContentSize();
+        viewportW = Math.max(640, cw);
+        viewportH = Math.max(480, Math.max(0, ch - getWindowChromeHeight(hostWin.id)));
+      }
+      // If we still can't find the host window, leave viewport equal to screen
+      // (the legacy behaviour) so the page at least renders something —
+      // returning a viewport that's too small to draw above the fold leaves the
+      // user staring at a blank page.
+    } catch (_) {}
+  }
+  if (isMobile) {
+    try {
+      const hostWin = hostWindow || BrowserWindow.fromWebContents(webContents);
+      if (hostWin && !hostWin.isDestroyed()) {
+        const [cw, ch] = hostWin.getContentSize();
+        const topChrome = getWindowChromeHeight(hostWin.id);
+        const bottomInset = getWindowBottomInset(hostWin.id);
+        viewportW = Math.max(320, Math.min(screenW, cw));
+        viewportH = Math.max(360, Math.min(screenH, Math.max(0, ch - topChrome - bottomInset)));
+      }
+    } catch (_) {}
+  }
+  const width = viewportW;
+  const height = viewportH;
   const dpr = Math.max(1, Math.min(4, Number(config._devicePixelRatio) || (isMobile ? 2.625 : 1)));
   const send = async (method, params) => {
     try {
@@ -886,8 +1212,8 @@ async function applyTabEmulation(webContents, profile) {
     height,
     deviceScaleFactor: dpr,
     mobile: isMobile,
-    screenWidth: width,
-    screenHeight: height,
+    screenWidth: screenW,
+    screenHeight: screenH,
     positionX: 0,
     positionY: 0,
     scale: 1,
@@ -896,14 +1222,23 @@ async function applyTabEmulation(webContents, profile) {
       : { type: "landscapePrimary", angle: 90 }
   });
   if (isMobile || config._touchEmulation) {
+    // Touch capability flag: page sees navigator.maxTouchPoints > 0 and Touch API
+    // — required to look like a real phone. Independent of how we route mouse.
     await send("Emulation.setTouchEmulationEnabled", {
       enabled: true,
       maxTouchPoints: Math.max(1, Number(config._maxTouchPoints) || 5)
     });
-    await send("Emulation.setEmitTouchEventsForMouse", {
-      enabled: true,
-      configuration: isMobile ? "mobile" : "desktop"
-    });
+    // Mouse-to-touch conversion: when enabled, every mouse drag becomes a touch
+    // drag (pan/scroll), which means the user cannot highlight text, can't drag
+    // to select, and right-click context menu / DevTools become awkward.
+    // Default OFF so the operator can interact with the page normally; pages
+    // still see touch capability via setTouchEmulationEnabled above.
+    if (config._emitTouchForMouse === true) {
+      await send("Emulation.setEmitTouchEventsForMouse", {
+        enabled: true,
+        configuration: isMobile ? "mobile" : "desktop"
+      });
+    }
   }
   await send("Emulation.setUserAgentOverride", {
     userAgent: config.userAgent,
@@ -940,7 +1275,7 @@ async function applyTabEmulation(webContents, profile) {
   }
 }
 
-async function openProfileWindow(profileId, customUrl) {
+async function openProfileWindow(profileId, customUrl, options = {}) {
   // If already open, focus or open a new tab for the requested URL
   const existing = profileWindows.get(profileId);
   if (existing && !existing.isDestroyed()) {
@@ -976,24 +1311,94 @@ async function openProfileWindow(profileId, customUrl) {
     }
   }
 
-  const sess = sessionMgr.getSessionForProfile(profileId);
-  try {
-    await sessionMgr.setupProfileSession(profile);
-  } catch (err) {
-    return { ok: false, error: "Proxy setup failed: " + (err.message || err) };
+  // ── VPN location lock ───────────────────────────────────────────────────────
+  // For VPN-mode profiles the OS network (and therefore Electron's net.request)
+  // is already routed through the VPN, so the live capture reflects the VPN exit
+  // IP. We lock each profile to the location it first launched on: if the VPN is
+  // now in a different place we DO NOT launch — we hand the renderer the old vs
+  // new location and let the user either switch the VPN back or accept the new
+  // one. This both prevents an accidental location swap and guards against
+  // launching with no/leaky network when the VPN is actually down.
+  if (networkMode === "vpn") {
+    let current;
+    try {
+      current = await captureCurrentNetwork();
+    } catch (err) {
+      return { ok: false, error: "Couldn't verify your VPN location — no IP service was reachable. Make sure your VPN is connected, then click Start again.\n\nDetail: " + (err.message || err) };
+    }
+
+    const last = profile.lastVpnNetwork || null;
+    if (last && !locationsMatch(last, current) && !options.acceptNewLocation) {
+      // Different location than last time → block the launch and ask the user.
+      return {
+        ok: false,
+        needsLocationConfirm: true,
+        profileId,
+        profileName: profile.name || "Profile",
+        last: { ip: last.ip, country: last.country, countryCode: last.countryCode, city: last.city, state: last.state, capturedAt: last.capturedAt },
+        current: { ip: current.ip, country: current.country, countryCode: current.countryCode, city: current.city, state: current.state }
+      };
+    }
+
+    // First launch, same location, or the user accepted the new one → remember
+    // exactly what we're launching with so the next launch can compare to it.
+    try {
+      store.updateProfile(profileId, {
+        lastVpnNetwork: {
+          ip: current.ip,
+          country: current.country,
+          countryCode: current.countryCode,
+          city: current.city,
+          state: current.state,
+          capturedAt: Date.now()
+        }
+      });
+    } catch (_) {}
   }
 
-  // The BrowserWindow itself hosts the tab strip UI (with the safe preload).
-  // Each tab is a separate WebContentsView with the fingerprint preload + profile session.
+  let sess;
+  try {
+    sess = await sessionMgr.setupProfileSession(profile);
+    sessionMgr.assertProfileSession(sess, profileId);
+  } catch (err) {
+    return { ok: false, error: "Profile session setup failed: " + (err.message || err) };
+  }
+
+  // The host window and every website tab share this profile's persistent
+  // partition. No profile browser WebContents may use Electron's default session.
   const offset = profileWindows.size * 30;
   const fp = profile.fingerprint || {};
-  const isMobileProfile = fp.deviceClass === "mobile" || profile.os === "android" || profile.os === "ios";
-  const winWidth = isMobileProfile ? Math.max(390, Math.min(520, Number(fp.screenWidth) || 412) + 24) : 1280;
-  const winHeight = isMobileProfile ? Math.max(720, Math.min(980, Number(fp.screenHeight) || 915) + TAB_STRIP_HEIGHT + 16) : 800;
+  const mobileModelLooksReal = Boolean(fp.mobileModel && String(fp.mobileModel).trim());
+  const screenLooksMobile = Number(fp.screenWidth) > 0 && Number(fp.screenWidth) <= 480 && Number(fp.screenHeight) <= 1100;
+  // profile.os is authoritative. If the user explicitly picked a desktop OS,
+  // never treat as mobile — otherwise leftover fp.deviceClass / mobileModel /
+  // small-screen values from a previous mobile session keep forcing mobile
+  // layout even after the user switched to Windows/macOS/Linux.
+  const osIsMobile = profile.os === "android" || profile.os === "ios";
+  const osIsDesktop = profile.os === "windows" || profile.os === "macos" || profile.os === "linux";
+  const isMobileProfile = osIsMobile
+    || (!osIsDesktop && (fp.deviceClass === "mobile" || (mobileModelLooksReal && screenLooksMobile)));
+  const mobW = Number(fp.screenWidth) || 412;
+  const mobH = Number(fp.screenHeight) || 915;
+  const mobileViewportWidth = Math.max(360, Math.min(460, mobW > 600 ? 412 : mobW));
+  const mobileViewportHeight = Math.max(640, Math.min(932, mobH > 1100 ? 915 : mobH));
+  const chromeHeight = isMobileProfile ? MOBILE_CHROME_HEIGHT : DESKTOP_CHROME_HEIGHT;
+  const bottomInset = isMobileProfile ? MOBILE_BOTTOM_NAV_HEIGHT : 0;
+  const winWidth = isMobileProfile ? mobileViewportWidth : 1280;
+  // Cap window height to user's screen so the bottom doesn't go off-screen on
+  // laptops with short displays (1366x768, 1440x900). Leave 60px headroom for
+  // taskbar + window title bar. Allow resize when capped so user can fine-tune.
+  const workArea = (() => {
+    try { return screen.getPrimaryDisplay().workArea; } catch (_) { return { height: 800, y: 0 }; }
+  })();
+  const desiredMobileHeight = mobileViewportHeight + chromeHeight + bottomInset;
+  const maxUsableHeight = Math.max(480, workArea.height - 60);
+  const mobileHeightCapped = desiredMobileHeight > maxUsableHeight;
+  const winHeight = isMobileProfile ? Math.min(desiredMobileHeight, maxUsableHeight) : 800;
   const meta = getProfileBrowserMeta(profileId) || {};
   const windowTitle = `${meta.browserLabel || "Browser"} - ${profile.name}`;
   const profileIcon = createProfileIcon(profile);
-  const win = new BrowserWindow({
+  const winOpts = {
     show: false,
     width: winWidth,
     height: winHeight,
@@ -1002,18 +1407,61 @@ async function openProfileWindow(profileId, customUrl) {
     title: windowTitle,
     icon: profileIcon,
     backgroundColor: "#0c0f14",
+    useContentSize: true,
     webPreferences: {
+      session: sess,
       preload: RENDERER_PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
     }
-  });
+  };
+  if (isMobileProfile) {
+    // Width is always locked to the emulated phone width (412px etc.)
+    // Height locks only if the full phone height fits on this screen; otherwise
+    // allow vertical resize so the user can drag to see the full page on small
+    // laptop screens. Position at top of work area for max visible space.
+    winOpts.maximizable = false;
+    winOpts.fullscreenable = false;
+    winOpts.minWidth = winWidth;
+    winOpts.maxWidth = winWidth;
+    if (mobileHeightCapped) {
+      winOpts.resizable = true;
+      winOpts.minHeight = 400;
+    } else {
+      winOpts.resizable = false;
+      winOpts.minHeight = winHeight;
+      winOpts.maxHeight = winHeight;
+    }
+    winOpts.y = Math.max(0, workArea.y);
+  }
+  const win = new BrowserWindow(winOpts);
   win.webContents.on("page-title-updated", (event) => {
     event.preventDefault();
     try { win.setTitle(windowTitle); } catch (_) {}
   });
   win.setMenuBarVisibility(false);
+  // Windows taskbar overlay: a small colored circle with the profile initials.
+  // setOverlayIcon needs the image to be non-empty AFTER it's been delivered
+  // to the OS — if the SVG rasterizer returns an empty image, fall back to a
+  // raw RGBA buffer drawn pixel-by-pixel (a colored disk, no text).
+  try {
+    if (process.platform === "win32" && typeof win.setOverlayIcon === "function") {
+      let overlay = createProfileOverlayIcon(profile);
+      const empty = !overlay || overlay.isEmpty();
+      logInfo(`setOverlayIcon: profile=${profile.name} svg-empty=${empty} sizeJSON=${empty ? "n/a" : JSON.stringify(overlay.getSize())}`);
+      if (empty) overlay = createOverlayDiskFallback(profile);
+      if (overlay && !overlay.isEmpty()) {
+        win.once("ready-to-show", () => {
+          try { win.setOverlayIcon(overlay, `${profile.name || "Profile"}`); } catch (_) {}
+        });
+        // Also set immediately in case the window is already visible
+        try { win.setOverlayIcon(overlay, `${profile.name || "Profile"}`); } catch (_) {}
+      } else {
+        logError(`setOverlayIcon: both SVG and fallback empty for profile ${profile.name}`);
+      }
+    }
+  } catch (err) { try { logError(`setOverlayIcon failed: ${err.stack || err}`); } catch (_) {} }
   try {
     if (typeof win.setAppDetails === "function") {
       win.setAppDetails({
@@ -1055,7 +1503,15 @@ async function openProfileWindow(profileId, customUrl) {
   });
 
   // Init the tab state for this window
-  windowTabState.set(win.id, { profileId, tabs: [], activeTabId: null });
+  windowTabState.set(win.id, {
+    profileId,
+    tabs: [],
+    activeTabId: null,
+    isMobileProfile,
+    chromeHeight,
+    bottomInset,
+    mobileViewportWidth
+  });
 
   profileWindows.set(profileId, win);
   sessionMgr.registerWindow(win.id, profileId);
@@ -1087,8 +1543,18 @@ async function openProfileWindow(profileId, customUrl) {
     showProfileWindow();
   });
 
-  // Resize active tab view when window resizes
-  win.on("resize", () => layoutActiveTab(win.id));
+  // Resize active tab view when window resizes, and re-apply viewport metrics
+  // so the page reflows to the new size (otherwise the page keeps the original
+  // viewport from when emulation was first applied).
+  win.on("resize", () => {
+    layoutActiveTab(win.id);
+    const state = windowTabState.get(win.id);
+    const active = state && state.tabs.find((t) => t.id === state.activeTabId);
+    if (active && active.view && !active.view.webContents.isDestroyed()) {
+      const profile = store.getProfiles().find((p) => p.id === state.profileId && !p.deletedAt);
+      if (profile) applyTabEmulation(active.view.webContents, profile, win).catch(() => {});
+    }
+  });
   win.on("enter-full-screen", () => layoutActiveTab(win.id));
   win.on("leave-full-screen", () => layoutActiveTab(win.id));
 
@@ -1180,9 +1646,24 @@ function addTab(windowId, url) {
       sandbox: false
     }
   });
+  sessionMgr.assertProfileSession(view.webContents.session, profileId);
 
   const tabId = "t_" + (nextTabId++);
   webContentsProfileMap.set(view.webContents.id, profileId);
+
+  // Inject fingerprint spoof via CDP so it runs in every frame (incl. iframes)
+  // BEFORE any page script. Preload still runs as a fallback in the top frame.
+  // Fire-and-forget — failure is logged, browsing continues with preload-only spoofing.
+  try {
+    const cfg = profile ? store.buildConfigFromProfile(profile) : null;
+    if (cfg) {
+      cdpStealth.attachStealth(view.webContents, cfg, logError).catch((err) => {
+        logError(`cdp-stealth attachStealth threw: ${err && (err.message || err)}`);
+      });
+    }
+  } catch (err) {
+    logError(`cdp-stealth setup error: ${err && (err.message || err)}`);
+  }
 
   const tabEntry = { id: tabId, view, title: "New tab", url };
   state.tabs.push(tabEntry);
@@ -1192,12 +1673,58 @@ function addTab(windowId, url) {
   wc.on("page-title-updated", (_e, title) => { tabEntry.title = title; emitTabState(windowId); });
   wc.on("did-navigate", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
   wc.on("did-navigate-in-page", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
+  wc.on("did-start-loading", () => { tabEntry.loading = true; emitTabState(windowId); });
+  wc.on("did-stop-loading", () => { tabEntry.loading = false; emitTabState(windowId); });
   wc.setWindowOpenHandler(({ url: u }) => { addTab(windowId, u); return { action: "deny" }; });
+
+  // F12 / Ctrl+Shift+I — open DevTools for the active tab. Needed for
+  // mobile-profile windows because the tab-strip's right-click menu doesn't
+  // cover the WebContentsView area.
+  wc.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    if (input.key === "F12") {
+      event.preventDefault();
+      if (wc.isDevToolsOpened()) wc.closeDevTools(); else wc.openDevTools({ mode: "detach" });
+    } else if (input.control && input.shift && (input.key === "I" || input.key === "i")) {
+      event.preventDefault();
+      if (wc.isDevToolsOpened()) wc.closeDevTools(); else wc.openDevTools({ mode: "detach" });
+    } else if (input.control && input.shift && (input.key === "C" || input.key === "c")) {
+      event.preventDefault();
+      if (!wc.isDevToolsOpened()) wc.openDevTools({ mode: "detach" });
+    }
+  });
+
+  // Right-click context menu with Inspect/Copy/Paste — the WebContentsView
+  // has no menu by default, so users can't copy/paste/inspect on mobile.
+  wc.on("context-menu", (_ev, params) => {
+    const menu = Menu.buildFromTemplate([
+      { role: "back", enabled: wcCanGoBack(wc) },
+      { role: "forward", enabled: wcCanGoForward(wc) },
+      { role: "reload" },
+      { type: "separator" },
+      { role: "copy", enabled: Boolean(params.selectionText) },
+      { role: "cut", enabled: params.isEditable && Boolean(params.selectionText) },
+      { role: "paste", enabled: params.isEditable },
+      { role: "selectAll" },
+      { type: "separator" },
+      { label: "Inspect Element", click: () => { try { wc.inspectElement(params.x, params.y); } catch (_) {} } }
+    ]);
+    try { menu.popup({ window: BrowserWindow.fromId(windowId) }); } catch (_) {}
+  });
 
   wc.on("did-fail-load", (_e, code, desc, validatedURL, isMainFrame) => {
     if (!isMainFrame) return;
     if (code === -3) return;
-    if (validatedURL && validatedURL.startsWith("file://")) return;
+    if (validatedURL && (validatedURL.startsWith("file://") || validatedURL.startsWith("psapp://"))) return;
+    logError(`tab did-fail-load profile=${profileId} code=${code} desc=${desc} url=${validatedURL}`);
+    wc.loadURL(startPageUrl(desc || "Page failed to load", validatedURL || ""));
+  });
+
+  wc.on("did-fail-provisional-load", (_e, code, desc, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    if (code === -3) return;
+    if (validatedURL && (validatedURL.startsWith("file://") || validatedURL.startsWith("psapp://"))) return;
+    logError(`tab did-fail-provisional-load profile=${profileId} code=${code} desc=${desc} url=${validatedURL}`);
     wc.loadURL(startPageUrl(desc || "Page failed to load", validatedURL || ""));
   });
 
@@ -1217,7 +1744,7 @@ function addTab(windowId, url) {
   // The fingerprint preload (runs before any page JS) covers JS-level spoofing.
   // CDP overrides are applied concurrently and take effect before page scripts run.
   if (!wc.isDestroyed()) wc.loadURL(url || startPageUrl());
-  if (profile) applyTabEmulation(wc, profile).catch(logError);
+  if (profile) applyTabEmulation(wc, profile, win).catch(logError);
 
   emitTabState(windowId);
   return tabId;
@@ -1243,11 +1770,26 @@ function layoutActiveTab(windowId) {
   const win = BrowserWindow.fromId(windowId);
   if (!win || win.isDestroyed()) return;
   const [w, h] = win.getContentSize();
+  const chromeHeight = getWindowChromeHeight(windowId);
+  const bottomInset = getWindowBottomInset(windowId);
+  const viewWidth = state.isMobileProfile
+    ? Math.min(w, Number(state.mobileViewportWidth) || w)
+    : w;
   for (const t of state.tabs) {
     if (t.id === state.activeTabId) {
-      t.view.setBounds({ x: 0, y: TAB_STRIP_HEIGHT, width: w, height: Math.max(0, h - TAB_STRIP_HEIGHT) });
+      t.view.setBounds({ x: 0, y: chromeHeight, width: viewWidth, height: Math.max(0, h - chromeHeight - bottomInset) });
     }
   }
+}
+
+function getWindowChromeHeight(windowId) {
+  const state = windowTabState.get(windowId);
+  return Number(state?.chromeHeight) || DESKTOP_CHROME_HEIGHT;
+}
+
+function getWindowBottomInset(windowId) {
+  const state = windowTabState.get(windowId);
+  return Math.max(0, Number(state?.bottomInset) || 0);
 }
 
 function closeTab(windowId, tabId, { crashRecovery = false } = {}) {
@@ -1291,6 +1833,21 @@ function getActiveTab(windowId) {
   return state.tabs.find((t) => t.id === state.activeTabId) || null;
 }
 
+function wcCanGoBack(wc) {
+  try {
+    if (wc.navigationHistory && typeof wc.navigationHistory.canGoBack === "function") return wc.navigationHistory.canGoBack();
+    if (typeof wc.canGoBack === "function") return wc.canGoBack();
+  } catch (_) {}
+  return false;
+}
+function wcCanGoForward(wc) {
+  try {
+    if (wc.navigationHistory && typeof wc.navigationHistory.canGoForward === "function") return wc.navigationHistory.canGoForward();
+    if (typeof wc.canGoForward === "function") return wc.canGoForward();
+  } catch (_) {}
+  return false;
+}
+
 function emitTabState(windowId) {
   const state = windowTabState.get(windowId);
   if (!state) return;
@@ -1298,20 +1855,28 @@ function emitTabState(windowId) {
   if (!win || win.isDestroyed()) return;
   const tabs = state.tabs.map((t) => {
     const wc = t.view.webContents;
+    const alive = !wc.isDestroyed();
     return {
       id: t.id,
-      title: !wc.isDestroyed() ? (wc.getTitle() || t.url || "New tab") : t.title,
-      url: !wc.isDestroyed() ? wc.getURL() : t.url,
-      canBack: !wc.isDestroyed() ? wc.navigationHistory.canGoBack() : false,
-      canForward: !wc.isDestroyed() ? wc.navigationHistory.canGoForward() : false
+      title: alive ? (wc.getTitle() || t.url || "New tab") : t.title,
+      url: alive ? wc.getURL() : t.url,
+      canBack: alive ? wcCanGoBack(wc) : false,
+      canForward: alive ? wcCanGoForward(wc) : false,
+      loading: alive ? wc.isLoadingMainFrame() : false
     };
   });
-  win.webContents.send("MAIN_EVENT", {
-    type: "TAB_STATE",
-    tabs,
-    activeTabId: state.activeTabId,
-    meta: getProfileBrowserMeta(state.profileId)
-  });
+  try {
+    if (win.webContents && !win.webContents.isDestroyed()) {
+      win.webContents.send("MAIN_EVENT", {
+        type: "TAB_STATE",
+        tabs,
+        activeTabId: state.activeTabId,
+        meta: getProfileBrowserMeta(state.profileId)
+      });
+    }
+  } catch (err) {
+    try { logError(`emitTabState send failed: ${err.stack || err}`); } catch (_) {}
+  }
 }
 
 // ── Bulk profile generator ───────────────────────────────────────────────────
@@ -1461,7 +2026,11 @@ function notifyManagerWindows(type) {
   ]);
   for (const win of BrowserWindow.getAllWindows()) {
     if (!profileWinIds.has(win.id) && !win.isDestroyed()) {
-      win.webContents.send("MAIN_EVENT", { type }).catch?.(() => {});
+      try {
+        if (win.webContents && !win.webContents.isDestroyed()) {
+          win.webContents.send("MAIN_EVENT", { type });
+        }
+      } catch (_) {}
     }
   }
 }
@@ -1569,6 +2138,33 @@ function requestPrivateProxyFromProvider(config, country, profileId) {
   });
 }
 
+function expandProxyTestUsername(username) {
+  return String(username || "").replace(/\{\{\s*profile(?:_id|_name)?\s*\}\}/gi, "test-session");
+}
+
+async function configureTempProxySession(tempSess, bridgeId, { host, port, scheme, username, password } = {}) {
+  const normalizedScheme = String(scheme || "socks5").toLowerCase();
+  const numericPort = parseInt(port, 10);
+  if (!host || !numericPort) throw new Error("missing host or port");
+
+  if ((normalizedScheme === "http" || normalizedScheme === "https") && (username || password)) {
+    const local = await proxyBridge.getBridge(bridgeId, {
+      scheme: normalizedScheme,
+      host,
+      port: numericPort,
+      username,
+      password
+    });
+    if (local) {
+      await tempSess.setProxy({ proxyRules: `http://127.0.0.1:${local.port}` });
+      return () => proxyBridge.stopBridge(bridgeId);
+    }
+  }
+
+  await tempSess.setProxy({ proxyRules: `${normalizedScheme}://${host}:${numericPort}` });
+  return () => {};
+}
+
 async function testProxy(host, port, scheme, username, password) {
   if (!host || !port) return { ok: false, error: "missing host or port" };
 
@@ -1576,22 +2172,25 @@ async function testProxy(host, port, scheme, username, password) {
   const partitionId = "proxy-test-" + Date.now();
   const tempSess = electronSession.fromPartition(partitionId, { cache: false });
 
-  const proxyRules = `${scheme || "socks5"}://${host}:${port}`;
-  await tempSess.setProxy({ proxyRules });
+  const cleanupProxy = await configureTempProxySession(tempSess, partitionId, { host, port, scheme, username, password });
 
-  // Try HTTP first (faster, no TLS handshake), fall back to HTTPS
+  // Test HTTPS first because browser failures happen on CONNECT tunnels.
   const TEST_URLS = [
-    "http://api.ipify.org/?format=json",
-    "http://checkip.amazonaws.com/",
-    "https://api.ipify.org/?format=json"
+    "https://api.ipify.org/?format=json",
+    "https://ipwho.is/",
+    "http://checkip.amazonaws.com/"
   ];
 
   let lastError = "";
-  for (const testUrl of TEST_URLS) {
-    const result = await tryTestUrl(testUrl, tempSess, username, password);
-    if (result.ok) return result;
-    lastError = result.error || lastError;
-    if (result.fatal) break;
+  try {
+    for (const testUrl of TEST_URLS) {
+      const result = await tryTestUrl(testUrl, tempSess, username, password);
+      if (result.ok) return result;
+      lastError = result.error || lastError;
+      if (result.fatal) break;
+    }
+  } finally {
+    cleanupProxy();
   }
   // Return the specific error from the test attempts instead of a generic message
   return { ok: false, error: lastError || "Proxy unreachable — check host, port, and credentials" };
@@ -1610,6 +2209,10 @@ function fetchJsonViaProxy(url, session, username, password) {
       clearTimeout(timer);
       res.on("data", (d) => { body += d.toString(); });
       res.on("end", () => {
+        if ((res.statusCode || 0) >= 400) {
+          resolve({ ok: false, error: `Geo lookup HTTP ${res.statusCode}: ${body.trim().slice(0, 160)}`, fatal: res.statusCode === 401 || res.statusCode === 407 });
+          return;
+        }
         try { resolve({ ok: true, data: JSON.parse(body.trim()) }); }
         catch (_) { resolve({ ok: false, error: "Invalid JSON from geo API" }); }
       });
@@ -1674,6 +2277,20 @@ const _TZ_COUNTRY = {
 };
 function guessCountryFromTimezone(tz) {
   return _TZ_COUNTRY[tz] || null;
+}
+
+// Two network captures count as the "same location" when they share a country
+// and (if both report it) the same city/region. VPN exit IPs rotate within a
+// city, so we deliberately compare location, not the raw IP — the goal is to
+// keep one account anchored to one place, not one fixed address.
+function locationsMatch(a, b) {
+  if (!a || !b) return false;
+  const cc = (x) => String(x.countryCode || "").trim().toLowerCase();
+  const norm = (x) => String(x || "").trim().toLowerCase();
+  if (cc(a) !== cc(b)) return false;
+  if (norm(a.city) && norm(b.city)) return norm(a.city) === norm(b.city);
+  if (norm(a.state) && norm(b.state)) return norm(a.state) === norm(b.state);
+  return true; // same country, no finer signal available → treat as same place
 }
 
 async function captureCurrentNetwork() {
@@ -1774,6 +2391,16 @@ function tryTestUrl(url, session, username, password) {
       res.on("end", () => {
         try {
           const text = body.trim();
+          if ((res.statusCode || 0) >= 400) {
+            let error = `HTTP ${res.statusCode}: ${text.slice(0, 160)}`;
+            if (res.statusCode === 422 || /Unprocessable Entity/i.test(text)) {
+              error = "Proxy rejected the tunnel (422 Unprocessable Entity). Check the SOAX package, username/session/location filters, and password.";
+            } else if (/Bridge upstream failed/i.test(text)) {
+              error = text.slice(0, 220);
+            }
+            resolve({ ok: false, error, fatal: res.statusCode === 401 || res.statusCode === 407 || res.statusCode === 422 });
+            return;
+          }
           // ip-only response (checkip.amazonaws.com returns plain text)
           if (/^\d{1,3}(\.\d{1,3}){3}$/.test(text)) {
             resolve({ ok: true, ip: text });

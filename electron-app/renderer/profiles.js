@@ -215,7 +215,7 @@ function applyMobileUIMode(os) {
   if (windowMode && windowMode.value === "incognito") windowMode.value = "normal";
   const browserApp = $("fp-browserApp");
   if (browserApp && (browserApp.value === "brave" || browserApp.value === "privacy")) {
-    browserApp.value = os === "ios" ? "safari" : "chrome";
+    browserApp.value = "chrome";
   }
   // If WebGL vendor is a desktop GPU, switch to a mobile one matching the OS
   const vendorSel = $("fp-webglVendor");
@@ -491,7 +491,11 @@ function populateForm(p) {
     downlink: fp.downlink || 10,
     rtt: fp.rtt || 50
   };
-  setVal("fp-browser", fp.browser || p.browserApp || "chrome");
+  // Safari/Firefox were removed (Chromium can't run WebKit/Gecko — the UA-vs-engine
+  // mismatch is detectable). Coerce any legacy profile saved with them to Chrome.
+  let _loadBrowser = fp.browser || p.browserApp || "chrome";
+  if (_loadBrowser === "safari" || _loadBrowser === "firefox") _loadBrowser = "chrome";
+  setVal("fp-browser", _loadBrowser);
   updateBrowserVersionOptions();
   setVal("fp-userAgent", fp.userAgent || "auto");
   setVal("fp-userAgentValue", fp.userAgentValue || "");
@@ -1650,6 +1654,74 @@ function setLaunchError(msg) {
   el.hidden = false;
 }
 
+// "Lagos, Nigeria (NG)" / "Nigeria (NG)" / "—" from a captured network record.
+function locationText(loc) {
+  if (!loc) return "an unknown location";
+  const parts = [];
+  if (loc.city) parts.push(loc.city);
+  if (loc.state && loc.state !== loc.city) parts.push(loc.state);
+  if (loc.country) parts.push(loc.country);
+  const cc = loc.countryCode ? ` (${String(loc.countryCode).toUpperCase()})` : "";
+  return (parts.join(", ") || "an unknown location") + cc;
+}
+
+// Blocking VPN-location warning. Resolves "continue" (launch with the new IP)
+// or "change" (cancel so the user can switch their VPN back). Nothing has
+// launched at this point — the browser only opens after a "continue".
+function showVpnLocationConfirm(r) {
+  return new Promise((resolve) => {
+    const existing = $("vpnLocModal");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "vpnLocModal";
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;" +
+      "justify-content:center;background:rgba(4,6,10,.72);backdrop-filter:blur(2px);";
+
+    const lastIp = r.last && r.last.ip ? r.last.ip : "—";
+    const curIp = r.current && r.current.ip ? r.current.ip : "—";
+
+    overlay.innerHTML =
+      '<div style="width:480px;max-width:92vw;background:#11151c;border:1px solid #2a3340;' +
+      'border-radius:14px;padding:22px 22px 18px;box-shadow:0 18px 60px rgba(0,0,0,.55);' +
+      'font-family:inherit;color:#e7edf5;">' +
+        '<div style="font-size:16px;font-weight:700;margin-bottom:6px;">⚠️ VPN location changed</div>' +
+        '<div style="font-size:13px;line-height:1.5;color:#aab6c4;margin-bottom:16px;">' +
+          'This profile <b>“' + escapeHtml(r.profileName || "Profile") + '”</b> last ran on a different ' +
+          'VPN location. Using a new location can make the account look suspicious. ' +
+          'Switch your VPN back to the last location, or continue with the new one.' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;margin-bottom:18px;">' +
+          '<div style="flex:1;background:#0d1117;border:1px solid #243042;border-radius:10px;padding:10px 12px;">' +
+            '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#6f8196;margin-bottom:4px;">Last time (keep this)</div>' +
+            '<div style="font-size:13px;font-weight:600;color:#7ee0a6;">' + escapeHtml(locationText(r.last)) + '</div>' +
+            '<div style="font-size:11px;color:#6f8196;margin-top:3px;">' + escapeHtml(lastIp) + '</div>' +
+          '</div>' +
+          '<div style="flex:1;background:#0d1117;border:1px solid #243042;border-radius:10px;padding:10px 12px;">' +
+            '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#6f8196;margin-bottom:4px;">Right now</div>' +
+            '<div style="font-size:13px;font-weight:600;color:#f0c674;">' + escapeHtml(locationText(r.current)) + '</div>' +
+            '<div style="font-size:11px;color:#6f8196;margin-top:3px;">' + escapeHtml(curIp) + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;justify-content:flex-end;">' +
+          '<button id="vpnLocChange" style="padding:9px 16px;border-radius:9px;border:1px solid #3a4656;' +
+            'background:#1b2330;color:#e7edf5;font-size:13px;font-weight:600;cursor:pointer;">Change VPN now</button>' +
+          '<button id="vpnLocContinue" style="padding:9px 16px;border-radius:9px;border:1px solid #5a3a3a;' +
+            'background:#2a1c1c;color:#f3b1b1;font-size:13px;font-weight:600;cursor:pointer;">Continue with new IP</button>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(overlay);
+
+    const done = (val) => { overlay.remove(); resolve(val); };
+    overlay.querySelector("#vpnLocChange").addEventListener("click", () => done("change"));
+    overlay.querySelector("#vpnLocContinue").addEventListener("click", () => done("continue"));
+    // Clicking the dark backdrop = same as "Change" (safe default: do not launch).
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) done("change"); });
+  });
+}
+
 async function openProfileWindow(profileId) {
   const btn = $("btnOpenWindow");
   setLaunchError(null);
@@ -1666,7 +1738,25 @@ async function openProfileWindow(profileId) {
   }
 
   if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
-  const r = await msg("PROFILE_OPEN_WINDOW", { profileId });
+  let r = await msg("PROFILE_OPEN_WINDOW", { profileId });
+
+  // VPN location lock: the profile's VPN is in a different place than last time.
+  // Nothing has launched yet — make the user decide before the browser opens.
+  if (r.needsLocationConfirm) {
+    const decision = await showVpnLocationConfirm(r);
+    if (decision === "continue") {
+      if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
+      r = await msg("PROFILE_OPEN_WINDOW", { profileId, acceptNewLocation: true });
+    } else {
+      // "Change VPN now" / dismissed → do not launch. User switches their VPN
+      // back to the last location, then clicks Start again.
+      setLaunchError("Launch cancelled. Switch your VPN to " + locationText(r.last) + ", then click Start.");
+      toast("Launch cancelled — VPN location not changed");
+      if (btn) { btn.textContent = "Start"; btn.disabled = false; }
+      return;
+    }
+  }
+
   if (!r.ok) {
     const errText = r.error || "unknown error";
     setLaunchError(errText);
