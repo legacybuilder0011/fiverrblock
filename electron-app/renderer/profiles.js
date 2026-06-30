@@ -1308,8 +1308,11 @@ async function autoDetectCurrentIp() {
   if (mode !== "vpn" && mode !== "direct") { stopAutoIpDetect(); return; }
   if (document.hidden) return;
 
+  // Remember which profile this probe belongs to — if the user switches profile
+  // while the (slow) network lookup is in flight, we must NOT paint stale text.
+  const probeForId = selectedId;
   const r = await msg("NETWORK_CAPTURE_CURRENT");
-  // User may have switched profile/mode while the lookup was in flight.
+  if (selectedId !== probeForId) return;
   if (($("px-networkMode")?.value) !== mode) return;
 
   if (!r.ok || !r.network) {
@@ -1318,15 +1321,34 @@ async function autoDetectCurrentIp() {
     return;
   }
   const n = r.network;
-  const loc = [n.city, n.country || (n.countryCode || "").toUpperCase()].filter(Boolean).join(", ");
-  if (n.isVpn) {
-    res.textContent = `🟢 VPN detected · ${loc} · ${n.ip}`;
-    res.className = "pm-proxy-result ok";
-  } else if (n.connectionType === "residential" || n.connectionType === "mobile") {
+  const loc = [n.city, n.country || (n.countryCode || "").toUpperCase()].filter(Boolean).join(", ") || n.ip;
+
+  // Compare the live connection to THIS profile's captured/expected location so
+  // the line is per-profile and the user sees a mismatch immediately.
+  const anchorCC = String(currentProxyDetection?.detectedCountryCode || "").toLowerCase();
+  const anchorCity = String(currentProxyDetection?.detectedCity || "").trim().toLowerCase();
+  const curCC = String(n.countryCode || "").toLowerCase();
+  const curCity = String(n.city || "").trim().toLowerCase();
+  const haveAnchor = Boolean(anchorCC);
+  const mismatch = haveAnchor && (anchorCC !== curCC || (anchorCity && curCity && anchorCity !== curCity));
+  const anchorLabel = currentProxyDetection
+    ? (currentProxyDetection.detectedCity ? currentProxyDetection.detectedCity + ", " : "") + (currentProxyDetection.detectedCountry || anchorCC.toUpperCase())
+    : "";
+
+  if (mismatch) {
+    res.textContent = `🔴 MISMATCH — this profile is ${anchorLabel}, but your VPN is now ${loc}. Switch your VPN back, or Start will warn you.`;
+    res.className = "pm-proxy-result err";
+  } else if (!n.isVpn && (n.connectionType === "residential" || n.connectionType === "mobile")) {
     res.textContent = `🔴 No VPN — this looks like your real ISP (${n.ispName || n.connectionType})${loc ? " · " + loc : ""}`;
     res.className = "pm-proxy-result err";
+  } else if (haveAnchor) {
+    res.textContent = `🟢 Matches profile location · ${loc} · ${n.ip}`;
+    res.className = "pm-proxy-result ok";
+  } else if (n.isVpn) {
+    res.textContent = `🟢 VPN detected · ${loc} · ${n.ip}`;
+    res.className = "pm-proxy-result ok";
   } else {
-    res.textContent = `🟡 ${loc || "Connected"} · ${n.ip} (type unknown)`;
+    res.textContent = `🟡 ${loc} · ${n.ip}`;
     res.className = "pm-proxy-result";
   }
 }

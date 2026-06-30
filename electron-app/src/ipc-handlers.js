@@ -663,7 +663,7 @@ function registerIpcHandlers() {
       // Classify the live connection so the UI/launch gate can tell whether a
       // VPN is actually on: commercial VPN exits read as "datacenter", the
       // user's real home connection reads as "residential"/"mobile".
-      network.connectionType = detectProxyType(network.ispName, network.ispAsn, network.organization);
+      network.connectionType = classifyConnection(network);
       network.isVpn = network.connectionType === "datacenter";
       return { ok: true, network };
     } catch (err) {
@@ -1334,17 +1334,22 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
       return { ok: false, error: "Couldn't verify your VPN location — no IP service was reachable. Make sure your VPN is connected, then click Start again.\n\nDetail: " + (err.message || err) };
     }
 
-    const currentType = detectProxyType(current.ispName, current.ispAsn, current.organization);
+    const currentType = classifyConnection(current);
     const currentIsVpn = currentType === "datacenter";
-    const last = profile.lastVpnNetwork || null;
 
-    // A profile is "VPN-bound" if it was explicitly put in VPN mode, or if the
-    // location it was first established on was itself a VPN/datacenter exit.
-    const requiresVpn = networkMode === "vpn" || (last && last.isVpn === true);
+    // The profile's ANCHOR location — what it's expected to run on. The location
+    // the user captured for the profile ("Capture current VPN/IP" / country
+    // setup → proxy.detected*) is authoritative; only if nothing was ever
+    // captured do we fall back to the last launched location.
+    const anchor = profileAnchor(profile);
+
+    // A profile is "VPN-bound" if it was explicitly put in VPN mode, or its
+    // anchor was a VPN/datacenter exit.
+    const requiresVpn = networkMode === "vpn" || (anchor && anchor.isVpn === true);
 
     // No-VPN guard: a VPN-bound profile must NOT open on the user's real ISP.
-    // Hard-block only when the live connection clearly looks like a consumer
-    // ISP (residential/mobile); an "unknown" type is allowed through so an
+    // Hard-block when the live connection looks like a consumer ISP
+    // (residential/mobile); an "unknown" type is allowed through so an
     // unrecognised VPN host can never falsely lock the user out.
     if (requiresVpn && !currentIsVpn && (currentType === "residential" || currentType === "mobile")) {
       return {
@@ -1355,23 +1360,24 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
       };
     }
 
-    if (last && !locationsMatch(last, current) && !options.acceptNewLocation) {
-      // Different location than last time → block the launch and ask the user.
+    if (anchor && !locationsMatch(anchor, current) && !options.acceptNewLocation) {
+      // Different location than the profile's anchor → block and ask the user.
       return {
         ok: false,
         needsLocationConfirm: true,
         profileId,
         profileName: profile.name || "Profile",
-        last: { ip: last.ip, country: last.country, countryCode: last.countryCode, city: last.city, state: last.state, capturedAt: last.capturedAt },
+        last: { ip: anchor.ip, country: anchor.country, countryCode: anchor.countryCode, city: anchor.city, state: anchor.state, capturedAt: anchor.capturedAt },
         current: { ip: current.ip, country: current.country, countryCode: current.countryCode, city: current.city, state: current.state }
       };
     }
 
-    // First launch, same location, or the user accepted the new one → remember
-    // exactly what we're launching with (incl. whether it was a VPN) so the next
-    // launch can compare location AND enforce the no-VPN guard.
+    // Reaching here = no anchor (brand-new), location matches, or user accepted
+    // the new location. Record the launched location. If the user explicitly
+    // accepted a NEW location, re-anchor the profile to it (update the captured
+    // proxy.detected* fields) so it becomes the profile's new expected home.
     try {
-      store.updateProfile(profileId, {
+      const patch = {
         lastVpnNetwork: {
           ip: current.ip,
           country: current.country,
@@ -1382,7 +1388,19 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
           isVpn: currentIsVpn,
           capturedAt: Date.now()
         }
-      });
+      };
+      if (options.acceptNewLocation || (anchor && anchor.source === "lastLaunch")) {
+        patch.proxy = {
+          detectedCountryCode: current.countryCode,
+          detectedCountry: current.country,
+          detectedCity: current.city,
+          detectedTimezone: current.timezone,
+          detectedIp: current.ip,
+          proxyType: currentIsVpn ? "vpn" : currentType,
+          detectedAt: Date.now()
+        };
+      }
+      store.updateProfile(profileId, patch);
     } catch (_) {}
   }
 
@@ -2323,10 +2341,46 @@ function locationsMatch(a, b) {
   return true; // same country, no finer signal available → treat as same place
 }
 
+// The location a profile is EXPECTED to run on. The location the user captured
+// for the profile (proxy.detected* — set by "Capture current VPN/IP" or country
+// setup) is authoritative because the user explicitly chose it. Only when no
+// capture exists do we fall back to the last launched location.
+function profileAnchor(profile) {
+  const px = (profile && profile.proxy) || {};
+  if (px.detectedCountryCode) {
+    return {
+      ip: px.detectedIp || "",
+      country: px.detectedCountry || "",
+      countryCode: px.detectedCountryCode || "",
+      city: px.detectedCity || "",
+      state: px.detectedState || "",
+      capturedAt: px.detectedAt || null,
+      isVpn: px.proxyType === "vpn" || px.proxyType === "datacenter",
+      source: "captured"
+    };
+  }
+  if (profile && profile.lastVpnNetwork && profile.lastVpnNetwork.countryCode) {
+    return { ...profile.lastVpnNetwork, source: "lastLaunch" };
+  }
+  return null;
+}
+
+// Classify a captured connection. Prefer the geo provider's own hosting/proxy/
+// mobile flags (ip-api supplies these on the free tier) and fall back to the
+// ISP-name regex. This is what tells us whether a VPN is actually on.
+function classifyConnection(n) {
+  if (!n) return "unknown";
+  if (n.isHosting || n.isProxy) return "datacenter";
+  if (n.isMobile) return "mobile";
+  return detectProxyType(n.ispName, n.ispAsn, n.organization);
+}
+
 async function captureCurrentNetwork() {
+  // ip-api FIRST: its free tier returns proxy/hosting/mobile flags, which is the
+  // most reliable "is a VPN on" signal. ipwho.is / ipapi.co are geo-only fallbacks.
   const urls = [
+    "http://ip-api.com/json/?fields=status,message,continent,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,mobile,proxy,hosting,query",
     "https://ipwho.is/",
-    "http://ip-api.com/json/?fields=status,message,continent,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,query",
     "https://ipapi.co/json/"
   ];
   let lastError = "";
@@ -2392,7 +2446,11 @@ function normalizeNetworkCapture(data) {
     ispName: String(connection.isp || data.isp || data.org || ""),
     ispAsn: String(connection.asn || data.asn || asnFromText || ""),
     ispOrg: String(connection.org || data.org || data.isp || ""),
-    organization: String(connection.org || data.org || data.isp || "")
+    organization: String(connection.org || data.org || data.isp || ""),
+    // ip-api free tier supplies these booleans; other providers omit them.
+    isHosting: Boolean(data.hosting),
+    isProxy: Boolean(data.proxy),
+    isMobile: Boolean(data.mobile)
   };
 }
 
