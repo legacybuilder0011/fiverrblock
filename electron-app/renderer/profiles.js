@@ -584,6 +584,7 @@ function populateForm(p) {
   updateConditionalRows();
   updateCookiePanel(p);
   updateUAPreview();
+  startAutoIpDetect();
 }
 
 function setVal(id, val) {
@@ -1288,6 +1289,56 @@ async function captureCurrentVpnLocation(targetResult) {
   return { ok: true, network: n };
 }
 
+// ── Always-on current-IP detector ───────────────────────────────────────────
+// Unlike the "Capture current VPN/IP" button (which overwrites the fingerprint
+// fields and saves the profile), this is read-only: it just shows what the PC's
+// connection looks like RIGHT NOW so the user can see at a glance whether their
+// VPN is on and where it exits. Runs automatically whenever a VPN/direct profile
+// is open and refreshes on a timer + on window focus — no click required.
+let _autoIpTimer = null;
+
+function stopAutoIpDetect() {
+  if (_autoIpTimer) { clearInterval(_autoIpTimer); _autoIpTimer = null; }
+}
+
+async function autoDetectCurrentIp() {
+  const res = $("vpnCaptureResult");
+  if (!res) return;
+  const mode = $("px-networkMode")?.value;
+  if (mode !== "vpn" && mode !== "direct") { stopAutoIpDetect(); return; }
+  if (document.hidden) return;
+
+  const r = await msg("NETWORK_CAPTURE_CURRENT");
+  // User may have switched profile/mode while the lookup was in flight.
+  if (($("px-networkMode")?.value) !== mode) return;
+
+  if (!r.ok || !r.network) {
+    res.textContent = "⚠️ No connection detected — VPN may be off or no internet (" + (r.error || "lookup failed") + ")";
+    res.className = "pm-proxy-result err";
+    return;
+  }
+  const n = r.network;
+  const loc = [n.city, n.country || (n.countryCode || "").toUpperCase()].filter(Boolean).join(", ");
+  if (n.isVpn) {
+    res.textContent = `🟢 VPN detected · ${loc} · ${n.ip}`;
+    res.className = "pm-proxy-result ok";
+  } else if (n.connectionType === "residential" || n.connectionType === "mobile") {
+    res.textContent = `🔴 No VPN — this looks like your real ISP (${n.ispName || n.connectionType})${loc ? " · " + loc : ""}`;
+    res.className = "pm-proxy-result err";
+  } else {
+    res.textContent = `🟡 ${loc || "Connected"} · ${n.ip} (type unknown)`;
+    res.className = "pm-proxy-result";
+  }
+}
+
+function startAutoIpDetect() {
+  stopAutoIpDetect();
+  const mode = $("px-networkMode")?.value;
+  if (mode !== "vpn" && mode !== "direct") return;
+  autoDetectCurrentIp();
+  _autoIpTimer = setInterval(autoDetectCurrentIp, 30000);
+}
+
 function languageForCountry(countryCode) {
   const map = {
     us: "en-US", gb: "en-GB", ca: "en-CA", au: "en-AU", de: "de-DE", nl: "nl-NL",
@@ -1456,8 +1507,12 @@ function bindFormEvents() {
     if (mode === "vpn" || mode === "direct") setVal("px-enabled", "false");
     updateConditionalRows();
     if (mode === "vpn") captureCurrentVpnLocation();
+    startAutoIpDetect();
   });
   $("btnCaptureVpn")?.addEventListener("click", captureCurrentVpnLocation);
+  // Re-check the live connection whenever the app regains focus (e.g. after the
+  // user toggled their VPN in another window).
+  window.addEventListener("focus", () => { autoDetectCurrentIp(); });
   $("btnAuditProfile")?.addEventListener("click", auditCurrentProfile);
 
   // Browser version custom input — live-update UA preview

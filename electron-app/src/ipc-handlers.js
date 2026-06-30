@@ -660,6 +660,11 @@ function registerIpcHandlers() {
   ipcMain.handle("NETWORK_CAPTURE_CURRENT", async () => {
     try {
       const network = await captureCurrentNetwork();
+      // Classify the live connection so the UI/launch gate can tell whether a
+      // VPN is actually on: commercial VPN exits read as "datacenter", the
+      // user's real home connection reads as "residential"/"mobile".
+      network.connectionType = detectProxyType(network.ispName, network.ispAsn, network.organization);
+      network.isVpn = network.connectionType === "datacenter";
       return { ok: true, network };
     } catch (err) {
       return { ok: false, error: err.message || String(err) };
@@ -1329,7 +1334,27 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
       return { ok: false, error: "Couldn't verify your VPN location — no IP service was reachable. Make sure your VPN is connected, then click Start again.\n\nDetail: " + (err.message || err) };
     }
 
+    const currentType = detectProxyType(current.ispName, current.ispAsn, current.organization);
+    const currentIsVpn = currentType === "datacenter";
     const last = profile.lastVpnNetwork || null;
+
+    // A profile is "VPN-bound" if it was explicitly put in VPN mode, or if the
+    // location it was first established on was itself a VPN/datacenter exit.
+    const requiresVpn = networkMode === "vpn" || (last && last.isVpn === true);
+
+    // No-VPN guard: a VPN-bound profile must NOT open on the user's real ISP.
+    // Hard-block only when the live connection clearly looks like a consumer
+    // ISP (residential/mobile); an "unknown" type is allowed through so an
+    // unrecognised VPN host can never falsely lock the user out.
+    if (requiresVpn && !currentIsVpn && (currentType === "residential" || currentType === "mobile")) {
+      return {
+        ok: false,
+        error: "No VPN connected. This profile is set up to run behind a VPN — connect your VPN first, then click Start.\n\nRight now you're on what looks like a normal ISP"
+          + (current.ispName ? ` (${current.ispName})` : "")
+          + (current.country ? `, ${current.country}` : "") + "."
+      };
+    }
+
     if (last && !locationsMatch(last, current) && !options.acceptNewLocation) {
       // Different location than last time → block the launch and ask the user.
       return {
@@ -1343,7 +1368,8 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
     }
 
     // First launch, same location, or the user accepted the new one → remember
-    // exactly what we're launching with so the next launch can compare to it.
+    // exactly what we're launching with (incl. whether it was a VPN) so the next
+    // launch can compare location AND enforce the no-VPN guard.
     try {
       store.updateProfile(profileId, {
         lastVpnNetwork: {
@@ -1352,6 +1378,8 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
           countryCode: current.countryCode,
           city: current.city,
           state: current.state,
+          connectionType: currentType,
+          isVpn: currentIsVpn,
           capturedAt: Date.now()
         }
       });
