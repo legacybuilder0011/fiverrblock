@@ -341,6 +341,61 @@ async function assignToTab(profileId) {
 // =========================================================
 // Sidebar rendering
 // =========================================================
+// Static antidetect-strength score (0-100) for a profile, computed from its
+// config — no browser needed. Reflects the two real risks: DETECTABILITY (does
+// it look spoofed/bot) and LINKABILITY (can two profiles be tied to one machine
+// or IP). The deep, live check remains the red-team page.
+function computeProfileStrength(p) {
+  const fp = p.fingerprint || {};
+  const px = p.proxy || {};
+  const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+  const os = p.os || "windows";
+  const reasons = [];
+  let score = 0;
+
+  // ── Detectability (max 55) ──────────────────────────────────────────────
+  score += 10; // automation-marker + toString cloak are always on in the preload
+
+  const tzMode = fp.timezone || "auto";
+  if (tzMode === "auto") score += 15;
+  else if (fp.timezoneValue) score += 12;
+  else { score += 4; reasons.push("Timezone is manual with no value set"); }
+
+  const w = Number(fp.screenWidth) || 0, h = Number(fp.screenHeight) || 0;
+  const mobileOS = os === "android" || os === "ios";
+  const mobileScreen = w > 0 && Math.min(w, h) <= 600;
+  if (w === 0) score += 10;
+  else if (mobileOS === mobileScreen) score += 15;
+  else { score += 3; reasons.push(mobileOS ? "Mobile OS but desktop-size screen" : "Desktop OS but phone-size screen"); }
+
+  const glr = String(fp.webglRenderer || fp.gpuRenderer || "");
+  const glBad = glr && (os === "macos" || os === "ios" || os === "linux") && /Direct3D|D3D11/i.test(glr);
+  if (!glBad) score += 10; else reasons.push("WebGL renderer doesn't match the OS");
+
+  if ((fp.webrtc || "altered") === "real") reasons.push("WebRTC = Real → can leak your true IP");
+  else score += 5;
+
+  // ── Linkability (max 45) ────────────────────────────────────────────────
+  if (mode === "proxy" && px.host) score += 25;
+  else if (mode === "vpn") { score += 6; reasons.push("Shared VPN IP — all VPN profiles exit the same IP"); }
+  else reasons.push("No dedicated proxy — profiles share one IP");
+
+  if (fp.fingerprintSeed) score += 10;
+  else reasons.push("No per-profile fingerprint seed (canvas/audio not unique)");
+
+  const stealth = fp.spoofingLevel === "stealth" || (Array.isArray(fp.spoofSkipHosts) && fp.spoofSkipHosts.length > 0);
+  if (!stealth) score += 10;
+  else { score += 3; reasons.push("Stealth/allowlist shares your real hardware across profiles"); }
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  let grade, cls;
+  if (score >= 85) { grade = "Strong"; cls = "str-strong"; }
+  else if (score >= 65) { grade = "Good"; cls = "str-good"; }
+  else if (score >= 45) { grade = "Fair"; cls = "str-fair"; }
+  else { grade = "Weak"; cls = "str-weak"; }
+  return { score, grade, cls, reasons };
+}
+
 function renderList() {
   const list = $("profileList");
   const search = $("searchInput").value.toLowerCase();
@@ -377,12 +432,16 @@ function renderList() {
     const browserName = p.browserApp || "chrome";
     const browserBadge = `<span class="chip browser-chip" title="${browserLabel(browserName)}">${browserIcons[browserName] || "&#9689;"} ${browserLabel(browserName)}</span>`;
     const incogBadge   = p.windowMode === "incognito" ? `<span class="chip incog-chip">Incognito</span>` : "";
+    const st = computeProfileStrength(p);
+    const strengthTitle = `Antidetect strength ${st.score}/100 (${st.grade})` + (st.reasons.length ? " — fix: " + st.reasons.join("; ") : " — no issues found");
+    const strengthBadge = `<span class="chip ${st.cls}" title="${escHtml(strengthTitle)}">&#128737; ${st.score}</span>`;
 
     card.innerHTML = `
       <input type="checkbox" class="pm-card-check" data-id="${p.id}" />
       <div class="pm-card-body">
         <div class="pm-card-name">${escHtml(p.name)}</div>
         <div class="pm-card-meta">
+          ${strengthBadge}
           ${browserBadge}
           ${osChip(p.os)}
           ${statusChip(p.status)}
@@ -1692,6 +1751,8 @@ function bindSessionEvents() {
   });
   $("btnSaveProxyLib")?.addEventListener("click", saveProxyLibEntry);
   $("btnCancelProxyLib")?.addEventListener("click", resetProxyLibForm);
+  $("btnImportProxies")?.addEventListener("click", importProxies);
+  $("btnAssignProxies")?.addEventListener("click", assignProxiesToEachProfile);
   $("btnToggleProxyLib")?.addEventListener("click", () => {
     const panel = $("proxyLibPanel");
     if (panel) panel.hidden = !panel.hidden;
@@ -2626,6 +2687,85 @@ async function saveProxyLibEntry() {
   renderCountryProxies(selectedCountry, selectedCountry ? COUNTRY_PRESETS[selectedCountry]?.name : null);
   resetProxyLibForm();
   toast("Proxy saved to library");
+}
+
+// Parse one line of a pasted proxy list. Accepts:
+//   host:port:user:pass   host:port   user:pass@host:port   scheme://user:pass@host:port
+function parseProxyLine(line, defaultScheme) {
+  line = String(line || "").trim();
+  if (!line) return null;
+  let scheme = defaultScheme || "http";
+  const sm = line.match(/^(socks5|socks4|https?):\/\//i);
+  if (sm) { scheme = sm[1].toLowerCase(); line = line.slice(sm[0].length); }
+  let host, port, username = "", password = "";
+  if (line.includes("@")) {
+    const at = line.lastIndexOf("@");
+    const cred = line.slice(0, at), hp = line.slice(at + 1);
+    const cp = cred.split(":"); username = cp[0] || ""; password = cp.slice(1).join(":");
+    const hpp = hp.split(":"); host = hpp[0]; port = Number(hpp[1]);
+  } else {
+    const parts = line.split(":");
+    host = parts[0]; port = Number(parts[1]);
+    if (parts.length >= 4) { username = parts[2]; password = parts.slice(3).join(":"); }
+  }
+  if (!host || !port || Number.isNaN(port)) return null;
+  return { label: `${host}:${port}`, country: "", scheme, host, port, username, password, ispName: "", ispAsn: "", ispOrg: "", city: "", private: true, source: "private" };
+}
+
+async function importProxies() {
+  const text = $("proxyImportText")?.value || "";
+  const scheme = $("proxyImportScheme")?.value || "http";
+  const status = $("proxyImportStatus");
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) { if (status) { status.textContent = "Paste at least one proxy line first."; status.className = "pm-proxy-result err"; } return; }
+  let added = 0, bad = 0, dup = 0;
+  for (const line of lines) {
+    const entry = parseProxyLine(line, scheme);
+    if (!entry) { bad++; continue; }
+    if (proxyLibrary.some((e) => e.host === entry.host && String(e.port) === String(entry.port) && (e.username || "") === (entry.username || ""))) { dup++; continue; }
+    const r = await msg("PROXY_LIB_ADD", { entry });
+    if (r.ok && r.entry) { proxyLibrary.push(r.entry); added++; } else { bad++; }
+  }
+  renderProxyLibrary();
+  if (added) $("proxyImportText").value = "";
+  if (status) {
+    status.textContent = `Imported ${added}${dup ? `, skipped ${dup} duplicate(s)` : ""}${bad ? `, ${bad} unreadable line(s)` : ""}. Library: ${proxyLibrary.length} total.`;
+    status.className = added ? "pm-proxy-result ok" : "pm-proxy-result err";
+  }
+}
+
+// Give each target profile its OWN distinct proxy IP (fixes the shared-VPN-IP
+// linkability problem). Targets = checkbox-selected profiles, or all if none.
+async function assignProxiesToEachProfile() {
+  const status = $("proxyImportStatus");
+  const pool = proxyLibrary.filter((e) => e && e.host && e.port);
+  if (!pool.length) { if (status) { status.textContent = "No proxies in the library — import some first."; status.className = "pm-proxy-result err"; } return; }
+
+  const targetIds = selected.size ? [...selected] : profiles.filter((p) => !p.deletedAt).map((p) => p.id);
+  const targets = targetIds.map((id) => profiles.find((p) => p.id === id)).filter(Boolean);
+  if (!targets.length) { toast("No profiles to assign"); return; }
+  if (targets.length > pool.length && !confirm(`You have ${pool.length} prox${pool.length === 1 ? "y" : "ies"} but ${targets.length} profile(s). Only the first ${pool.length} will get a unique IP. Continue?`)) return;
+
+  // Prefer proxies not already in use by some other profile, so re-running tops up.
+  const inUse = new Set();
+  for (const p of profiles) { const px = p.proxy || {}; if (px.host) inUse.add(px.host + ":" + px.port); }
+  const ordered = [...pool.filter((e) => !inUse.has(e.host + ":" + e.port)), ...pool.filter((e) => inUse.has(e.host + ":" + e.port))];
+
+  let assigned = 0, i = 0;
+  for (const p of targets) {
+    const e = ordered[i]; if (!e) break; i++;
+    const proxy = { networkMode: "proxy", enabled: true, scheme: e.scheme || "http", host: e.host, port: Number(e.port) || 1080, username: e.username || "", password: e.password || "" };
+    const r = await msg("PROFILE_UPDATE", { id: p.id, data: { proxy } });
+    if (r.ok) assigned++;
+  }
+  await loadProfiles();
+  renderList();
+  const short = targets.length - assigned;
+  if (status) {
+    status.textContent = `Assigned a unique IP to ${assigned} profile(s)${short > 0 ? `; ${short} still unassigned (import ${short} more).` : "."}`;
+    status.className = short > 0 ? "pm-proxy-result" : "pm-proxy-result ok";
+  }
+  toast(`Assigned ${assigned} proxies — one IP per profile`);
 }
 
 function resetProxyLibForm() {

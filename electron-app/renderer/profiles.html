@@ -197,8 +197,8 @@
               <span class="pm-engine-value">Chromium only</span>
             </div>
             <div>
-              <span class="pm-engine-label">Firefox / Safari</span>
-              <span class="pm-engine-value">Identity templates</span>
+              <span class="pm-engine-label">Browser identities</span>
+              <span class="pm-engine-value">Chrome, Brave, Edge (all Chromium)</span>
             </div>
             <div>
               <span class="pm-engine-label">C++ / AI fingerprint service</span>
@@ -235,8 +235,6 @@
               <option value="chrome">Chrome</option>
               <option value="brave">Brave</option>
               <option value="edge">Edge</option>
-              <option value="firefox">Firefox</option>
-              <option value="safari">Safari</option>
             </select>
           </div>
           <div class="pm-row" id="browserVersionRow">
@@ -981,6 +979,26 @@
                 </div>
               </div>
             </details>
+
+            <!-- Bulk import & one-per-profile assign -->
+            <div class="pm-proxy-lib-form" id="proxyImportForm">
+              <div class="pm-section-title" style="font-size:11px;margin-bottom:8px;color:var(--muted)">Bulk import &amp; assign (one dedicated IP per profile)</div>
+              <textarea id="proxyImportText" class="pm-input" rows="4" style="width:100%;font-family:monospace;font-size:12px" placeholder="Paste your Webshare / IPRoyal list — one per line:&#10;host:port:user:pass&#10;host:port&#10;user:pass@host:port"></textarea>
+              <div class="pm-row" style="margin-top:8px">
+                <label class="pm-label">Default scheme</label>
+                <select id="proxyImportScheme" class="pm-sel-sm">
+                  <option value="http">HTTP</option>
+                  <option value="https">HTTPS</option>
+                  <option value="socks5">SOCKS5</option>
+                  <option value="socks4">SOCKS4</option>
+                </select>
+              </div>
+              <div class="pm-btn-row" style="margin-top:8px">
+                <button type="button" class="pm-btn primary" id="btnImportProxies">Import to library</button>
+                <button type="button" class="pm-btn" id="btnAssignProxies" title="Give each selected profile (or all profiles) its own unique proxy IP">Assign 1 IP &rarr; each profile</button>
+              </div>
+              <div id="proxyImportStatus" class="pm-proxy-result" style="margin-top:6px"></div>
+            </div>
 
             <!-- Manual add / edit form -->
             <div class="pm-proxy-lib-form" id="proxyLibForm">
