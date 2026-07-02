@@ -1075,7 +1075,7 @@ function versionForBrowser(browser, osName) {
   // Real users are on the current release (auto-updated). Spread across the two
   // or three most recent majors so a batch of profiles isn't all identical, but
   // never far behind — an old version is a tell on its own.
-  const latestMajor = Number(String(latestChromeForOs(osName)).split(".")[0]) || 149;
+  const latestMajor = Number(String(latestChromeForOs(osName)).split(".")[0]) || 150;
   const majors = [latestMajor, latestMajor, latestMajor - 1].filter((n) => n > 0);
   return String(randomChoice(majors));
 }
