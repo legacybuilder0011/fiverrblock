@@ -240,20 +240,19 @@
           <div class="pm-row" id="browserVersionRow">
             <label class="pm-label">Version</label>
             <select id="fp-browserVersion" class="pm-sel">
-              <option value="120">120</option>
-              <option value="122">122</option>
-              <option value="124">124</option>
-              <option value="131">131</option>
-              <option value="136">136</option>
-              <option value="148">148 (latest)</option>
-              <option value="custom">Custom…</option>
+              <option value="auto">Auto (latest — recommended)</option>
+              <option value="custom">Custom (pin a version)…</option>
             </select>
           </div>
           <div class="pm-row" id="browserVersionCustomRow" hidden>
             <label class="pm-label">Custom version</label>
             <input type="text" id="fp-browserVersionCustom" class="pm-input" placeholder="e.g. 149.0.0.0" />
           </div>
-          <div class="pm-hint" id="browserVersionHint">Sets the browser version in the auto-generated User-Agent string (applies when UA mode is Auto).</div>
+          <div class="pm-hint" id="browserVersionHint">Sets the browser version in the auto-generated User-Agent + Client-Hints (applies when UA mode is Auto). <b>Auto</b> uses the current real-world Chrome release for the profile's OS (e.g. Windows/macOS 149, Linux/Android/iOS 150), so profiles match what real users run instead of looking outdated.</div>
+          <div class="pm-row" style="margin-top:8px">
+            <button type="button" id="btnGenIdentity" class="pm-btn pm-btn-sm">🎲 Generate coherent identity</button>
+          </div>
+          <div class="pm-hint" id="genIdentityHint">Builds a fully consistent device fingerprint — UA, WebGL/GPU, screen, CPU/RAM and version all matched to the OS. Timezone, language &amp; geolocation are set to <b>Auto</b> so they follow your actual VPN/proxy exit IP and can never mismatch it. Keeps your name and proxy. Review, then Save.</div>
         </div>
 
         <div class="pm-section">
@@ -597,7 +596,7 @@
           <div class="pm-row">
             <label class="pm-label">IP handling</label>
             <select id="fp-webrtc" class="pm-sel">
-              <option value="altered">Altered (show proxy IP)</option>
+              <option value="altered">Altered (show VPN / proxy IP)</option>
               <option value="no-udp">Without UDP (block non-proxied)</option>
               <option value="off">Off (disable WebRTC)</option>
               <option value="real">Real (not recommended)</option>

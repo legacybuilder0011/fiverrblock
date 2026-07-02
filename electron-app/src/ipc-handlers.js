@@ -209,6 +209,8 @@ function startPageUrl(errorMsg, failedUrl) {
 
 // profileId → BrowserWindow reference for profile browser windows
 const profileWindows = new Map();
+// profileId → { mode, anchor, requiresVpn, profileName } for the VPN kill-switch
+const profileNetworkMeta = new Map();
 const cloudPhoneWindows = new Map();
 // windowId → { profileId, tabs: [{id, view, ...}], activeTabId }
 const windowTabState = new Map();
@@ -249,8 +251,8 @@ function registerIpcHandlers() {
     return { ok: true, profile };
   });
 
-  ipcMain.handle("PROFILE_COUNTRY_IDENTITY", async (_ev, { country = "us", index = 1, deviceClass = "desktop", browserApp = "random" } = {}) => {
-    return { ok: true, data: store.buildCountryProfileData(country, index, { deviceClass, browserApp }) };
+  ipcMain.handle("PROFILE_COUNTRY_IDENTITY", async (_ev, { country = "us", index = 1, deviceClass = "desktop", browserApp = "random", os } = {}) => {
+    return { ok: true, data: store.buildCountryProfileData(country, index, { deviceClass, browserApp, os }) };
   });
 
   ipcMain.handle("PROFILE_UPDATE", async (_ev, { id, data = {} } = {}) => {
@@ -268,6 +270,11 @@ function registerIpcHandlers() {
   ipcMain.handle("PROFILE_DELETE", async (_ev, { id, hard = false } = {}) => {
     store.deleteProfile(id, hard);
     return { ok: true };
+  });
+
+  ipcMain.handle("PROFILE_PURGE_TRASH", async () => {
+    const count = store.purgeDeletedProfiles();
+    return { ok: true, count };
   });
 
   ipcMain.handle("PROFILE_RESTORE", async (_ev, { id } = {}) => {
@@ -1290,7 +1297,7 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   }
 
   const profiles = store.getProfiles();
-  const profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
+  let profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
   if (!profile) return { ok: false, error: "Profile not found" };
 
   // ── Required fields & consistency checks ─────────────────────────────────────
@@ -1377,6 +1384,15 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
     // accepted a NEW location, re-anchor the profile to it (update the captured
     // proxy.detected* fields) so it becomes the profile's new expected home.
     try {
+      // Always refresh the detected* fields from the LIVE exit so the
+      // "Auto (from VPN / proxy IP)" timezone / language / geolocation resolve
+      // to the REAL location of the VPN the user is on — including latitude/
+      // longitude, which the old patch dropped (so geo-auto never worked for
+      // VPN). Persisting to the store here means the fingerprint built
+      // downstream (addTab / GET_PROFILE_CONFIG, which read the store) uses the
+      // correct location. We only reach this line once `current` already
+      // matched the profile's anchor country (or the user accepted a new one),
+      // so refreshing every launch keeps the anchor consistent, not drifting.
       const patch = {
         lastVpnNetwork: {
           ip: current.ip,
@@ -1387,20 +1403,22 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
           connectionType: currentType,
           isVpn: currentIsVpn,
           capturedAt: Date.now()
-        }
-      };
-      if (options.acceptNewLocation || (anchor && anchor.source === "lastLaunch")) {
-        patch.proxy = {
+        },
+        proxy: {
           detectedCountryCode: current.countryCode,
           detectedCountry: current.country,
           detectedCity: current.city,
+          detectedState: current.state,
           detectedTimezone: current.timezone,
+          detectedLatitude: current.latitude,
+          detectedLongitude: current.longitude,
           detectedIp: current.ip,
           proxyType: currentIsVpn ? "vpn" : currentType,
           detectedAt: Date.now()
-        };
-      }
-      store.updateProfile(profileId, patch);
+        }
+      };
+      const updated = store.updateProfile(profileId, patch);
+      if (updated) profile = updated; // use the fresh object for THIS launch's session/config
     } catch (_) {}
   }
 
@@ -1565,6 +1583,27 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   sessionMgr.registerWindow(win.id, profileId);
   store.saveOpenProfiles([...profileWindows.keys()]);
 
+  // ── VPN kill-switch registration ────────────────────────────────────────────
+  // For vpn/direct profiles the browser rides the system-wide VPN. If that VPN
+  // drops while browsing, the very next request would go out on the real ISP —
+  // a hard deanonymization leak. Register this window with the watcher so it is
+  // force-closed within seconds of the tunnel dropping. (proxy-mode profiles
+  // exit through their own proxy, not the system VPN, so they're not watched.)
+  if (networkMode === "vpn" || networkMode === "direct") {
+    // Re-fetch so we pick up lastVpnNetwork just written by the launch lock.
+    const freshProfile = store.getProfiles().find((p) => p.id === profileId) || profile;
+    const anchor = profileAnchor(freshProfile);
+    const anchorCountry = anchor && anchor.countryCode ? String(anchor.countryCode).toLowerCase() : "";
+    profileNetworkMeta.set(profileId, {
+      mode: networkMode,
+      anchorCountry, // if empty, the watcher self-baselines from the first probe
+      anchorLabel: anchor ? (anchor.city || anchor.country || String(anchor.countryCode || "").toUpperCase()) : "",
+      profileName: profile.name || "Profile"
+    });
+    logError(`vpn kill-switch: now watching profile=${profileId} (${profile.name || "Profile"}) mode=${networkMode} anchorCountry=${anchorCountry || "(self-baseline)"}`);
+    startVpnWatch();
+  }
+
   const showProfileWindow = () => {
     if (win.isDestroyed()) return;
     try {
@@ -1630,6 +1669,8 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
       windowTabState.delete(win.id);
     }
     profileWindows.delete(profileId);
+    profileNetworkMeta.delete(profileId);
+    stopVpnWatchIfIdle();
     sessionMgr.unregisterWindow(win.id);
     store.saveOpenProfiles([...profileWindows.keys()]);
     notifyManagerWindows("WINDOWS_CHANGED");
@@ -1695,6 +1736,26 @@ function addTab(windowId, url) {
     }
   });
   sessionMgr.assertProfileSession(view.webContents.session, profileId);
+
+  // ── Native WebRTC IP-leak guard ─────────────────────────────────────────────
+  // Set at the Chromium layer, which a page cannot detect or bypass (the JS
+  // RTCPeerConnection patch in the preload is only defense-in-depth on top of
+  // this). WebRTC gathers ICE candidates over raw UDP, which normally ignores
+  // the HTTP proxy and would expose the machine's REAL public IP via STUN — the
+  // classic "proxy but WebRTC leaks your home IP" tell.
+  //   • proxy mode  → disable_non_proxied_udp: no UDP may leave outside the
+  //     proxy, so WebRTC can never reach the real IP.
+  //   • vpn/direct  → default_public_interface_only: all traffic already rides
+  //     the tunnel; we just stop Chromium enumerating extra local candidates.
+  try {
+    const _px = (profile && profile.proxy) || {};
+    const _mode = _px.networkMode || (_px.enabled ? "proxy" : "direct");
+    view.webContents.setWebRTCIPHandlingPolicy(
+      _mode === "proxy" ? "disable_non_proxied_udp" : "default_public_interface_only"
+    );
+  } catch (err) {
+    logError(`setWebRTCIPHandlingPolicy failed: ${err && (err.message || err)}`);
+  }
 
   const tabId = "t_" + (nextTabId++);
   webContentsProfileMap.set(view.webContents.id, profileId);
@@ -2066,7 +2127,7 @@ async function saveWindowSession(profileId, win) {
   } catch (_) { return 0; }
 }
 
-function notifyManagerWindows(type) {
+function notifyManagerWindows(type, payload) {
   // Broadcast to manager windows, not profile browser or provider console windows.
   const profileWinIds = new Set([
     ...[...profileWindows.values()].map((w) => w.id),
@@ -2076,7 +2137,7 @@ function notifyManagerWindows(type) {
     if (!profileWinIds.has(win.id) && !win.isDestroyed()) {
       try {
         if (win.webContents && !win.webContents.isDestroyed()) {
-          win.webContents.send("MAIN_EVENT", { type });
+          win.webContents.send("MAIN_EVENT", payload ? { type, ...payload } : { type });
         }
       } catch (_) {}
     }
@@ -2373,6 +2434,137 @@ function classifyConnection(n) {
   if (n.isHosting || n.isProxy) return "datacenter";
   if (n.isMobile) return "mobile";
   return detectProxyType(n.ispName, n.ispAsn, n.organization);
+}
+
+// ── VPN kill-switch watcher ───────────────────────────────────────────────────
+// While any vpn/direct profile window is open we watch the system network. If
+// the VPN drops — the tunnel adapter vanishes, the exit flips to the real ISP,
+// or the internet goes dark — we force-close the affected profile windows within
+// seconds so no request escapes on the naked connection. The user reopens the
+// profile once the VPN is back (the launch-time location lock re-verifies).
+let vpnWatchTimer = null;
+let vpnWatchBaselineSig = null;
+let vpnWatchFailStreak = 0;
+let vpnWatchBusy = false;
+let vpnWatchTickCount = 0;
+
+const VPN_WATCH_TICK_MS = 2500;      // interface poll cadence — the fast trigger
+const VPN_WATCH_CAPTURE_EVERY = 2;   // full IP capture every N ticks (~5s heartbeat)
+const VPN_WATCH_FAIL_LIMIT = 2;      // consecutive lookup failures = connection down
+
+function ifaceSignature() {
+  // Stable string of the machine's non-internal IP addresses. A VPN tunnel
+  // adapter appearing/disappearing changes this within ~1s of the event.
+  try {
+    const ifs = os.networkInterfaces();
+    const addrs = [];
+    for (const name of Object.keys(ifs)) {
+      for (const a of ifs[name] || []) {
+        if (!a.internal && a.address) addrs.push(name + "|" + a.address);
+      }
+    }
+    return addrs.sort().join(",");
+  } catch (_) { return ""; }
+}
+
+function watchedProfileIds() {
+  return [...profileNetworkMeta.keys()].filter((id) => profileWindows.has(id));
+}
+
+function startVpnWatch() {
+  if (vpnWatchTimer) return;
+  vpnWatchBaselineSig = ifaceSignature();
+  vpnWatchFailStreak = 0;
+  vpnWatchTickCount = 0;
+  vpnWatchTimer = setInterval(runVpnWatchTick, VPN_WATCH_TICK_MS);
+  if (vpnWatchTimer.unref) vpnWatchTimer.unref();
+}
+
+function stopVpnWatchIfIdle() {
+  if (watchedProfileIds().length === 0 && vpnWatchTimer) {
+    clearInterval(vpnWatchTimer);
+    vpnWatchTimer = null;
+    vpnWatchBaselineSig = null;
+  }
+}
+
+async function runVpnWatchTick() {
+  if (vpnWatchBusy) return;
+  const ids = watchedProfileIds();
+  if (ids.length === 0) { stopVpnWatchIfIdle(); return; }
+  vpnWatchBusy = true;
+  try {
+    vpnWatchTickCount++;
+    const sig = ifaceSignature();
+    const ifaceChanged = sig !== vpnWatchBaselineSig;
+    const periodic = vpnWatchTickCount % VPN_WATCH_CAPTURE_EVERY === 0;
+    // Only spend an IP lookup when the interfaces changed or on the heartbeat.
+    if (!ifaceChanged && !periodic) return;
+    if (ifaceChanged) logError(`vpn kill-switch: network interfaces changed — verifying exit IP`);
+
+    let current = null;
+    try {
+      current = await captureCurrentNetwork();
+      vpnWatchFailStreak = 0;
+    } catch (err) {
+      vpnWatchFailStreak++;
+      logError(`vpn kill-switch: exit-IP probe FAILED ${vpnWatchFailStreak}/${VPN_WATCH_FAIL_LIMIT} — ${err && (err.message || err)}`);
+      // No network reachable = VPN killswitch cut everything, or link is down.
+      // Close so nothing resumes on a naked connection when it comes back.
+      if (vpnWatchFailStreak >= VPN_WATCH_FAIL_LIMIT) {
+        killWatchedProfiles(ids, "Your internet/VPN connection dropped — no network is reachable. Profile closed to prevent a leak. Reconnect your VPN and start it again.");
+        vpnWatchFailStreak = 0;
+      }
+      return;
+    }
+
+    // Network reachable again → adopt the new interface signature as baseline so
+    // we don't re-trigger on the same change every tick.
+    vpnWatchBaselineSig = sig;
+
+    const cc = String(current.countryCode || "").toLowerCase();
+    const type = classifyConnection(current);
+    logError(`vpn kill-switch: exit OK country=${cc || "?"} type=${type} ip=${current.ip || "?"} watching=${ids.length}`);
+    if (!cc) return; // couldn't determine country this round — wait for a clean probe
+
+    for (const id of ids) {
+      const meta = profileNetworkMeta.get(id);
+      if (!meta) continue;
+      // Self-baseline: if we never had an anchor country, adopt the first good
+      // probe as the profile's expected exit country.
+      if (!meta.anchorCountry) {
+        meta.anchorCountry = cc;
+        meta.anchorLabel = current.country || cc.toUpperCase();
+        logError(`vpn kill-switch: baselined profile=${id} to country=${cc}`);
+        continue;
+      }
+      // Exit country changed = the VPN dropped to your real ISP or switched
+      // region. This is the reliable trigger (providers agree on country even
+      // when they disagree on city), and it fires regardless of whether the VPN
+      // classifies as datacenter/vpn/unknown.
+      if (cc !== meta.anchorCountry) {
+        killWatchedProfiles([id], `VPN changed or dropped — your connection is now exiting in ${current.country || cc.toUpperCase()} (this profile expects ${meta.anchorLabel || meta.anchorCountry.toUpperCase()}). Profile closed to stop an IP leak. Reconnect the VPN and start it again.`);
+      }
+    }
+  } finally {
+    vpnWatchBusy = false;
+  }
+}
+
+function killWatchedProfiles(ids, reason) {
+  for (const id of ids) {
+    if (!profileNetworkMeta.has(id)) continue;
+    const meta = profileNetworkMeta.get(id);
+    const name = (meta && meta.profileName) || "Profile";
+    const win = profileWindows.get(id);
+    logError(`vpn kill-switch: closing profile=${id} (${name}) reason=${reason}`);
+    profileNetworkMeta.delete(id);
+    if (win && !win.isDestroyed()) {
+      try { win.close(); } catch (_) {}
+    }
+    notifyManagerWindows("VPN_DROPPED", { profileId: id, profileName: name, reason });
+  }
+  stopVpnWatchIfIdle();
 }
 
 async function captureCurrentNetwork() {

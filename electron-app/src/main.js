@@ -3,6 +3,7 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage, dialog, protocol } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { ensureAppProtocol } = require("./app-protocol");
 
 // Register a custom protocol BEFORE app.ready so it can be used to load HTML files.
 // file:// URLs into app.asar.unpacked/ confuse Electron's ASAR interceptor (the path
@@ -107,42 +108,9 @@ app.on("second-instance", () => {
 app.whenReady().then(async () => {
   appReady = true;
 
-  // Wire up the psapp:// protocol handler. Reads bundled files via fs (ASAR-aware)
-  // and returns them as a fetch Response. This is the only reliable way to load
-  // local HTML/JS/CSS in Electron 31 BrowserWindow when the app is packed.
-  const MIME = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".svg": "image/svg+xml",
-    ".gif": "image/gif",
-    ".ico": "image/x-icon",
-    ".woff": "font/woff",
-    ".woff2": "font/woff2",
-    ".ttf": "font/ttf",
-    ".map": "application/json"
-  };
-  protocol.handle("psapp", (request) => {
-    let filePath = "<unresolved>";
-    try {
-      const u = new URL(request.url);
-      // psapp://app/renderer/tab-strip.html -> renderer/tab-strip.html
-      // Strip leading slash from pathname; host segment is just a placeholder.
-      const rel = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
-      filePath = path.join(app.getAppPath(), rel);
-      const data = fs.readFileSync(filePath);
-      const ext = path.extname(filePath).toLowerCase();
-      logInfo(`psapp served ${request.url} -> ${filePath} (${data.length} bytes)`);
-      return new Response(data, { headers: { "Content-Type": MIME[ext] || "application/octet-stream" } });
-    } catch (err) {
-      logError(`psapp FAILED for ${request.url} (filePath=${filePath}): ${err.stack || err}`);
-      return new Response("psapp not found: " + request.url + "\n" + (err.message || err), { status: 404 });
-    }
-  });
+  // Protocol handlers are scoped to an Electron session. Profile browser
+  // sessions register the same handler when they are configured.
+  await ensureAppProtocol(protocol, logInfo, logError);
   logInfo(`psapp protocol registered. appPath=${app.getAppPath()} LOG_PATH=${LOG_PATH}`);
 
   registerIpcHandlers();
@@ -189,6 +157,11 @@ function openLoginOrMain() {
 // creating the new login window — that 1-tick gap was firing the default
 // quit handler and silently killing the app on every logout.
 app.on("window-all-closed", () => { /* keep the app alive; tray manages it */ });
+
+app.on("before-quit", () => {
+  try { require("./local-proxy-bridge").stopAll(); } catch (_) {}
+  try { require("./tls-mitm-bridge").stopAll(); } catch (_) {}
+});
 
 app.on("activate", () => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();

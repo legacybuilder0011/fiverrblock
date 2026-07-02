@@ -6,12 +6,16 @@ const path = require("path");
 // Never commit the real token — keep it local or use an env var:
 //   TOKEN = process.env.GITHUB_TOKEN || "ghp_your_token_here"
 const TOKEN = process.env.GITHUB_TOKEN || "ghp_your_token_here";
-const RELEASE_ID = "323544175";
 const REPO = "legacybuilder0011/fiverrblock";
+const VERSION = require("./package.json").version;
+const TAG = `v${VERSION}`;
+const RELEASE_NAME = `Privacy Shield Browser v${VERSION}`;
+const RELEASE_BODY = `Privacy Shield Browser v${VERSION} — fingerprint-isolated profile manager.\n\nInstall: download the Setup .exe and run it.\nPortable: run the Portable .exe (no install).`;
+let RELEASE_ID = process.env.RELEASE_ID || "";
 
 const FILES = [
-  { src: "dist/Privacy Shield Browser Setup 1.9.7.exe", name: "PrivacyShield-Setup-1.9.7.exe" },
-  { src: "dist/Privacy Shield Browser 1.9.7.exe",       name: "PrivacyShield-Portable-1.9.7.exe" }
+  { src: `dist/Privacy Shield Browser Setup ${VERSION}.exe`, name: `PrivacyShield-Setup-${VERSION}.exe` },
+  { src: `dist/Privacy Shield Browser ${VERSION}.exe`,       name: `PrivacyShield-Portable-${VERSION}.exe` }
 ];
 
 // Bypass TLS inspection on response — we only need to verify upload succeeded via poll
@@ -32,6 +36,59 @@ function apiGet(path) {
     req.on("error", () => resolve(null));
     req.end();
   });
+}
+
+function apiPost(path, payload) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify(payload);
+    const req = https.request({
+      hostname: "api.github.com",
+      path, method: "POST",
+      agent,
+      headers: {
+        "Authorization": `Bearer ${TOKEN}`,
+        "User-Agent": "node-upload",
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body)
+      }
+    }, (res) => {
+      let buf = "";
+      res.on("data", d => buf += d);
+      res.on("end", () => { try { resolve(JSON.parse(buf)); } catch (_) { resolve(null); } });
+    });
+    req.on("error", () => resolve(null));
+    req.write(body);
+    req.end();
+  });
+}
+
+async function ensureRelease() {
+  if (RELEASE_ID) {
+    console.log(`Using existing RELEASE_ID=${RELEASE_ID}`);
+    return RELEASE_ID;
+  }
+  // Look up by tag first
+  const byTag = await apiGet(`/repos/${REPO}/releases/tags/${TAG}`);
+  if (byTag && byTag.id) {
+    RELEASE_ID = String(byTag.id);
+    console.log(`Found existing release for ${TAG}: id=${RELEASE_ID}`);
+    return RELEASE_ID;
+  }
+  // Create new
+  console.log(`Creating new release ${TAG}...`);
+  const created = await apiPost(`/repos/${REPO}/releases`, {
+    tag_name: TAG,
+    name: RELEASE_NAME,
+    body: RELEASE_BODY,
+    draft: false,
+    prerelease: false
+  });
+  if (created && created.id) {
+    RELEASE_ID = String(created.id);
+    console.log(`Created release ${TAG}: id=${RELEASE_ID}`);
+    return RELEASE_ID;
+  }
+  throw new Error(`Failed to create release ${TAG}: ${JSON.stringify(created)}`);
 }
 
 function apiDelete(path) {
@@ -120,6 +177,16 @@ async function deleteExisting(name) {
 }
 
 (async () => {
+  if (!TOKEN || TOKEN === "ghp_your_token_here") {
+    console.error("ERROR: set GITHUB_TOKEN env var first.\n  PowerShell: $env:GITHUB_TOKEN = 'ghp_...'");
+    process.exit(1);
+  }
+  try {
+    await ensureRelease();
+  } catch (err) {
+    console.error(err.message || err);
+    process.exit(1);
+  }
   for (const f of FILES) {
     const full = path.join(__dirname, f.src);
     if (!fs.existsSync(full)) { console.log(`SKIP (not found): ${f.src}`); continue; }

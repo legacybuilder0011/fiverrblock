@@ -1012,8 +1012,15 @@
     if (typeof RTCPeerConnection !== "undefined" && config._webrtcMode !== "real") {
       const OrigRTC = window.RTCPeerConnection;
       const isLeakyCandidate = (cand) => { if (!cand) return false; const c = typeof cand === "string" ? cand : cand.candidate; if (!c) return false; return /(\b(?:192\.168|10\.|172\.(?:1[6-9]|2\d|3[01]))\.\d+\.\d+\b)|(\b(?:\d{1,3}\.){3}\d{1,3}\b(?!.*relay).*typ\s+srflx)/.test(c); };
+      // Rewriting is active in manual mode, and in "altered" mode when we have an
+      // exit IP to show (auto-filled from the VPN/proxy detection). When active,
+      // leaky candidates are REWRITTEN to the exit IP (so WebRTC reports the same
+      // public IP as the visible connection) instead of being dropped. It is
+      // never the real IP. Without an exit IP, altered mode falls back to dropping.
+      const _wrCanRewrite = (config._webrtcMode === "manual" || config._webrtcMode === "altered") && !!config._webrtcIP;
+      const _wrShouldDrop = (cand) => isLeakyCandidate(cand) && config._webrtcMode !== "manual" && !_wrCanRewrite;
       const rewriteCandidate = (candidate) => {
-        if (config._webrtcMode !== "manual" || !config._webrtcIP || !candidate) return candidate;
+        if (!_wrCanRewrite || !candidate) return candidate;
         const replace = (text) => String(text).replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, config._webrtcIP);
         if (typeof candidate === "string") return replace(candidate);
         try { return new RTCIceCandidate({ ...candidate.toJSON(), candidate: replace(candidate.candidate) }); } catch (_) { return candidate; }
@@ -1031,9 +1038,9 @@
         }
         const pc = new OrigRTC(cfg, ...rest);
         const origAddEventListener = pc.addEventListener.bind(pc);
-        pc.addEventListener = function (type, handler, ...opts) { if (type === "icecandidate") { return origAddEventListener(type, (ev) => { if (ev && ev.candidate && isLeakyCandidate(ev.candidate) && config._webrtcMode !== "manual") return; if (ev && ev.candidate) { try { Object.defineProperty(ev, "candidate", { value: rewriteCandidate(ev.candidate), configurable: true }); } catch (_) {} } handler(ev); }, ...opts); } return origAddEventListener(type, handler, ...opts); };
+        pc.addEventListener = function (type, handler, ...opts) { if (type === "icecandidate") { return origAddEventListener(type, (ev) => { if (ev && ev.candidate && _wrShouldDrop(ev.candidate)) return; if (ev && ev.candidate) { try { Object.defineProperty(ev, "candidate", { value: rewriteCandidate(ev.candidate), configurable: true }); } catch (_) {} } handler(ev); }, ...opts); } return origAddEventListener(type, handler, ...opts); };
         const origSet = Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, "onicecandidate");
-        if (origSet) { Object.defineProperty(pc, "onicecandidate", { set(fn) { origSet.set.call(pc, fn ? (ev) => { if (ev && ev.candidate && isLeakyCandidate(ev.candidate) && config._webrtcMode !== "manual") return; if (ev && ev.candidate) { try { Object.defineProperty(ev, "candidate", { value: rewriteCandidate(ev.candidate), configurable: true }); } catch (_) {} } fn(ev); } : fn); }, get() { return origSet.get.call(pc); }, configurable: true }); }
+        if (origSet) { Object.defineProperty(pc, "onicecandidate", { set(fn) { origSet.set.call(pc, fn ? (ev) => { if (ev && ev.candidate && _wrShouldDrop(ev.candidate)) return; if (ev && ev.candidate) { try { Object.defineProperty(ev, "candidate", { value: rewriteCandidate(ev.candidate), configurable: true }); } catch (_) {} } fn(ev); } : fn); }, get() { return origSet.get.call(pc); }, configurable: true }); }
         return pc;
       };
       patchedRTC.prototype = OrigRTC.prototype;

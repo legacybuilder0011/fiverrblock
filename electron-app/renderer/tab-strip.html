@@ -146,6 +146,24 @@
   }
   .nav-btn:hover:not(:disabled) { background: var(--control-hover); color: var(--text); }
   .nav-btn:disabled { opacity: 0.35; cursor: default; }
+  #btn-reload.loading { color: var(--accent); animation: ps-pulse 1s ease-in-out infinite; }
+  .ext-btn { width: auto !important; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; height: 30px; font-size: 12px; font-weight: 600; color: var(--text); border: 1px solid var(--toolbar-border); }
+  .ext-btn .ext-icon { font-size: 14px; line-height: 1; }
+  .ext-btn .ext-label { line-height: 1; }
+  .ext-btn:hover { background: var(--control-hover); }
+  #btn-downloads.download-active { color: var(--accent); animation: ps-pulse 1s ease-in-out infinite; }
+  #btn-downloads.download-failed { color: #dc2626; }
+  #download-status {
+    display: none;
+    max-width: 180px;
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #download-status.visible { display: block; }
+  @keyframes ps-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   #url-input {
     flex: 1;
     height: 30px;
@@ -225,6 +243,114 @@
     #brand-chip { padding: 0 6px; }
     #profile-pill { max-width: 96px; padding: 0 8px; }
   }
+  body.device-mobile {
+    background: var(--toolbar-bg);
+  }
+  body.device-mobile #tabs-row {
+    display: none;
+  }
+  body.device-mobile #url-row {
+    height: 56px;
+    padding: 7px 8px;
+    gap: 6px;
+    border-bottom-color: var(--toolbar-border);
+  }
+  body.device-mobile #window-dots,
+  body.device-mobile #btn-fwd,
+  body.device-mobile #download-status,
+  body.device-mobile #extensions-wrap,
+  body.device-mobile #device-chip,
+  body.device-mobile #profile-pill {
+    display: none;
+  }
+  body.device-mobile #brand-chip {
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 19px;
+    flex: 0 0 auto;
+  }
+  body.device-mobile #brand-text {
+    display: none;
+  }
+  body.device-mobile #brand-mark {
+    width: 24px;
+    height: 24px;
+    font-size: 11px;
+  }
+  body.device-mobile .nav-btn {
+    width: 36px;
+    height: 38px;
+    font-size: 18px;
+    flex: 0 0 auto;
+  }
+  body.device-mobile #url-input {
+    min-width: 0;
+    height: 38px;
+    border-radius: 19px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+  #phone-nav {
+    display: none;
+  }
+  body.device-mobile #phone-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    border-top: 1px solid var(--toolbar-border);
+    background: var(--toolbar-bg);
+    z-index: 20;
+  }
+  .phone-nav-btn {
+    width: 56px;
+    height: 34px;
+    border: 0;
+    border-radius: 17px;
+    background: transparent;
+    color: var(--fg);
+    font-size: 19px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .phone-nav-btn:hover {
+    background: var(--control-bg);
+  }
+  @media (max-width: 480px) {
+    #url-row { padding: 0 4px; gap: 3px; }
+    #device-chip, #profile-pill, #brand-text, .ext-label { display: none; }
+    #brand-chip { padding: 0 4px; border-radius: 12px; }
+    #brand-mark { width: 18px; height: 18px; }
+    .nav-btn { width: 28px; height: 28px; font-size: 14px; }
+    .ext-btn { padding: 0 6px; }
+    #url-input { font-size: 12px; padding: 0 10px; height: 28px; }
+    #tabs-row { height: 34px; }
+    .tab { min-width: 80px; max-width: 140px; padding: 0 8px; height: 30px; }
+  }
+  body.device-mobile #url-row {
+    height: 56px;
+    padding: 7px 8px;
+    gap: 6px;
+  }
+  body.device-mobile .nav-btn {
+    width: 36px;
+    height: 38px;
+    font-size: 18px;
+  }
+  body.device-mobile #brand-mark {
+    width: 24px;
+    height: 24px;
+  }
+  body.device-mobile #url-input {
+    height: 38px;
+    font-size: 14px;
+  }
 </style>
 </head>
 <body>
@@ -238,18 +364,25 @@
   <button class="nav-btn" id="btn-fwd" title="Forward">&rarr;</button>
   <button class="nav-btn" id="btn-reload" title="Reload">&#8634;</button>
   <input type="text" id="url-input" placeholder="Enter URL or search..." />
+  <button class="nav-btn" id="btn-downloads" title="Open this profile's downloads">&#8681;</button>
+  <span id="download-status" aria-live="polite"></span>
   <div id="extensions-wrap">
-    <button class="nav-btn" id="btn-extensions" title="Extensions">&#9881;</button>
+    <button class="nav-btn ext-btn" id="btn-extensions" title="Manage extensions"><span class="ext-icon">&#129513;</span><span class="ext-label">Extensions</span></button>
     <div id="extensions-panel" hidden>
       <div class="panel-title">Extensions</div>
-      <div class="panel-hint">Load an unpacked extension folder for this profile session.</div>
-      <button class="panel-btn" id="btn-load-extension">Load unpacked...</button>
+      <div class="panel-hint">Load an unpacked folder or install an extension ZIP for this profile.</div>
+      <button class="panel-btn" id="btn-load-extension">Load folder...</button>
       <div id="extensions-list"></div>
     </div>
   </div>
   <div id="device-chip" title="Emulated device">Device</div>
   <div id="profile-pill" title="Profile identity"><span class="pill-dot"></span><span id="profile-pill-text">Profile</span></div>
   <button class="nav-btn" id="btn-home" title="Home">&#8962;</button>
+</div>
+<div id="phone-nav" aria-label="Phone navigation">
+  <button class="phone-nav-btn" id="phone-nav-back" title="Back">&#8249;</button>
+  <button class="phone-nav-btn" id="phone-nav-home" title="Home">&#9675;</button>
+  <button class="phone-nav-btn" id="phone-nav-tabs" title="New tab">&#9633;</button>
 </div>
 <script src="tab-strip.js"></script>
 </body>

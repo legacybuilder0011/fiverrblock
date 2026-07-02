@@ -8,6 +8,8 @@ const btnBack  = document.getElementById("btn-back");
 const btnFwd   = document.getElementById("btn-fwd");
 const btnReload = document.getElementById("btn-reload");
 const btnHome  = document.getElementById("btn-home");
+const btnDownloads = document.getElementById("btn-downloads");
+const downloadStatus = document.getElementById("download-status");
 const btnExtensions = document.getElementById("btn-extensions");
 const extensionsPanel = document.getElementById("extensions-panel");
 const btnLoadExtension = document.getElementById("btn-load-extension");
@@ -18,11 +20,15 @@ const brandChip = document.getElementById("brand-chip");
 const deviceChip = document.getElementById("device-chip");
 const profilePillText = document.getElementById("profile-pill-text");
 const profilePill = document.getElementById("profile-pill");
+const phoneNavBack = document.getElementById("phone-nav-back");
+const phoneNavHome = document.getElementById("phone-nav-home");
+const phoneNavTabs = document.getElementById("phone-nav-tabs");
 
 let tabs = [];        // [{ id, title, url, active }]
 let activeTabId = null;
 let browserMeta = null;
 let suppressUrlSync = false;
+let downloadStatusTimer = null;
 
 function render() {
   // Wipe everything except the new-tab button
@@ -56,6 +62,12 @@ function render() {
   }
   btnBack.disabled = !active || !active.canBack;
   btnFwd.disabled  = !active || !active.canForward;
+  if (btnReload) {
+    const loading = Boolean(active && active.loading);
+    btnReload.classList.toggle("loading", loading);
+    btnReload.title = loading ? "Stop loading" : "Reload";
+    btnReload.innerHTML = loading ? "&#10005;" : "&#8634;";
+  }
   renderMeta();
 }
 
@@ -67,7 +79,11 @@ function renderMeta() {
   if (!profilePillText || !browserMeta) return;
   const browser = browserMeta.browser || "privacy";
   const os = browserMeta.os || "windows";
-  document.body.className = `browser-${browser} os-${os} device-${browserMeta.deviceClass || "desktop"}`;
+  const deviceClass = browserMeta.deviceClass || "desktop";
+  document.body.className = `browser-${browser} os-${os} device-${deviceClass}`;
+  if (urlInput) {
+    urlInput.placeholder = deviceClass === "mobile" ? "Search or enter website" : "Enter URL or search...";
+  }
   if (brandText) brandText.textContent = browserMeta.browserLabel || browserMeta.appName || "Browser";
   if (brandMark) brandMark.textContent = browserInitials(browser, browserMeta.browserLabel || browserMeta.appName);
   if (brandChip) {
@@ -119,12 +135,44 @@ function browserInitials(browser, label) {
 
 // ── Receive state updates from main ──────────────────────────────────────────
 api.onMainEvent((payload) => {
-  if (!payload || payload.type !== "TAB_STATE") return;
+  if (!payload) return;
+  if (payload.type === "DOWNLOAD_STATE") {
+    renderDownloadState(payload);
+    return;
+  }
+  if (payload.type !== "TAB_STATE") return;
   tabs = payload.tabs || [];
   activeTabId = payload.activeTabId;
   if (payload.meta) browserMeta = payload.meta;
   render();
 });
+
+function renderDownloadState(payload) {
+  if (!btnDownloads || !downloadStatus) return;
+  const total = Number(payload.totalBytes) || 0;
+  const received = Number(payload.receivedBytes) || 0;
+  const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : null;
+  const fileName = payload.fileName || "download";
+  const active = payload.state === "starting" || payload.state === "progressing";
+  const failed = payload.state === "interrupted" || payload.state === "cancelled";
+  btnDownloads.classList.toggle("download-active", active);
+  btnDownloads.classList.toggle("download-failed", failed);
+
+  let text;
+  if (active) text = `${percent == null ? "Downloading" : percent + "%"} ${fileName}`;
+  else if (payload.state === "completed") text = `Downloaded ${fileName}`;
+  else if (failed) text = `Download failed: ${fileName}`;
+  else text = `${payload.state || "Download"}: ${fileName}`;
+
+  downloadStatus.textContent = text;
+  downloadStatus.title = payload.savePath || payload.error || text;
+  downloadStatus.classList.add("visible");
+  btnDownloads.title = payload.savePath ? `${text}\n${payload.savePath}` : text;
+  clearTimeout(downloadStatusTimer);
+  if (!active) {
+    downloadStatusTimer = setTimeout(() => downloadStatus.classList.remove("visible"), 7000);
+  }
+}
 
 // ── User actions ─────────────────────────────────────────────────────────────
 newTab.addEventListener("click", () => {
@@ -133,8 +181,16 @@ newTab.addEventListener("click", () => {
 
 btnBack.addEventListener("click",   () => api.invoke("TAB_BACK", {}));
 btnFwd.addEventListener("click",    () => api.invoke("TAB_FORWARD", {}));
-btnReload.addEventListener("click", () => api.invoke("TAB_RELOAD", {}));
+btnReload.addEventListener("click", () => {
+  const active = tabs.find((t) => t.id === activeTabId);
+  if (active && active.loading) api.invoke("TAB_STOP", {});
+  else api.invoke("TAB_RELOAD", {});
+});
 btnHome.addEventListener("click",   () => api.invoke("TAB_NAVIGATE", { url: "home" }));
+btnDownloads?.addEventListener("click", () => api.invoke("BROWSER_OPEN_DOWNLOADS", {}));
+phoneNavBack?.addEventListener("click", () => api.invoke("TAB_BACK", {}));
+phoneNavHome?.addEventListener("click", () => api.invoke("TAB_NAVIGATE", { url: "home" }));
+phoneNavTabs?.addEventListener("click", () => api.invoke("TAB_NEW", {}));
 
 async function refreshExtensions() {
   if (!extensionsList) return;
@@ -159,16 +215,19 @@ async function refreshExtensions() {
 
 btnExtensions?.addEventListener("click", async (e) => {
   e.stopPropagation();
-  if (!extensionsPanel) return;
-  extensionsPanel.hidden = !extensionsPanel.hidden;
-  if (!extensionsPanel.hidden) await refreshExtensions();
+  const r = await api.invoke("BROWSER_EXTENSIONS_MENU", {});
+  if (!r.ok) {
+    api.invoke("BROWSER_SHOW_MESSAGE", { type: "error", title: "Extension manager", message: r.error || "Could not open extension manager" });
+  }
 });
 
 btnLoadExtension?.addEventListener("click", async () => {
   const r = await api.invoke("BROWSER_LOAD_EXTENSION", {});
   if (r.canceled) return;
   if (!r.ok) {
-    if (extensionsList) extensionsList.textContent = r.error || "Extension load failed";
+    const msg = r.error || "Extension load failed";
+    if (extensionsList) extensionsList.textContent = msg;
+    api.invoke("BROWSER_SHOW_MESSAGE", { type: "error", title: "Extension load failed", message: msg });
     return;
   }
   await refreshExtensions();

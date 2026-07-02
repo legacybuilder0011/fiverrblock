@@ -169,12 +169,18 @@ function getCurrentUserId() {
 async function pullProfiles() {
   if (!cloudReady()) return { ok: false, error: "cloud not available", profiles: [] };
   try {
+    const userId = getCurrentUserId();
+    if (!userId) return { ok: false, error: "not logged in", profiles: [] };
     const { data, error } = await supabase
       .from("profiles")
-      .select("profile_id, data, updated_at")
+      .select("profile_id, data, updated_at, user_id")
+      .eq("user_id", userId)
       .order("updated_at", { ascending: false });
     if (error) return { ok: false, error: error.message };
-    return { ok: true, profiles: (data || []).map((r) => r.data) };
+    // Belt-and-suspenders: drop any row whose user_id doesn't match — guards
+    // against an RLS misconfig on the server. Should be a no-op when RLS is on.
+    const rows = (data || []).filter((r) => r.user_id === userId);
+    return { ok: true, profiles: rows.map((r) => r.data) };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -241,11 +247,15 @@ async function deleteProfileRemote(profileId) {
 async function pullProxies() {
   if (!cloudReady()) return { ok: false, proxies: [] };
   try {
+    const userId = getCurrentUserId();
+    if (!userId) return { ok: false, error: "not logged in", proxies: [] };
     const { data, error } = await supabase
       .from("proxies")
-      .select("proxy_id, data, updated_at");
+      .select("proxy_id, data, updated_at, user_id")
+      .eq("user_id", userId);
     if (error) return { ok: false, error: error.message };
-    return { ok: true, proxies: (data || []).map((r) => r.data) };
+    const rows = (data || []).filter((r) => r.user_id === userId);
+    return { ok: true, proxies: rows.map((r) => r.data) };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }

@@ -376,7 +376,7 @@ function getDefaultFingerprint() {
     blockStorage: false, blockCookies: false,
     tlsSpoof: false,
     spoofingLevel: "full", spoofSkipHosts: [],
-    browserVersion: "148",
+    browserVersion: "auto",
     ispName: "", ispAsn: "", ispOrg: "", city: "", state: ""
   };
 }
@@ -482,6 +482,19 @@ function duplicateProfile(id) {
   saveProfiles(profiles);
   syncProfileBg(copy);
   return copy;
+}
+
+// Permanently remove ALL soft-deleted (trashed) profiles in one local write,
+// then fire the Supabase row deletions in the background. Much faster than
+// hard-deleting one id at a time (which rewrites the whole file each call).
+function purgeDeletedProfiles() {
+  const profiles = getProfiles();
+  const deleted = profiles.filter((p) => p.deletedAt);
+  if (!deleted.length) return 0;
+  const kept = profiles.filter((p) => !p.deletedAt);
+  saveProfiles(kept);
+  for (const p of deleted) syncDeleteProfileBg(p.id);
+  return deleted.length;
 }
 
 function restoreProfile(id) {
@@ -1000,24 +1013,69 @@ function osForCountry(countryCode, deviceClass = "desktop") {
 }
 
 function browserForOs(osName, requestedBrowser = "random") {
-  const requested = normalizeBrowserApp(requestedBrowser, "random");
-  if (requested !== "random") {
-    if (osName === "android" && ["firefox", "safari"].includes(requested)) return "chrome";
-    if (osName === "ios" && requested === "privacy") return "safari";
-    if (osName !== "macos" && osName !== "ios" && requested === "safari") return "chrome";
-    return requested;
-  }
+  let requested = normalizeBrowserApp(requestedBrowser, "random");
+  // Safari (WebKit) and Firefox (Gecko) aren't real engines in this Chromium
+  // build — claiming them creates a detectable UA-vs-engine mismatch. Always
+  // coerce to Chrome so the claimed browser matches the actual Blink engine.
+  if (requested === "safari" || requested === "firefox") requested = "chrome";
+  if (requested !== "random") return requested;
   if (osName === "android") return randomChoice(["privacy", "chrome", "chrome", "brave", "edge"]);
-  if (osName === "ios") return randomChoice(["safari", "safari", "chrome", "firefox", "edge"]);
+  if (osName === "ios") return randomChoice(["chrome", "chrome", "edge"]);
   const options = osName === "macos"
     ? ["privacy", "chrome", "chrome", "brave", "edge"]
     : ["privacy", "chrome", "chrome", "chrome", "brave", "edge"];
   return randomChoice(options);
 }
 
-function versionForBrowser(browser) {
-  if (browser === "firefox") return String(randomChoice([120, 122, 124, 131, 136, 148]));
-  return String(randomChoice([131, 136, 140, 144, 148]));
+// The REAL major version of the Chromium engine bundled with Electron (used only
+// as a floor/reference). Kept for diagnostics; the claimed UA version is the
+// current real-world Chrome (see LATEST_CHROME_BY_OS) because being a year behind
+// the real release is itself a strong bot tell — real Chrome auto-updates.
+function currentEngineMajor() {
+  try {
+    const v = String((process.versions && process.versions.chrome) || "").split(".")[0];
+    if (v && Number(v) > 0) return v;
+  } catch (_) {}
+  return "126";
+}
+
+// Current real-world Chrome full versions per OS. UPDATE THIS as Chrome releases.
+// (Last updated 2026-07-02.) "Auto" version resolves to the value for the profile
+// OS so the User-Agent + Client-Hints match what real users are actually running.
+const LATEST_CHROME_BY_OS = {
+  windows: "149.0.7827.199",
+  macos:   "149.0.7827.199",
+  linux:   "150.0.7871.46",
+  android: "150.0.7871.63",
+  ios:     "150.0.7871.51"
+};
+const LATEST_CHROME_FALLBACK = "149.0.7827.199";
+
+function latestChromeForOs(osName) {
+  return LATEST_CHROME_BY_OS[String(osName || "").toLowerCase()] || LATEST_CHROME_FALLBACK;
+}
+
+// Current real-world versions for the other browsers (UPDATE as they release).
+// Brave ships a plain Chrome UA (identified by the navigator.brave API, not the
+// string) built on Chromium 150 as of Brave 1.92.x. Safari uses its own scheme.
+const LATEST_BRAVE_CHROMIUM = "150.0.7871.46"; // Brave 1.92.132 → Chromium 150
+const LATEST_SAFARI = "26.5.2";                // Safari 26.5.2 (2026-06-29)
+
+function latestVersionFor(browser, osName) {
+  const b = String(browser || "chrome").toLowerCase();
+  if (b === "brave") return LATEST_BRAVE_CHROMIUM;
+  if (b === "safari") return LATEST_SAFARI;
+  // edge tracks Chrome closely; chrome / privacy / default → current Chrome for OS
+  return latestChromeForOs(osName);
+}
+
+function versionForBrowser(browser, osName) {
+  // Real users are on the current release (auto-updated). Spread across the two
+  // or three most recent majors so a batch of profiles isn't all identical, but
+  // never far behind — an old version is a tell on its own.
+  const latestMajor = Number(String(latestChromeForOs(osName)).split(".")[0]) || 149;
+  const majors = [latestMajor, latestMajor, latestMajor - 1].filter((n) => n > 0);
+  return String(randomChoice(majors));
 }
 
 function screenForOs(osName) {
@@ -1047,6 +1105,23 @@ function randomWebglForOs(osName) {
   }
   const matches = PROFILE_WEBGL_PRESETS.filter((preset) => preset.platform === osName);
   return randomChoice(matches.length ? matches : PROFILE_WEBGL_PRESETS);
+}
+
+// Does a WebGL renderer string plausibly belong to this OS family? Detectors
+// cross-check the reported GPU against the platform — an "Apple GPU" on Windows
+// or an "ANGLE ... Direct3D11" on macOS/Linux is an instant tell.
+function webglRendererMatchesOs(renderer, osName) {
+  const r = String(renderer || "").toLowerCase();
+  if (!r) return false;
+  const isApple = r.includes("apple") || r.includes("metal");
+  const isMobile = r.includes("adreno") || r.includes("mali") || r.includes("powervr") || r.includes("xclipse") || r.includes("immortalis");
+  if (osName === "ios" || osName === "macos") return isApple;
+  if (osName === "android") return isMobile;
+  // windows / linux desktop: must not be Apple or a mobile GPU
+  if (isApple || isMobile) return false;
+  // Linux uses OpenGL, never Direct3D
+  if (osName === "linux") return !r.includes("d3d") && !r.includes("direct3d");
+  return true;
 }
 
 function isDefaultGpuFingerprint(fingerprint = {}) {
@@ -1098,6 +1173,33 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
     fp.hoverType = "none";
     applyMobileDeviceDefaults(fp, osName);
   }
+
+  // ── Cross-field coherence enforcement (the auto-fixer) ────────────────────────
+  // Runs on every save so a profile can never drift into a self-contradiction a
+  // detector would catch: UA-version vs real engine, WebGL-GPU vs OS, and a
+  // desktop OS still carrying mobile-only traits from a previous mobile pick.
+  {
+    // 1) WebGL GPU must match the OS family — re-pick a matching one if not.
+    if (fp.webglInfo === "manual" && fp.webglRenderer && !webglRendererMatchesOs(fp.webglRenderer, osName)) {
+      const webgl = randomWebglForOs(osName);
+      fp.webglVendor = webgl.vendor;
+      fp.webglRenderer = webgl.renderer;
+    }
+
+    // 2) A desktop OS must not keep mobile-only traits (touch, arm, coarse
+    //    pointer) left over from a prior mobile OS selection.
+    if (osName === "windows" || osName === "macos" || osName === "linux") {
+      if (fp.deviceClass === "mobile") fp.deviceClass = "desktop";
+      if (fp.architecture === "arm" && osName !== "macos") fp.architecture = "x86";
+      fp.touchEmulation = false;
+      fp.sensorEmulation = false;
+      fp.viewportMobile = false;
+      fp.pointerType = "fine";
+      fp.hoverType = "hover";
+      if (Number(fp.maxTouchPoints) > 0 && !(fp.screen === "manual" && Number(fp.screenWidth) > 1000)) fp.maxTouchPoints = 0;
+    }
+  }
+
   return fp;
 }
 
@@ -1110,7 +1212,15 @@ function buildCountryIdentity(countryCode = "us", options = {}) {
   const deviceClass = requestedDeviceClass === "random"
     ? randomChoice(["desktop", "desktop", "desktop", "mobile"])
     : requestedDeviceClass;
-  const osName = osForCountry(code, deviceClass);
+  // Honor an explicit OS (e.g. the "Generate coherent identity" button keeps the
+  // profile's chosen OS) so long as it agrees with the device class; otherwise
+  // pick a plausible OS for the country + device class.
+  const explicitOs = options.os && String(options.os).toLowerCase();
+  const osMatchesClass = explicitOs && (
+    (deviceClass === "mobile" && (explicitOs === "android" || explicitOs === "ios")) ||
+    (deviceClass !== "mobile" && (explicitOs === "windows" || explicitOs === "macos" || explicitOs === "linux"))
+  );
+  const osName = osMatchesClass ? explicitOs : osForCountry(code, deviceClass);
   const browser = browserForOs(osName, options.browserApp || options.browser || "random");
   const screen = screenForOs(osName);
   const mobileDevice = (osName === "android" || osName === "ios") ? screen.device : null;
@@ -1141,7 +1251,7 @@ function buildCountryIdentity(countryCode = "us", options = {}) {
     ispOrg: provider[2],
     os: osName,
     browser,
-    browserVersion: versionForBrowser(browser),
+    browserVersion: versionForBrowser(browser, osName),
     screenWidth: screen.width,
     screenHeight: screen.height,
     cpuCores: cores,
@@ -1281,7 +1391,7 @@ function buildCountryProfileData(countryCode = "us", idx = 1, options = {}) {
 
 function buildProfileUA(os, version, browser, fingerprint = {}) {
   const br = browser || "chrome";
-  const v  = String(version || "148");
+  const v  = (!version || version === "auto") ? latestVersionFor(br, os) : String(version);
   const full = v.includes(".") ? v : v + ".0.0.0";
   const major = full.split(".")[0];
 
@@ -1304,8 +1414,8 @@ function buildProfileUA(os, version, browser, fingerprint = {}) {
   }
 
   if (os === "ios") {
-    const iosVersion = fingerprint.platformVersion || "17.2";
-    const model = fingerprint.mobileModel || "iPhone 15";
+    const iosVersion = fingerprint.platformVersion || "26.5";
+    const model = fingerprint.mobileModel || "iPhone 16";
     const isIpad = model.toLowerCase().includes("ipad");
     const iosVerUA = iosVersion.replace(/\./g, "_");
     const deviceUA = isIpad
@@ -1447,6 +1557,9 @@ function pickLanguageForCountry(seed, countryCode) {
 function buildConfigFromProfile(profile) {
   if (!profile) return null;
   const fp = profile.fingerprint || {};
+  // Safari/Firefox identities were retired — coerce legacy profiles to Chrome so
+  // the UA and engine (Blink) always agree (a WebKit/Gecko UA on Chromium is a tell).
+  const _browserDef = (() => { const b = fp.browser || profile.browserApp || "chrome"; return (b === "safari" || b === "firefox") ? "chrome" : b; })();
   const _seedDef = fp.fingerprintSeed || profile.id || "default";
   const _isMobileDef = (profile.os === "android" || profile.os === "ios") || fp.deviceClass === "mobile";
   const _ccDef = String((profile.proxy && profile.proxy.detectedCountryCode) || fp.countryCode || "us").toLowerCase();
@@ -1510,11 +1623,14 @@ function buildConfigFromProfile(profile) {
     _ports: fp.ports || "real",
     _blockedPorts: Array.isArray(fp.blockedPorts) ? fp.blockedPorts : [3389, 5938],
     _webrtcMode: fp.webrtc || "altered",
-    _webrtcIP: fp.webrtcIP || "",
+    // Manual IP wins; otherwise auto-fill from the detected VPN/proxy exit IP so
+    // "Altered (show proxy IP)" reports the SAME public IP as the visible
+    // connection (the VPN/proxy) instead of the real one. Never the real IP.
+    _webrtcIP: fp.webrtcIP || (profile.proxy && profile.proxy.detectedIp) || "",
     _fingerprintSeed: fp.fingerprintSeed || profile.id || "",
     _stealth: fp.spoofingLevel === "stealth",
     _spoofSkipHosts: Array.isArray(fp.spoofSkipHosts) ? fp.spoofSkipHosts.filter(Boolean) : [],
-    _browserApp: fp.browser || profile.browserApp || "chrome",
+    _browserApp: _browserDef,
     _countryCode: fp.countryCode || "",
     _country: fp.country || "",
     _continent: fp.continent || "",
@@ -1544,8 +1660,19 @@ function buildConfigFromProfile(profile) {
     cfg.userAgent = fp.userAgentValue;
     cfg._uaVersion = (fp.userAgentValue.match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || String(fp.browserVersion || "148").split(".")[0];
   } else {
-    const bv = fp.browserVersion || "148";
-    const built = buildProfileUA(profile.os || "windows", bv, fp.browser || profile.browserApp || "chrome", fp);
+    // "auto" (or empty) → the current real-world Chrome for this OS, so the UA
+    // matches what real users run (being a year behind is itself a bot tell).
+    // A stored numeric/custom version is honored as-is.
+    // Unset, "auto", or a bare major (e.g. "142" — always an auto-generated,
+    // now-stale value from an older build) → resolve to the CURRENT real-world
+    // version so no profile advertises a Chrome/Brave that's months behind.
+    // Only an explicit full-version "custom" string (contains a dot, e.g.
+    // "150.0.7871.46") is treated as a deliberate pin and kept as-is.
+    let bv = fp.browserVersion;
+    if (!bv || bv === "auto" || !String(bv).includes(".")) {
+      bv = latestVersionFor(_browserDef, profile.os || "windows");
+    }
+    const built = buildProfileUA(profile.os || "windows", bv, _browserDef, fp);
     cfg.userAgent = built.ua;
     cfg.platform = built.platform;
     cfg._uaOS = built.os;
@@ -1843,6 +1970,7 @@ module.exports = {
   createProfile,
   updateProfile,
   deleteProfile,
+  purgeDeletedProfiles,
   duplicateProfile,
   restoreProfile,
   addProxyEntry,

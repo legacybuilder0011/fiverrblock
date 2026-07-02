@@ -135,6 +135,13 @@ async function init() {
       } else if (payload.type === "CLOUD_PHONES_CHANGED") {
         await loadCloudPhones();
         renderCloudPhones();
+      } else if (payload.type === "VPN_DROPPED") {
+        // The kill-switch force-closed a profile because the VPN dropped/changed.
+        await refreshOpenWindows();
+        renderList();
+        if (selectedId) updateSessionTab();
+        const name = payload.profileName || "Profile";
+        alert(`⚠️ ${name} was closed\n\n${payload.reason || "The VPN connection dropped."}`);
       }
     });
   }
@@ -504,6 +511,48 @@ async function selectProfile(id) {
   updateSessionTab();
 }
 
+// "Generate coherent identity" — asks the main process for a fully consistent
+// device fingerprint (UA ↔ WebGL ↔ screen ↔ CPU/RAM ↔ timezone ↔ language ↔
+// version all matched) for the current OS + country, then loads it into the form
+// while KEEPING the profile name, tags, notes and proxy. User reviews and Saves.
+async function generateCoherentIdentity() {
+  const os = $("fp-os")?.value || "windows";
+  const country = (currentFingerprintMeta && currentFingerprintMeta.countryCode)
+    || (typeof selectedCountry !== "undefined" && selectedCountry) || "us";
+  const deviceClass = (os === "android" || os === "ios") ? "mobile" : "desktop";
+  const browserApp = $("fp-browserApp")?.value || "chrome";
+  const btn = $("btnGenIdentity");
+  if (btn) { btn.disabled = true; btn.textContent = "Generating…"; }
+  try {
+    const res = await msg("PROFILE_COUNTRY_IDENTITY", { country, os, deviceClass, browserApp });
+    if (!res || !res.ok || !res.data) { toast("Could not generate identity"); return; }
+    const d = res.data;
+    // Location fields follow the ACTUAL VPN/proxy exit (set to Auto) so the
+    // identity can never contradict the network — timezone, language and
+    // geolocation are resolved from the live exit IP at launch. The device
+    // fingerprint (UA, GPU, screen, CPU/RAM, version) stays fixed and coherent
+    // and doesn't depend on location, so there's nothing to mismatch.
+    if (d.fingerprint) {
+      d.fingerprint.timezone = "auto";
+      d.fingerprint.language = "auto";
+      d.fingerprint.geolocation = "auto";
+    }
+    populateForm({
+      name: $("fp-name")?.value || "",
+      status: $("fp-status")?.value || "new",
+      os: d.os || os,
+      browserApp: d.browserApp || browserApp,
+      windowMode: $("fp-windowMode")?.value || "normal",
+      tags: ($("fp-tags")?.value || "").split(",").map((s) => s.trim()).filter(Boolean),
+      notes: $("fp-notes")?.value || "",
+      fingerprint: d.fingerprint
+    });
+    toast("Fresh coherent identity generated — review and Save");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "🎲 Generate coherent identity"; }
+  }
+}
+
 function populateForm(p) {
   $("fp-name").value = p.name || "";
   $("fp-status").value = p.status || "new";
@@ -600,18 +649,20 @@ function populateForm(p) {
   setVal("fp-spoofingLevel", fp.spoofingLevel || "full");
   setVal("fp-spoofSkipHosts", (fp.spoofSkipHosts || []).join(", "));
 
-  // Browser + ISP
-  const bv = fp.browserVersion || "148";
-  const knownVersions = ["120", "122", "124", "131", "136", "148"];
-  if (knownVersions.includes(bv)) {
-    setVal("fp-browserVersion", bv);
-    setVal("fp-browserVersionCustom", "");
-  } else {
+  // Browser version: "auto" and bare majors (stale auto-generated values) both
+  // track the latest, so show them as Auto. Only a full-version "custom" pin
+  // (contains a dot, e.g. "150.0.7871.46") shows in the Custom field.
+  const bvRaw = String(fp.browserVersion || "auto");
+  const isCustomVer = bvRaw !== "auto" && bvRaw.includes(".");
+  if (isCustomVer) {
     setVal("fp-browserVersion", "custom");
-    setVal("fp-browserVersionCustom", bv);
+    setVal("fp-browserVersionCustom", bvRaw);
+  } else {
+    setVal("fp-browserVersion", "auto");
+    setVal("fp-browserVersionCustom", "");
   }
   const bvcRow = $("browserVersionCustomRow");
-  if (bvcRow) bvcRow.hidden = knownVersions.includes(bv);
+  if (bvcRow) bvcRow.hidden = !isCustomVer;
   setVal("fp-city", fp.city || "");
   setVal("fp-state", fp.state || "");
   setVal("fp-ispName", fp.ispName || "");
@@ -707,8 +758,8 @@ function collectForm() {
       spoofingLevel: $("fp-spoofingLevel")?.value || "full",
       spoofSkipHosts: ($("fp-spoofSkipHosts")?.value || "").split(/[\s,]+/).map((s) => s.trim().toLowerCase()).filter(Boolean),
       browserVersion: (() => {
-        const sel = $("fp-browserVersion")?.value || "148";
-        if (sel === "custom") return ($("fp-browserVersionCustom")?.value.trim() || "148");
+        const sel = $("fp-browserVersion")?.value || "auto";
+        if (sel === "custom") return ($("fp-browserVersionCustom")?.value.trim() || "auto");
         return sel;
       })(),
       city: ($("fp-city")?.value || "").trim(),
@@ -864,6 +915,19 @@ function updateConditionalRows() {
   show("proxyFields", networkMode === "proxy" && pxEnabled);
 }
 
+// Current real-world versions — MUST mirror LATEST_CHROME_BY_OS / latestVersionFor
+// in src/profile-store.js so this in-form preview matches the actual launched UA.
+const PREVIEW_LATEST_CHROME = { windows: "149.0.7827.199", macos: "149.0.7827.199", linux: "150.0.7871.46", android: "150.0.7871.63", ios: "150.0.7871.51" };
+const PREVIEW_LATEST_BRAVE = "150.0.7871.46";
+const PREVIEW_LATEST_SAFARI = "26.5.2";
+const PREVIEW_IOS_VER = "26.5";
+function previewLatestVersion(browser, os) {
+  const b = (browser || "chrome").toLowerCase();
+  if (b === "brave") return PREVIEW_LATEST_BRAVE;
+  if (b === "safari") return PREVIEW_LATEST_SAFARI;
+  return PREVIEW_LATEST_CHROME[(os || "windows").toLowerCase()] || "149.0.7827.199";
+}
+
 function updateUAPreview() {
   const mode = $("fp-userAgent")?.value;
   const os   = $("fp-os")?.value || "windows";
@@ -872,19 +936,20 @@ function updateUAPreview() {
   if (!preview) return;
   if (mode === "manual") { preview.textContent = ""; return; }
   const bvSel = $("fp-browserVersion")?.value;
-  const bv = bvSel === "custom"
-    ? ($("fp-browserVersionCustom")?.value.trim() || "148")
-    : (bvSel || "148");
+  const customVal = ($("fp-browserVersionCustom")?.value || "").trim();
+  // "auto" / bare major → current latest for this browser+OS (mirrors main
+  // process); only an explicit custom full-version string is pinned.
+  const bv = (bvSel === "custom" && customVal) ? customVal : previewLatestVersion(br, os);
   const full = bv.includes(".") ? bv : bv + ".0.0.0";
   const fv   = full.split(".")[0];
 
   const osStr = { windows: "Windows NT 10.0; Win64; x64", macos: "Macintosh; Intel Mac OS X 10_15_7", linux: "X11; Linux x86_64", android: "Linux; Android 14; Pixel 8 Build/UP1A.231005.007" }[os] || "Windows NT 10.0; Win64; x64";
   let ua;
   if (os === "ios") {
-    const iosUA = "(iPhone; CPU iPhone OS 17_2 like Mac OS X)";
-    if (br === "safari")     ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1`;
+    const iosUA = `(iPhone; CPU iPhone OS ${PREVIEW_IOS_VER.replace(/\./g, "_")} like Mac OS X)`;
+    if (br === "safari")     ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${PREVIEW_IOS_VER} Mobile/15E148 Safari/604.1`;
     else if (br === "firefox") ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/${fv}.0 Mobile/15E148 Safari/604.1`;
-    else if (br === "edge")  ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 EdgiOS/${full} Mobile/15E148 Safari/604.1`;
+    else if (br === "edge")  ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${PREVIEW_IOS_VER} EdgiOS/${full} Mobile/15E148 Safari/604.1`;
     else                     ua = `Mozilla/5.0 ${iosUA} AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/${full} Mobile/15E148 Safari/604.1`;
   } else if (br === "firefox")     ua = `Mozilla/5.0 (${osStr}; rv:${fv}.0) Gecko/20100101 Firefox/${fv}.0`;
   else if (br === "safari") ua = `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${full} Safari/605.1.15`;
@@ -1515,13 +1580,16 @@ function bindSidebarEvents() {
     const r = await msg("PROFILE_LIST", { showDeleted: true });
     const trashed = (r.profiles || []).filter((p) => p.deletedAt);
     if (!trashed.length) { toast("Trash is empty"); return; }
-    if (!confirm(`Permanently delete ${trashed.length} trashed profile(s)?`)) return;
-    for (const p of trashed) await msg("PROFILE_DELETE", { id: p.id, hard: true });
-    toast("Trash emptied");
+    if (!confirm(`Permanently delete ${trashed.length} trashed profile(s)? This removes them from this PC AND the cloud database and cannot be undone.`)) return;
+    const res = await msg("PROFILE_PURGE_TRASH", {});
+    await refreshOpenWindows();
+    renderList();
+    toast(res && res.ok ? `Trash emptied — ${res.count} removed` : "Trash emptied");
   });
 }
 
 function bindFormEvents() {
+  $("btnGenIdentity")?.addEventListener("click", generateCoherentIdentity);
   $("btnSave").addEventListener("click", saveCurrentProfile);
   $("btnDelete").addEventListener("click", () => selectedId && deleteProfile(selectedId));
   $("btnDuplicate").addEventListener("click", () => selectedId && duplicateProfile(selectedId));
