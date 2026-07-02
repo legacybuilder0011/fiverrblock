@@ -1122,7 +1122,7 @@ async function openCloudPhoneWindow(id) {
 }
 
 function buildUserAgentMetadata(config) {
-  const major = String(config._uaVersion || ((config.userAgent || "").match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || "148");
+  const major = String(config._uaVersion || ((config.userAgent || "").match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || "150");
   const full = `${major}.0.0.0`;
   const browser = config._browserApp || "chrome";
   const brand = browser === "edge" ? "Microsoft Edge" : browser === "brave" ? "Brave" : browser === "privacy" ? "Privacy Shield Browser" : "Google Chrome";

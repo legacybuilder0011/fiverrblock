@@ -1042,14 +1042,16 @@ function currentEngineMajor() {
 // Current real-world Chrome full versions per OS. UPDATE THIS as Chrome releases.
 // (Last updated 2026-07-02.) "Auto" version resolves to the value for the profile
 // OS so the User-Agent + Client-Hints match what real users are actually running.
+// Kept in lockstep with the bundled Chromium engine major (150) so the claimed UA
+// version never falls behind the real engine — a UA/engine mismatch is a bot tell.
 const LATEST_CHROME_BY_OS = {
-  windows: "149.0.7827.199",
-  macos:   "149.0.7827.199",
+  windows: "150.0.7871.46",
+  macos:   "150.0.7871.46",
   linux:   "150.0.7871.46",
   android: "150.0.7871.63",
   ios:     "150.0.7871.51"
 };
-const LATEST_CHROME_FALLBACK = "149.0.7827.199";
+const LATEST_CHROME_FALLBACK = "150.0.7871.46";
 
 function latestChromeForOs(osName) {
   return LATEST_CHROME_BY_OS[String(osName || "").toLowerCase()] || LATEST_CHROME_FALLBACK;
@@ -1658,7 +1660,7 @@ function buildConfigFromProfile(profile) {
 
   if (fp.userAgent === "manual" && fp.userAgentValue) {
     cfg.userAgent = fp.userAgentValue;
-    cfg._uaVersion = (fp.userAgentValue.match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || String(fp.browserVersion || "148").split(".")[0];
+    cfg._uaVersion = (fp.userAgentValue.match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || String(fp.browserVersion || "150").split(".")[0];
   } else {
     // "auto" (or empty) → the current real-world Chrome for this OS, so the UA
     // matches what real users run (being a year behind is itself a bot tell).

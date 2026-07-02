@@ -83,7 +83,7 @@
     webrtcIP: "",
     blockCookies: false,
     blockStorage: false,
-    browserVersion: "148",
+    browserVersion: "150",
     city: "Lagos",
     state: "Lagos State",
     ispName: "Preview ISP",

@@ -917,7 +917,7 @@ function updateConditionalRows() {
 
 // Current real-world versions — MUST mirror LATEST_CHROME_BY_OS / latestVersionFor
 // in src/profile-store.js so this in-form preview matches the actual launched UA.
-const PREVIEW_LATEST_CHROME = { windows: "149.0.7827.199", macos: "149.0.7827.199", linux: "150.0.7871.46", android: "150.0.7871.63", ios: "150.0.7871.51" };
+const PREVIEW_LATEST_CHROME = { windows: "150.0.7871.46", macos: "150.0.7871.46", linux: "150.0.7871.46", android: "150.0.7871.63", ios: "150.0.7871.51" };
 const PREVIEW_LATEST_BRAVE = "150.0.7871.46";
 const PREVIEW_LATEST_SAFARI = "26.5.2";
 const PREVIEW_IOS_VER = "26.5";
@@ -925,7 +925,7 @@ function previewLatestVersion(browser, os) {
   const b = (browser || "chrome").toLowerCase();
   if (b === "brave") return PREVIEW_LATEST_BRAVE;
   if (b === "safari") return PREVIEW_LATEST_SAFARI;
-  return PREVIEW_LATEST_CHROME[(os || "windows").toLowerCase()] || "149.0.7827.199";
+  return PREVIEW_LATEST_CHROME[(os || "windows").toLowerCase()] || "150.0.7871.46";
 }
 
 function updateUAPreview() {
@@ -998,9 +998,10 @@ function updateBrowserVersionOptions() {
       <option value="128">Brave 1.70 / Chromium 128</option>
       <option value="131">Brave 1.73 / Chromium 131</option>
       <option value="136">Brave 1.78 / Chromium 136</option>
-      <option value="148">Brave 1.90 / Chromium 148 (latest)</option>
+      <option value="148">Brave 1.90 / Chromium 148</option>
+      <option value="150">Brave 1.92 / Chromium 150 (latest)</option>
       <option value="custom">Custom…</option>`;
-    if (!verSel.value) verSel.value = "148";
+    if (!verSel.value) verSel.value = "150";
     if (hint) hint.textContent = "Brave uses Chromium's UA (intentional, for anti-fingerprinting). Sites detect Brave via navigator.brave.isBrave(), which Privacy Shield enables automatically for Brave profiles.";
   } else if (br === "edge") {
     verSel.innerHTML = `
@@ -1009,9 +1010,10 @@ function updateBrowserVersionOptions() {
       <option value="124">124</option>
       <option value="131">131</option>
       <option value="136">136</option>
-      <option value="148">148 (latest)</option>
+      <option value="148">148</option>
+      <option value="150">150 (latest)</option>
       <option value="custom">Custom…</option>`;
-    if (!verSel.value) verSel.value = "148";
+    if (!verSel.value) verSel.value = "150";
     if (hint) hint.textContent = "Edge appends Edg/<version> to the UA so sites can detect it.";
   } else {
     verSel.innerHTML = `
@@ -1020,8 +1022,10 @@ function updateBrowserVersionOptions() {
       <option value="124">124</option>
       <option value="131">131</option>
       <option value="136">136</option>
-      <option value="148">148 (latest)</option>
+      <option value="148">148</option>
+      <option value="150">150 (latest)</option>
       <option value="custom">Custom…</option>`;
+    if (!verSel.value) verSel.value = "150";
     const name = browserLabel(br);
     if (hint) hint.textContent = `Sets the ${name} version in the auto-generated User-Agent string.`;
   }
@@ -1029,7 +1033,7 @@ function updateBrowserVersionOptions() {
 }
 
 function setBrowserVersionValue(version) {
-  const value = String(version || "148");
+  const value = String(version || "150");
   const sel = $("fp-browserVersion");
   if (!sel) return;
   const hasOption = Array.from(sel.options || []).some((option) => option.value === value);
@@ -2112,7 +2116,7 @@ const COUNTRY_PRESETS = {
   ae: { name: "UAE (Dubai)", timezone: "Asia/Dubai", offset: -240, language: "ar-AE", lat: 25.2048, lng: 55.2708, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Dubai", state: "Dubai", ispName: "Emirates Integrated Telecom (du)", ispAsn: "15802", ispOrg: "Emirates Integrated Telecom" },
   ru: { name: "Russia", timezone: "Europe/Moscow", offset: -180, language: "ru-RU", lat: 55.7558, lng: 37.6173, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Moscow", state: "Moscow Oblast", ispName: "Rostelecom", ispAsn: "12389", ispOrg: "Rostelecom" },
   tr: { name: "Turkey", timezone: "Europe/Istanbul", offset: -180, language: "tr-TR", lat: 41.0082, lng: 28.9784, os: "windows", screenWidth: 1920, screenHeight: 1080, browserVersion: "136", city: "Istanbul", state: "Istanbul", ispName: "Turk Telekomunikasyon A.S.", ispAsn: "9121", ispOrg: "Turk Telekomunikasyon" },
-  ng: { name: "Nigeria (Lagos)", timezone: "Africa/Lagos", offset: -60, language: "en-US", lat: 6.5244, lng: 3.3792, os: "linux", screenWidth: 1366, screenHeight: 768, browserVersion: "148", city: "Lagos", state: "Lagos State", ispName: "Airtel Networks Limited", ispAsn: "36873", ispOrg: "Airtel Networks Limited" }
+  ng: { name: "Nigeria (Lagos)", timezone: "Africa/Lagos", offset: -60, language: "en-US", lat: 6.5244, lng: 3.3792, os: "linux", screenWidth: 1366, screenHeight: 768, browserVersion: "150", city: "Lagos", state: "Lagos State", ispName: "Airtel Networks Limited", ispAsn: "36873", ispOrg: "Airtel Networks Limited" }
 };
 
 function applyGeneratedIdentityToForm(data) {
@@ -2208,7 +2212,7 @@ function applyGeneratedIdentityToForm(data) {
   setVal("fp-ispName", fp.ispName || "");
   setVal("fp-ispAsn", fp.ispAsn || "");
   setVal("fp-ispOrg", fp.ispOrg || fp.organization || "");
-  setBrowserVersionValue(fp.browserVersion || "148");
+  setBrowserVersionValue(fp.browserVersion || "150");
 
   updateConditionalRows();
   updateUAPreview();

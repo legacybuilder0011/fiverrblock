@@ -69,7 +69,7 @@ function setHeader(headers, name, value) {
 
 function getChromeMajor(config) {
   const ua = config?.userAgent || "";
-  return (ua.match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || "148";
+  return (ua.match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || "150";
 }
 
 function getHeaderPlatform(config) {

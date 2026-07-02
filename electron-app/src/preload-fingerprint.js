@@ -176,7 +176,7 @@
     } catch (_) {}
   };
 
-  const browserMajor = () => String(config._uaVersion || ((config.userAgent || "").match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || "148");
+  const browserMajor = () => String(config._uaVersion || ((config.userAgent || "").match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || "150");
   const browserName = () => config._browserApp || (/Edg\//.test(config.userAgent || "") ? "edge" : /Firefox\//.test(config.userAgent || "") ? "firefox" : /Safari\//.test(config.userAgent || "") && !/Chrome\//.test(config.userAgent || "") ? "safari" : "chrome");
   const platformName = () => config._uaOS || (config.platform === "MacIntel" ? "macOS" : config.platform === "Linux x86_64" ? "Linux" : "Windows");
   const brandName = () => browserName() === "edge" ? "Microsoft Edge" : browserName() === "brave" ? "Brave" : browserName() === "privacy" ? "Privacy Shield Browser" : "Google Chrome";
