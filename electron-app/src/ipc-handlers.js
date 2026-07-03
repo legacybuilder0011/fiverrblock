@@ -1763,15 +1763,58 @@ function addTab(windowId, url) {
   // Inject fingerprint spoof via CDP so it runs in every frame (incl. iframes)
   // BEFORE any page script. Preload still runs as a fallback in the top frame.
   // Fire-and-forget — failure is logged, browsing continues with preload-only spoofing.
+  //
+  // IMPORTANT (bot-detection): attaching the DevTools debugger is ITSELF a strong
+  // automation signal. PerimeterX ("Press & Hold to confirm you are a human"),
+  // Cloudflare Turnstile and reCAPTCHA all probe for an attached CDP session
+  // (Runtime domain leaks, worker pause-on-start timing via waitForDebuggerOnStart,
+  // etc.). A native browser on the same IP passes precisely because it has no
+  // debugger footprint. So for STEALTH profiles — whose whole point is to pass
+  // aggressive detection — we DON'T attach CDP at all: the top-frame preload spoof
+  // is enough, and skipping CDP removes the biggest remaining "you are a bot" tell.
+  // Full-spoof profiles keep CDP for iframe/worker coverage (farming/linkability).
+  let skipHosts = [];
   try {
     const cfg = profile ? store.buildConfigFromProfile(profile) : null;
-    if (cfg) {
+    if (cfg) skipHosts = Array.isArray(cfg._spoofSkipHosts) ? cfg._spoofSkipHosts.filter(Boolean) : [];
+    if (cfg && cfg._stealth === true) {
+      logError(`cdp-stealth skipped (stealth profile — no debugger footprint) profile=${cfg._profileId || "?"}`);
+    } else if (cfg) {
       cdpStealth.attachStealth(view.webContents, cfg, logError).catch((err) => {
         logError(`cdp-stealth attachStealth threw: ${err && (err.message || err)}`);
       });
     }
   } catch (err) {
     logError(`cdp-stealth setup error: ${err && (err.message || err)}`);
+  }
+
+  // Per-site allowlist: a full-spoof profile keeps CDP for iframe/worker coverage,
+  // but when it navigates to an allowlisted host (e.g. fiverr.com), the attached
+  // debugger is the very thing PerimeterX "Press & Hold" detects. Detach it on the
+  // way in so that host sees a near-native browser. The top-frame preload still
+  // runs and already softens its own fingerprint for allowlisted hosts. We don't
+  // re-attach on leaving (the injected-script id is gone) — a tab that has touched
+  // an allowlisted host simply stays CDP-free, which is the safe direction.
+  if (skipHosts.length) {
+    const hostInSkip = (rawUrl) => {
+      let host = "";
+      try { host = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, ""); } catch (_) { return false; }
+      if (!host) return false;
+      for (const raw of skipHosts) {
+        const entry = String(raw || "").toLowerCase().trim().replace(/^\*?\.?/, "").replace(/^www\./, "");
+        if (entry && (host === entry || host.endsWith("." + entry))) return true;
+      }
+      return false;
+    };
+    view.webContents.on("did-start-navigation", (_e, navUrl, _isInPlace, isMainFrame) => {
+      if (!isMainFrame || !hostInSkip(navUrl)) return;
+      try {
+        if (view.webContents.debugger.isAttached()) {
+          view.webContents.debugger.detach();
+          logError(`cdp-stealth detached for allowlisted host: ${navUrl}`);
+        }
+      } catch (_) {}
+    });
   }
 
   const tabEntry = { id: tabId, view, title: "New tab", url };

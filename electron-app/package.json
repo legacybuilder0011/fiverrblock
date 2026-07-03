@@ -1,6 +1,6 @@
 {
   "name": "privacy-shield",
-  "version": "1.15.3",
+  "version": "1.15.4",
   "description": "Privacy Shield Browser - Profile Identity Manager Desktop App",
   "author": "Privacy Shield",
   "main": "src/main.js",
@@ -16,7 +16,7 @@
   "build": {
     "appId": "com.privacyshield.app",
     "productName": "Privacy Shield Browser",
-    "icon": "icons/icon256.png",
+    "icon": "icons/icon.ico",
     "directories": {
       "output": "dist"
     },
