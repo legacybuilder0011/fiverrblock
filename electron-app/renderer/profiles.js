@@ -649,16 +649,17 @@ function populateForm(p) {
   setVal("fp-spoofingLevel", fp.spoofingLevel || "full");
   setVal("fp-spoofSkipHosts", (fp.spoofSkipHosts || []).join(", "));
 
-  // Browser version: "auto" and bare majors (stale auto-generated values) both
-  // track the latest, so show them as Auto. Only a full-version "custom" pin
-  // (contains a dot, e.g. "150.0.7871.46") shows in the Custom field.
+  // Browser version. A full-version "custom" pin (contains a dot, e.g.
+  // "150.0.7871.46") shows in the Custom field. A bare major (e.g. "150") is a
+  // real user choice — select that option so it persists. "auto" keeps whatever
+  // latest updateBrowserVersionOptions() already selected above.
   const bvRaw = String(fp.browserVersion || "auto");
   const isCustomVer = bvRaw !== "auto" && bvRaw.includes(".");
   if (isCustomVer) {
     setVal("fp-browserVersion", "custom");
     setVal("fp-browserVersionCustom", bvRaw);
   } else {
-    setVal("fp-browserVersion", "auto");
+    if (bvRaw !== "auto") setBrowserVersionValue(bvRaw);
     setVal("fp-browserVersionCustom", "");
   }
   const bvcRow = $("browserVersionCustomRow");
@@ -969,6 +970,13 @@ function updateBrowserVersionOptions() {
   const verSel  = $("fp-browserVersion");
   if (!verSel) return;
 
+  // Preserve whatever the user already picked BEFORE we rebuild the <option>s.
+  // Rewriting innerHTML resets the <select> to its first option (120), so
+  // without this the guard `if (!verSel.value)` never fires and every field
+  // change silently snapped the version back to 120. Capture, rebuild, restore.
+  const prev = verSel.value;
+  let latest = "150";
+
   if (br === "firefox") {
     verSel.innerHTML = `
       <option value="115">115 (ESR)</option>
@@ -979,7 +987,7 @@ function updateBrowserVersionOptions() {
       <option value="136">136</option>
       <option value="137">137 (latest)</option>
       <option value="custom">Custom…</option>`;
-    if (!verSel.value) verSel.value = "137";
+    latest = "137";
     if (hint) hint.textContent = "Sets the Firefox version in the auto-generated User-Agent string.";
   } else if (br === "safari") {
     verSel.innerHTML = `
@@ -988,7 +996,7 @@ function updateBrowserVersionOptions() {
       <option value="17.4">17.4</option>
       <option value="17.5">17.5 (latest)</option>
       <option value="custom">Custom…</option>`;
-    if (!verSel.value) verSel.value = "17.5";
+    latest = "17.5";
     if (hint) hint.textContent = "Sets the Safari version in the auto-generated User-Agent string.";
   } else if (br === "brave") {
     verSel.innerHTML = `
@@ -1001,7 +1009,7 @@ function updateBrowserVersionOptions() {
       <option value="148">Brave 1.90 / Chromium 148</option>
       <option value="150">Brave 1.92 / Chromium 150 (latest)</option>
       <option value="custom">Custom…</option>`;
-    if (!verSel.value) verSel.value = "150";
+    latest = "150";
     if (hint) hint.textContent = "Brave uses Chromium's UA (intentional, for anti-fingerprinting). Sites detect Brave via navigator.brave.isBrave(), which Privacy Shield enables automatically for Brave profiles.";
   } else if (br === "edge") {
     verSel.innerHTML = `
@@ -1013,7 +1021,7 @@ function updateBrowserVersionOptions() {
       <option value="148">148</option>
       <option value="150">150 (latest)</option>
       <option value="custom">Custom…</option>`;
-    if (!verSel.value) verSel.value = "150";
+    latest = "150";
     if (hint) hint.textContent = "Edge appends Edg/<version> to the UA so sites can detect it.";
   } else {
     verSel.innerHTML = `
@@ -1025,10 +1033,16 @@ function updateBrowserVersionOptions() {
       <option value="148">148</option>
       <option value="150">150 (latest)</option>
       <option value="custom">Custom…</option>`;
-    if (!verSel.value) verSel.value = "150";
+    latest = "150";
     const name = browserLabel(br);
     if (hint) hint.textContent = `Sets the ${name} version in the auto-generated User-Agent string.`;
   }
+
+  // Restore the prior pick if it's still valid for this browser; otherwise
+  // fall back to the latest version (NOT the first option, which is oldest).
+  // "auto" from the static markup also maps to latest.
+  const stillValid = prev && prev !== "auto" && Array.from(verSel.options).some((o) => o.value === prev);
+  verSel.value = stillValid ? prev : latest;
   updateUAPreview();
 }
 
