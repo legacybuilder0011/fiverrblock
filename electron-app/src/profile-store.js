@@ -1160,6 +1160,22 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
     fp.webglVendor = webgl.vendor;
     fp.webglRenderer = webgl.renderer;
   }
+  // Vary the remaining hardware that getDefaultFingerprint() hard-codes (screen
+  // 1920x1080, 4 cores, 8GB RAM, dpr 1). Left fixed, every plain "New Profile"
+  // shares an identical screen+CPU+RAM signature — a cross-account linkability
+  // cluster when many profiles run on one device. Only fires on create
+  // (randomizeDefaultGpu) and only when the value is still the untouched default,
+  // so it never clobbers a country-generated identity or a user's manual pick.
+  if (options.randomizeDefaultGpu && (osName === "windows" || osName === "macos" || osName === "linux")) {
+    const d = getDefaultFingerprint();
+    if (Number(fp.screenWidth) === d.screenWidth && Number(fp.screenHeight) === d.screenHeight) {
+      const s = screenForOs(osName);
+      if (s && s.width && s.height) { fp.screen = "manual"; fp.screenWidth = s.width; fp.screenHeight = s.height; }
+    }
+    if (fp.cpuCoresValue === d.cpuCoresValue) { fp.cpuCores = "manual"; fp.cpuCoresValue = randomChoice([4, 4, 6, 8, 8, 12, 16]); }
+    if (fp.ramValue === d.ramValue) { fp.ram = "manual"; fp.ramValue = randomChoice([8, 8, 16, 16, 32]); }
+    if (Number(fp.devicePixelRatio) === d.devicePixelRatio) { fp.devicePixelRatio = randomChoice([1, 1, 1.25, 1.5]); }
+  }
   if (regenerateIdentity && fp.deviceName === "manual") {
     fp.deviceNameValue = randomDeviceName(osName);
   }
