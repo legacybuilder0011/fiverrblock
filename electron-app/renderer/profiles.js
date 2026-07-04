@@ -1954,7 +1954,12 @@ function showVpnLocationConfirm(r) {
 // into Camoufox in the main process.
 async function openInStealthEngine(profileId) {
   const p = profiles.find((p) => p.id === profileId);
-  const url = (p && p.fingerprint && p.fingerprint.startUrl) || "https://www.fiverr.com/";
+  // Resolve a real, fully-qualified start URL. A bare word like "fiverr" isn't a
+  // hostname (Firefox shows "Server Not Found"), so only accept a saved startUrl
+  // that has a scheme or a dot; otherwise default to Fiverr.
+  let url = String((p && p.fingerprint && p.fingerprint.startUrl) || "").trim();
+  if (!/^https?:\/\//i.test(url)) url = /\./.test(url) ? "https://" + url : "";
+  if (!url) url = "https://www.fiverr.com/";
   toast("🦊 Launching Stealth Engine… first run downloads the engine (~150MB), please wait");
   const r = await msg("PROFILE_OPEN_CAMOUFOX", { profileId, url });
   if (r && r.ok) {

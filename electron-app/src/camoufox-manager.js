@@ -117,11 +117,25 @@ function profileToOptions(profile) {
     opts.geoip = true;
   }
 
-  // Pin the window/screen to the profile's resolution so it matches its identity.
+  // Report the profile's resolution as navigator.screen for a coherent identity…
   const w = Number(fp.screenWidth), h = Number(fp.screenHeight);
   if (w > 0 && h > 0) {
     opts.screen = { minWidth: w, minHeight: h, maxWidth: w, maxHeight: h };
   }
+
+  // …but size the ACTUAL on-screen window to fit the user's real display, so a
+  // 1920x1080 identity doesn't open a window that overflows a smaller/scaled
+  // monitor. The window being smaller than the reported screen is normal (a
+  // non-maximized browser), so this stays coherent.
+  try {
+    const { screen: elScreen } = require("electron");
+    const wa = elScreen && elScreen.getPrimaryDisplay ? elScreen.getPrimaryDisplay().workAreaSize : null;
+    if (wa && wa.width && wa.height) {
+      const winW = Math.max(1000, Math.min(w || 1440, Math.round(wa.width * 0.82)));
+      const winH = Math.max(680, Math.min(h || 900, Math.round(wa.height * 0.86)));
+      opts.window = [winW, winH]; // camoufox-js expects a [width, height] tuple
+    }
+  } catch (_) {}
 
   return opts;
 }
