@@ -1,0 +1,25 @@
+diff --git a/node_modules/camoufox-js/dist/webgl/sample.js b/node_modules/camoufox-js/dist/webgl/sample.js
+index 3ac1706..443f3f1 100644
+--- a/node_modules/camoufox-js/dist/webgl/sample.js
++++ b/node_modules/camoufox-js/dist/webgl/sample.js
+@@ -14,8 +14,18 @@ async function openDatabase(pathName) {
+             DatabaseConstructor = DatabaseSync;
+         }
+         else {
+-            const { default: BetterSqlite3 } = await import("better-sqlite3");
+-            DatabaseConstructor = BetterSqlite3;
++            // Prefer Node's built-in SQLite (Node >= 22.13 / Electron 43) so we
++            // don't depend on the native better-sqlite3 binary, which needs a C++
++            // toolchain to build and a per-ABI rebuild for Electron. Fall back to
++            // better-sqlite3 only where node:sqlite isn't available.
++            try {
++                const { DatabaseSync } = await import("node:sqlite");
++                DatabaseConstructor = DatabaseSync;
++            }
++            catch {
++                const { default: BetterSqlite3 } = await import("better-sqlite3");
++                DatabaseConstructor = BetterSqlite3;
++            }
+         }
+     }
+     return new DatabaseConstructor(pathName);

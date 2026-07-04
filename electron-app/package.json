@@ -1,17 +1,19 @@
 {
   "name": "privacy-shield",
-  "version": "1.16.0",
+  "version": "1.16.1",
   "description": "Privacy Shield Browser - Profile Identity Manager Desktop App",
   "author": "Privacy Shield",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder",
-    "build:win": "node -e \"const fs=require('fs');const d='dist';if(fs.existsSync(d))fs.readdirSync(d).filter(f=>/\\.(exe|blockmap|yml)$/.test(f)).forEach(f=>fs.unlinkSync(d+'/'+f));\" && electron-builder --win"
+    "build:win": "node -e \"const fs=require('fs');const d='dist';if(fs.existsSync(d))fs.readdirSync(d).filter(f=>/\\.(exe|blockmap|yml)$/.test(f)).forEach(f=>fs.unlinkSync(d+'/'+f));\" && electron-builder --win",
+    "postinstall": "patch-package"
   },
   "devDependencies": {
     "electron": "^43.0.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "patch-package": "^8.0.1"
   },
   "build": {
     "appId": "com.privacyshield.app",
