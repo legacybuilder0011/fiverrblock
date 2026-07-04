@@ -857,7 +857,7 @@
 
   // ── WebGL ──────────────────────────────────────────────────────────────────────
   if (config.blockWebGL) {
-    const NORMALIZED_EXTENSIONS = ["ANGLE_instanced_arrays","EXT_blend_minmax","EXT_color_buffer_half_float","EXT_disjoint_timer_query","EXT_float_blend","EXT_frag_depth","EXT_shader_texture_lod","EXT_texture_compression_bptc","EXT_texture_compression_rgtc","EXT_texture_filter_anisotropic","EXT_sRGB","KHR_parallel_shader_compile","OES_element_index_uint","OES_fbo_render_mipmap","OES_standard_derivatives","OES_texture_float","OES_texture_float_linear","OES_texture_half_float","OES_texture_half_float_linear","OES_vertex_array_object","WEBGL_color_buffer_float","WEBGL_compressed_texture_s3tc","WEBGL_compressed_texture_s3tc_srgb","WEBGL_debug_shaders","WEBGL_depth_texture","WEBGL_draw_buffers","WEBGL_lose_context","WEBGL_multi_draw"];
+    const NORMALIZED_EXTENSIONS = ["ANGLE_instanced_arrays","EXT_blend_minmax","EXT_color_buffer_half_float","EXT_disjoint_timer_query","EXT_float_blend","EXT_frag_depth","EXT_shader_texture_lod","EXT_texture_compression_bptc","EXT_texture_compression_rgtc","EXT_texture_filter_anisotropic","EXT_sRGB","KHR_parallel_shader_compile","OES_element_index_uint","OES_fbo_render_mipmap","OES_standard_derivatives","OES_texture_float","OES_texture_float_linear","OES_texture_half_float","OES_texture_half_float_linear","OES_vertex_array_object","WEBGL_color_buffer_float","WEBGL_compressed_texture_s3tc","WEBGL_compressed_texture_s3tc_srgb","WEBGL_debug_renderer_info","WEBGL_debug_shaders","WEBGL_depth_texture","WEBGL_draw_buffers","WEBGL_lose_context","WEBGL_multi_draw"];
     const neuter = (proto) => {
       if (!proto) return;
       wrap(proto, "getParameter", (orig) => function (p) {
@@ -871,7 +871,14 @@
         if (p === 35724) return "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)";
         return orig.call(this, p);
       });
-      wrap(proto, "getExtension", (orig) => function (name) { if (name === "WEBGL_debug_renderer_info") return null; return orig.call(this, name); });
+      wrap(proto, "getExtension", (orig) => function (name) {
+        // Desktop Chrome EXPOSES WEBGL_debug_renderer_info; returning the real ext
+        // (whose UNMASKED_* constants 37445/37446 the getParameter override maps to
+        // the per-profile spoofed GPU) mimics Chrome AND makes the reported GPU
+        // differ across profiles. Only iOS/WebKit truly lacks it.
+        if (name === "WEBGL_debug_renderer_info" && config._uaOS === "iOS") return null;
+        return orig.call(this, name);
+      });
       wrap(proto, "getSupportedExtensions", (orig) => function () { return NORMALIZED_EXTENSIONS.slice(); });
       wrap(proto, "readPixels", (orig) => function (...args) { const r = orig.apply(this, args); try { const buf = args[6]; if (buf && buf.length) for (let i = 0; i < buf.length; i += 4) if (stableNoise(i) < 0.002) buf[i] ^= 1; } catch (_) {} return r; });
     };
