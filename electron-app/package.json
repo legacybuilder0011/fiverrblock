@@ -17,6 +17,7 @@
     "appId": "com.privacyshield.app",
     "productName": "Privacy Shield Browser",
     "icon": "icons/icon.ico",
+    "npmRebuild": false,
     "directories": {
       "output": "dist"
     },
