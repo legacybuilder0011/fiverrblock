@@ -602,7 +602,11 @@
         type: { value: "application/pdf", enumerable: true },
         suffixes: { value: "pdf", enumerable: true },
         description: { value: "Portable Document Format", enumerable: true },
-        enabledPlugin: { value: null, enumerable: true }
+        // MUST be configurable: it's redefined below to point back at each Plugin.
+        // Without this the redefine threw "Cannot redefine property: enabledPlugin",
+        // an uncaught error that aborted the ENTIRE preload — killing timezone,
+        // screen, canvas, WebGL and audio spoofing (every hardware fingerprint).
+        enabledPlugin: { value: null, enumerable: true, configurable: true }
       });
       const pluginNames = [
         "PDF Viewer",
