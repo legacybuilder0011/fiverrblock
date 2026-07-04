@@ -295,9 +295,11 @@ function registerIpcHandlers() {
     const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
     if (!profile) return { ok: false, reason: "no-profile" };
     try {
-      return await camoufox.launchProfile(profile, url || "");
+      const res = await camoufox.launchProfile(profile, url || "");
+      if (!res || !res.ok) logError(`camoufox launch failed: reason=${res && res.reason} detail=${res && res.detail}`);
+      return res;
     } catch (err) {
-      logError(`camoufox launch threw: ${err && (err.message || err)}`);
+      logError(`camoufox launch threw: ${err && (err.stack || err.message || err)}`);
       return { ok: false, reason: "launch-failed", detail: String(err && (err.message || err)) };
     }
   });

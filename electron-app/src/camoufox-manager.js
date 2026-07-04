@@ -28,17 +28,34 @@ if (!process.env.CAMOUFOX_INSTALL_DIR && electronApp) {
   try { process.env.CAMOUFOX_INSTALL_DIR = path.join(electronApp.getPath("userData"), "camoufox-engine"); } catch (_) {}
 }
 
-// Lazy-load the optional dependency so the app still boots if it isn't installed.
-// camoufox-js is ESM. require() of it works on modern Node, but Electron's bundled
-// Node can differ — fall back to dynamic import() so the packaged app can't break.
+// Lazy-load the optional dependency. camoufox-js is an ESM package with a large
+// dependency tree (incl. native modules). In a packaged app the app code lives
+// INSIDE app.asar but node_modules is unpacked to app.asar.unpacked — and bare
+// ESM resolution from inside the asar resolves to the packed copy, whose deps
+// then fail with ERR_MODULE_NOT_FOUND. So resolve the entry, rewrite it to the
+// unpacked location, and load THAT explicitly (dev paths are unaffected — the
+// rewrite is a no-op when there's no app.asar in the path).
 let _cam = null;
 async function loadCamoufox() {
   if (_cam) return _cam;
+
+  let entry;
+  try { entry = require.resolve("camoufox-js"); } catch (_) { entry = null; }
+  // Fallback: derive from our own location (…/app.asar/src/camoufox-manager.js)
+  // in case require.resolve can't resolve across the asar boundary.
+  if (!entry) entry = path.join(__dirname, "..", "node_modules", "camoufox-js", "dist", "index.js");
+
+  if (/([\\/])app\.asar\1/.test(entry) && !entry.includes("app.asar.unpacked")) {
+    entry = entry.replace(/([\\/])app\.asar\1/, "$1app.asar.unpacked$1");
+  }
+
   try {
-    _cam = require("camoufox-js");
+    _cam = require(entry);
   } catch (err) {
     if (err && (err.code === "ERR_REQUIRE_ESM" || /require\(\) of ES Module/i.test(String(err.message)))) {
-      _cam = await import("camoufox-js");
+      const { pathToFileURL } = require("url");
+      const spec = /[\\/]/.test(entry) ? pathToFileURL(entry).href : entry;
+      _cam = await import(spec);
     } else {
       throw err;
     }
