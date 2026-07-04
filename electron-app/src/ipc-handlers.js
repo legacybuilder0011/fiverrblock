@@ -82,6 +82,7 @@ const FINGERPRINT_PRELOAD = path.join(__dirname, "preload-fingerprint.js");
 const RENDERER_PRELOAD    = path.join(__dirname, "renderer-preload.js");
 
 const cdpStealth = require("./cdp-stealth");
+const camoufox = require("./camoufox-manager");
 
 // HTML files load via the psapp:// custom protocol (registered in main.js).
 // file:// URLs to anything containing ".asar" in the path (including .asar.unpacked)
@@ -285,6 +286,27 @@ function registerIpcHandlers() {
   ipcMain.handle("PROFILE_DUPLICATE", async (_ev, { id } = {}) => {
     const profile = store.duplicateProfile(id);
     return { ok: Boolean(profile), profile };
+  });
+
+  // ── Camoufox "Stealth Engine" — patched-Firefox launch for hard bot-detection ──
+  // sites (Fiverr/PerimeterX). Separate process, engine-level fingerprint, no JS
+  // footprint. Additive: does not touch the in-app Chromium browser path.
+  ipcMain.handle("PROFILE_OPEN_CAMOUFOX", async (_ev, { profileId, url } = {}) => {
+    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    if (!profile) return { ok: false, reason: "no-profile" };
+    try {
+      return await camoufox.launchProfile(profile, url || "");
+    } catch (err) {
+      logError(`camoufox launch threw: ${err && (err.message || err)}`);
+      return { ok: false, reason: "launch-failed", detail: String(err && (err.message || err)) };
+    }
+  });
+  ipcMain.handle("PROFILE_CLOSE_CAMOUFOX", async (_ev, { profileId } = {}) => {
+    try { return await camoufox.closeProfile(profileId); }
+    catch (err) { return { ok: false, detail: String(err && (err.message || err)) }; }
+  });
+  ipcMain.handle("CAMOUFOX_STATUS", async (_ev, { profileId } = {}) => {
+    return { ok: true, ready: await camoufox.isEngineReady(), running: profileId ? camoufox.isProfileRunning(profileId) : false };
   });
 
   // Tab assignment — no-op in Electron (each window IS the profile)

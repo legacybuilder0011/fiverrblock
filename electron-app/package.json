@@ -1,6 +1,6 @@
 {
   "name": "privacy-shield",
-  "version": "1.15.6",
+  "version": "1.16.0",
   "description": "Privacy Shield Browser - Profile Identity Manager Desktop App",
   "author": "Privacy Shield",
   "main": "src/main.js",
@@ -29,7 +29,9 @@
     "asarUnpack": [
       "renderer/**",
       "node_modules/cycletls/dist/**",
-      "node_modules/node-forge/**"
+      "node_modules/node-forge/**",
+      "node_modules/camoufox-js/**",
+      "node_modules/playwright-core/**"
     ],
     "win": {
       "target": [
@@ -54,9 +56,11 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.4",
+    "camoufox-js": "^0.11.1",
     "cycletls": "^2.0.5",
     "extract-zip": "^2.0.1",
     "node-forge": "^1.4.0",
+    "playwright-core": "1.54.1",
     "ssh2": "^1.17.0",
     "ws": "^8.20.1"
   }

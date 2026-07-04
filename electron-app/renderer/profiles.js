@@ -463,6 +463,7 @@ function renderList() {
         ${isRunning
           ? `<button class="pm-btn-xs danger" data-action="stop" data-id="${p.id}" title="Stop and save the session">Stop</button>`
           : `<button class="pm-btn-xs success" data-action="start" data-id="${p.id}" title="Start browser with this profile">Start</button>`}
+        <button class="pm-btn-xs" data-action="stealth" data-id="${p.id}" title="Open in the Stealth Engine (patched Firefox) — for hard bot-detection sites like Fiverr">🦊 Stealth</button>
         <button class="pm-btn-xs" data-action="dup" data-id="${p.id}" title="Duplicate">Dup</button>
         <button class="pm-btn-xs danger" data-action="del" data-id="${p.id}" title="Delete">Del</button>
       </div>
@@ -1534,6 +1535,7 @@ function bindSidebarEvents() {
     if (action === "dup") { e.stopPropagation(); duplicateProfile(id); return; }
     if (action === "apply") { e.stopPropagation(); assignToTab(id); return; }
     if (action === "open" || action === "start") { e.stopPropagation(); openProfileWindow(id); return; }
+    if (action === "stealth") { e.stopPropagation(); openInStealthEngine(id); return; }
     if (action === "stop") { e.stopPropagation(); stopProfile(id); return; }
 
     // Checkbox
@@ -1944,6 +1946,27 @@ function showVpnLocationConfirm(r) {
     // Clicking the dark backdrop = same as "Change" (safe default: do not launch).
     overlay.addEventListener("click", (e) => { if (e.target === overlay) done("change"); });
   });
+}
+
+// Launch a profile in the Camoufox "Stealth Engine" (patched Firefox) — for sites
+// that defeat the in-app Chromium (Fiverr/PerimeterX). Engine-level fingerprint,
+// no JS footprint. Separate process; the profile's proxy/geo/screen/OS are mapped
+// into Camoufox in the main process.
+async function openInStealthEngine(profileId) {
+  const p = profiles.find((p) => p.id === profileId);
+  const url = (p && p.fingerprint && p.fingerprint.startUrl) || "https://www.fiverr.com/";
+  toast("🦊 Launching Stealth Engine… first run downloads the engine (~150MB), please wait");
+  const r = await msg("PROFILE_OPEN_CAMOUFOX", { profileId, url });
+  if (r && r.ok) {
+    toast(r.reused ? "Stealth Engine window focused" : "Stealth Engine launched");
+  } else {
+    const reason = r && (r.reason || r.detail) || "unknown error";
+    if (r && (r.reason === "binary-missing" || r.reason === "engine-not-installed")) {
+      toast("Stealth Engine not installed yet. Run: npx camoufox-js fetch", 8000);
+    } else {
+      toast("Stealth Engine failed: " + reason, 8000);
+    }
+  }
 }
 
 async function openProfileWindow(profileId) {
