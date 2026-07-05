@@ -687,6 +687,22 @@
         window.FontFace = SpoofedFontFace;
       }
     } catch (_) {}
+    // Text-metric noise: font/canvas-text detectors read measureText().width at
+    // float precision. Perturb it by a per-profile, per-(text+font) deterministic
+    // sub-pixel delta so the derived text/font fingerprint is UNIQUE per profile
+    // (not linkable across profiles on one machine) yet STABLE across sessions.
+    // Sub-pixel + measurement-only → imperceptible and layout-safe.
+    try {
+      if (typeof CanvasRenderingContext2D !== "undefined" && CanvasRenderingContext2D.prototype.measureText) {
+        wrap(CanvasRenderingContext2D.prototype, "measureText", (orig) => function (text) {
+          const m = orig.call(this, text);
+          try {
+            const delta = ((seedToInt(String(text) + "|" + String(this.font) + "|" + NOISE_SEED) % 2000) / 2000 - 0.5) * 0.02;
+            return new Proxy(m, { get(t, p) { if (p === "width") return t.width + delta; const v = t[p]; return typeof v === "function" ? v.bind(t) : v; } });
+          } catch (_) { return m; }
+        });
+      }
+    } catch (_) {}
   }
 
   // ── Screen ───────────────────────────────────────────────────────────────────
