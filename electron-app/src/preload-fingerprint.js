@@ -136,6 +136,14 @@
     h = Math.imul(h ^ (h >>> 13), 0x45d9f3b);
     return ((h ^ (h >>> 16)) >>> 0) / 0x100000000;
   }
+  // Per-profile deterministic integer delta (-1/0/+1) for a layout dimension,
+  // keyed to the rounded value. Shared by the offsetWidth/offsetHeight override
+  // and the getBoundingClientRect noise so offsetWidth == round(gbcr.width) stays
+  // coherent while both differ across profiles (defeats the font width-hash).
+  function dimDelta(v) {
+    if (!v || typeof v !== "number") return 0;
+    return Math.round((stableNoise(Math.round(Math.abs(v)) * 7 + 5) - 0.5) * 2);
+  }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
   const fakeNative = (fn, name) => {
@@ -687,6 +695,23 @@
         window.FontFace = SpoofedFontFace;
       }
     } catch (_) {}
+    // offsetWidth/offsetHeight noise: the dominant font fingerprint (fingerprintjs)
+    // hashes a probe span's integer offsetWidth/offsetHeight. Add a per-profile
+    // deterministic ±1px delta keyed to the real value so the hashed widths differ
+    // across profiles (defeats the width-hash) yet stay stable per session. Bounded
+    // to 1px to keep layout intact; the detected font SET is preserved (equal widths
+    // stay equal), only the absolute hash changes.
+    try {
+      for (const prop of ["offsetWidth", "offsetHeight"]) {
+        const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop);
+        if (d && d.get) {
+          const g = d.get;
+          Object.defineProperty(HTMLElement.prototype, prop, { configurable: true, enumerable: d.enumerable,
+            get: fakeNative(function () { const v = g.call(this); return v + dimDelta(v); }, "get " + prop) });
+        }
+      }
+    } catch (_) {}
+
     // Text-metric noise: font/canvas-text detectors read measureText().width at
     // float precision. Perturb it by a per-profile, per-(text+font) deterministic
     // sub-pixel delta so the derived text/font fingerprint is UNIQUE per profile
@@ -1011,7 +1036,10 @@
     const jit = (v, salt) => (typeof v === "number" ? v + ((stableNoise(Math.round(Math.abs(v) * 100) + salt) - 0.5) * 0.02) : v);
     const noiseRect = (orig) => {
       const left = jit(orig.left, 3), top = jit(orig.top, 4);
-      const width = jit(orig.width, 1), height = jit(orig.height, 2);
+      // Add the SAME integer delta offsetWidth uses (so round(gbcr.width) ==
+      // offsetWidth stays coherent) plus sub-pixel jitter.
+      const width = (typeof orig.width === "number" ? jit(orig.width + dimDelta(orig.width), 1) : orig.width);
+      const height = (typeof orig.height === "number" ? jit(orig.height + dimDelta(orig.height), 2) : orig.height);
       return { x: left, y: top, left, top, width, height, right: left + width, bottom: top + height,
         toJSON() { return { x: this.x, y: this.y, left: this.left, top: this.top, width: this.width, height: this.height, right: this.right, bottom: this.bottom }; } };
     };
