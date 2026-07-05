@@ -1,0 +1,50 @@
+All BUILD.gn / DEPS additions, consolidated. Three files change.
+
+# ---------------------------------------------------------------------------
+# 1) third_party/blink/renderer/core/DEPS        (NEW include rule — MANDATORY)
+# ---------------------------------------------------------------------------
+# farble_session_cache.cc includes "crypto/hmac.h". core does not allow +crypto
+# by default; `gn check` fails without this.
+include_rules = [
+    "+crypto",
+    # ... existing rules ...
+]
+
+# ---------------------------------------------------------------------------
+# 2) third_party/blink/renderer/core/BUILD.gn
+# ---------------------------------------------------------------------------
+# There is NO core/farble/BUILD.gn and NO core/frame/BUILD.gn. Both the canvas
+# farble unit AND the navigator config unit are compiled by the single
+# aggregated blink core sources list (the same list that already contains
+# "frame/navigator_id.cc", "html/canvas/html_canvas_element.cc", etc.). Add all
+# four new files there WITH their directory prefix:
+sources += [
+  "farble/farble_session_cache.cc",
+  "farble/farble_session_cache.h",
+  "frame/antidetect_navigator_config.cc",
+  "frame/antidetect_navigator_config.h",
+]
+# And, in the SAME target, add the crypto dep (paired with core/DEPS above) —
+# MANDATORY, not optional; core does not link //crypto by default:
+deps += [ "//crypto" ]
+
+# ---------------------------------------------------------------------------
+# 3) third_party/blink/renderer/modules/peerconnection/BUILD.gn
+# ---------------------------------------------------------------------------
+# Inside blink_modules_sources("peerconnection") { sources = [ ... ] }:
+sources += [
+  "antidetect_webrtc_policy.cc",
+  "antidetect_webrtc_policy.h",
+]
+# No new deps: antidetect_webrtc_policy.cc uses only //base (already a dep) and
+# //third_party/blink/public/common:common (features.h, already linked). The
+# MODULES_EXPORT annotation covers component-build cross-linkage; harmless when
+# same-component.
+
+# ---------------------------------------------------------------------------
+# NO BUILD.gn change needed for the feature flags: features.h and features.cc
+# are existing sources of the already-built blink_common / public:common
+# targets — the patch only edits them, adds no files.
+# Optional (not required): chrome/browser/about_flags.cc entries for
+# kFarbleCanvas / kFarbleWebRTC / kSpoofNavigator to expose chrome://flags
+# toggles. --enable-features=... works without it.

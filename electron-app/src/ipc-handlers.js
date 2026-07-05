@@ -292,11 +292,47 @@ function registerIpcHandlers() {
   // sites (Fiverr/PerimeterX). Separate process, engine-level fingerprint, no JS
   // footprint. Additive: does not touch the in-app Chromium browser path.
   ipcMain.handle("PROFILE_OPEN_CAMOUFOX", async (_ev, { profileId, url } = {}) => {
-    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    let profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
     if (!profile) return { ok: false, reason: "no-profile" };
     try {
+      // VPN/direct mode: the browser's location MUST match the ACTUAL exit IP, or
+      // a site like Fiverr flags the mismatch (e.g. US timezone on a Nigerian IP →
+      // press-and-hold) even though a plain browser on that same IP passes. So we
+      // capture the LIVE exit and force timezone/language/geolocation to follow it
+      // — overriding any stale "Miami" anchor or manual timezone. This makes the
+      // Stealth engine coherent with wherever the traffic really exits.
+      const px = profile.proxy || {};
+      const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+      let liveCountry = "";
+      if (mode === "vpn" || mode === "direct") {
+        try {
+          const cur = await captureCurrentNetwork();
+          if (cur && cur.countryCode) {
+            liveCountry = String(cur.countryCode).toLowerCase();
+            profile = { ...profile,
+              fingerprint: { ...(profile.fingerprint || {}), timezone: "auto", language: "auto", geolocation: "auto" },
+              proxy: { ...px,
+                detectedCountryCode: cur.countryCode, detectedCountry: cur.country, detectedCity: cur.city,
+                detectedTimezone: cur.timezone, detectedLatitude: cur.latitude, detectedLongitude: cur.longitude,
+                detectedIp: cur.ip } };
+          }
+        } catch (e) { logError(`camoufox: live location capture failed (${e && (e.message || e)}) — proceeding`); }
+      }
       const res = await camoufox.launchProfile(profile, url || "");
-      if (!res || !res.ok) logError(`camoufox launch failed: reason=${res && res.reason} detail=${res && res.detail}`);
+      if (!res || !res.ok) { logError(`camoufox launch failed: reason=${res && res.reason} detail=${res && res.detail}`); return res; }
+      // Register the Stealth window with the VPN kill-switch so it's closed if the
+      // exit country changes or the network drops (same guard as the Chromium
+      // engine, which previously did NOT cover Camoufox). Baseline to the country
+      // the session actually STARTED on so a later VPN drop/switch triggers a kill.
+      if (mode === "vpn" || mode === "direct") {
+        profileNetworkMeta.set(profileId, {
+          mode, camoufox: true, anchorCountry: liveCountry,
+          anchorLabel: liveCountry ? liveCountry.toUpperCase() : "",
+          profileName: profile.name || "Profile"
+        });
+        logError(`vpn kill-switch: now watching STEALTH profile=${profileId} mode=${mode} anchorCountry=${liveCountry || "(self-baseline)"}`);
+        startVpnWatch();
+      }
       return res;
     } catch (err) {
       logError(`camoufox launch threw: ${err && (err.stack || err.message || err)}`);
@@ -309,6 +345,10 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("CAMOUFOX_STATUS", async (_ev, { profileId } = {}) => {
     return { ok: true, ready: await camoufox.isEngineReady(), running: profileId ? camoufox.isProfileRunning(profileId) : false };
+  });
+  ipcMain.handle("CAMOUFOX_RUNNING", async () => {
+    try { return { ok: true, ids: camoufox.runningIds() }; }
+    catch (_) { return { ok: true, ids: [] }; }
   });
 
   // Tab assignment — no-op in Electron (each window IS the profile)
@@ -1026,24 +1066,23 @@ async function postLoginSync() {
     const localProfiles = store.getProfiles();
     const localProxies  = store.getProxyLibrary();
 
-    // Push local-only data first (covers "first sync on a fresh PC won't lose data")
+    // Push cloud-safe metadata only. Cookies, localStorage, sessions, and proxy
+    // credentials stay in the local encrypted store and are merged back after pull.
     if (localProfiles.length) await cloud.pushAllProfiles(localProfiles);
     if (localProxies.length)  await cloud.pushAllProxies(localProxies);
 
-    // Pull merged set from cloud (server is authoritative after merge)
     const remoteProfiles = await cloud.pullProfiles();
     const remoteProxies  = await cloud.pullProxies();
-    if (remoteProfiles.ok) store.saveProfiles(remoteProfiles.profiles || []);
-    if (remoteProxies.ok)  store.saveProxyLibrary(remoteProxies.proxies || []);
+    const mergedProfiles = remoteProfiles.ok ? store.saveSyncedProfiles(remoteProfiles.profiles || []) : localProfiles;
+    const mergedProxies = remoteProxies.ok ? store.saveSyncedProxyLibrary(remoteProxies.proxies || []) : localProxies;
 
-    return { ok: true, profileCount: (remoteProfiles.profiles || []).length, proxyCount: (remoteProxies.proxies || []).length };
+    return { ok: true, profileCount: mergedProfiles.length, proxyCount: mergedProxies.length };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
 }
 
-// ── Profile window management ──────────────────────────────────────────────────
-
+// ── Profile window management ─────────────────────────────────────────────
 function getProfileBrowserMeta(profileId) {
   const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
   if (!profile) return null;
@@ -2535,7 +2574,9 @@ function ifaceSignature() {
 }
 
 function watchedProfileIds() {
-  return [...profileNetworkMeta.keys()].filter((id) => profileWindows.has(id));
+  // A profile is live if it has a Chromium window OR a running Stealth (Camoufox)
+  // instance — both must be guarded by the kill-switch.
+  return [...profileNetworkMeta.keys()].filter((id) => profileWindows.has(id) || camoufox.isProfileRunning(id));
 }
 
 function startVpnWatch() {
@@ -2628,6 +2669,11 @@ function killWatchedProfiles(ids, reason) {
     profileNetworkMeta.delete(id);
     if (win && !win.isDestroyed()) {
       try { win.close(); } catch (_) {}
+    }
+    // Also close the Stealth (Camoufox) window for this profile — otherwise a
+    // VPN-bound Firefox keeps browsing on the naked real IP after the VPN drops.
+    if ((meta && meta.camoufox) || camoufox.isProfileRunning(id)) {
+      try { camoufox.closeProfile(id); } catch (_) {}
     }
     notifyManagerWindows("VPN_DROPPED", { profileId: id, profileName: name, reason });
   }

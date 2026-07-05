@@ -108,11 +108,32 @@ function mapOs(osName) {
   return "windows";
 }
 
+const LANG_BY_CC = { us: "en-US", gb: "en-GB", ca: "en-CA", au: "en-AU", de: "de-DE", nl: "nl-NL", fr: "fr-FR", ch: "de-DE", se: "sv-SE", jp: "ja-JP", sg: "en-SG", br: "pt-BR", in: "hi-IN", ae: "ar-AE", ru: "ru-RU", tr: "tr-TR", ng: "en-US", it: "it-IT", es: "es-ES", pt: "pt-PT", kr: "ko-KR", cn: "zh-CN" };
+
 function localeFor(profile) {
   const fp = profile.fingerprint || {};
-  const lang = fp.languageValue || fp.language;
-  if (lang && lang !== "auto") return lang;
+  const px = profile.proxy || {};
+  if (fp.language === "manual" && fp.languageValue) return fp.languageValue;
+  if (fp.language && fp.language !== "auto") return fp.language;
+  // "auto": derive from the resolved VPN/proxy country so the locale matches the exit.
+  if (px.detectedCountryCode && LANG_BY_CC[String(px.detectedCountryCode).toLowerCase()]) return LANG_BY_CC[String(px.detectedCountryCode).toLowerCase()];
   return "en-US";
+}
+
+// Resolve the profile's timezone/geolocation the same way the Chromium engine
+// does: manual value wins, else the captured VPN/proxy exit (proxy.detected*).
+// Passed to Camoufox EXPLICITLY so the Stealth engine can never fall back to the
+// real OS timezone/location (which leaks + mismatches the network).
+function resolveLocation(profile) {
+  const fp = profile.fingerprint || {};
+  const px = profile.proxy || {};
+  let tz = "";
+  if (fp.timezone === "manual" && fp.timezoneValue) tz = fp.timezoneValue;
+  else if (px.detectedTimezone) tz = px.detectedTimezone;
+  let lat, lon;
+  if (fp.geolocation === "manual") { lat = Number(fp.geoLat); lon = Number(fp.geoLng); }
+  else if (px.detectedLatitude != null || px.detectedLat != null) { lat = Number(px.detectedLatitude != null ? px.detectedLatitude : px.detectedLat); lon = Number(px.detectedLongitude != null ? px.detectedLongitude : px.detectedLng); }
+  return { tz, lat: Number.isFinite(lat) ? lat : null, lon: Number.isFinite(lon) ? lon : null };
 }
 
 // Map one saved profile to Camoufox launch options.
@@ -140,34 +161,71 @@ function profileToOptions(profile) {
     opts.proxy = { server: `${scheme}://${px.host}:${px.port}` };
     if (px.username) opts.proxy.username = px.username;
     if (px.password) opts.proxy.password = px.password;
-    opts.geoip = true;
   }
 
-  // Report the profile's resolution as navigator.screen for a coherent identity…
-  const w = Number(fp.screenWidth), h = Number(fp.screenHeight);
-  if (w > 0 && h > 0) {
-    opts.screen = { minWidth: w, minHeight: h, maxWidth: w, maxHeight: h };
+  // Timezone + geolocation: pin them EXPLICITLY from the profile's resolved
+  // location (manual value or captured VPN/proxy exit) so the Stealth engine
+  // reports the network's location, never the real OS timezone (a leak + a
+  // mismatch). Only fall back to geoip (derive from the proxy exit IP over the
+  // wire) when we have no resolved timezone AND a proxy is set.
+  const loc = resolveLocation(profile);
+  const geoCfg = {};
+  if (loc.tz) geoCfg["timezone"] = loc.tz;
+  if (loc.lat != null && loc.lon != null) {
+    geoCfg["geolocation:latitude"] = loc.lat;
+    geoCfg["geolocation:longitude"] = loc.lon;
+    geoCfg["geolocation:accuracy"] = 50;
+  }
+  if (!loc.tz && mode === "proxy" && px.host && px.port) {
+    opts.geoip = true; // last resort: let Camoufox detect via the proxy
   }
 
-  // …but size the ACTUAL on-screen window to fit the user's real display, so a
-  // 1920x1080 identity doesn't open a window that overflows a smaller/scaled
-  // monitor. The window being smaller than the reported screen is normal (a
-  // non-maximized browser), so this stays coherent.
+  // Screen + window sizing. The ACTUAL window must fill the real display's work
+  // area (so it opens usable and maximizes to full screen), and navigator.screen
+  // must be >= the window — a window larger than the reported screen is both an
+  // impossible tell AND makes the OS clamp the window to "half". So report the
+  // real display as navigator.screen and open the window to the work area.
+  // Screen size is low-entropy and realistically shared by same-monitor profiles;
+  // per-profile uniqueness comes from canvas/GPU/audio/fonts, not screen size.
+  let dispScreen = null, dispWindow = null;
   try {
     const { screen: elScreen } = require("electron");
-    const wa = elScreen && elScreen.getPrimaryDisplay ? elScreen.getPrimaryDisplay().workAreaSize : null;
-    if (wa && wa.width && wa.height) {
-      const winW = Math.max(1000, Math.min(w || 1440, Math.round(wa.width * 0.82)));
-      const winH = Math.max(680, Math.min(h || 900, Math.round(wa.height * 0.86)));
-      opts.window = [winW, winH]; // camoufox-js expects a [width, height] tuple
+    const disp = elScreen && elScreen.getPrimaryDisplay ? elScreen.getPrimaryDisplay() : null;
+    if (disp) {
+      const full = disp.size || {};
+      const wa = disp.workAreaSize || full;
+      if (full.width && full.height) dispScreen = { w: Math.round(full.width), h: Math.round(full.height), aw: Math.round(wa.width || full.width), ah: Math.round(wa.height || full.height) };
+      if (wa.width && wa.height) dispWindow = [Math.max(1000, Math.round(wa.width)), Math.max(680, Math.round(wa.height))];
     }
   } catch (_) {}
+  if (dispScreen) opts.screen = { minWidth: dispScreen.w, minHeight: dispScreen.h, maxWidth: dispScreen.w, maxHeight: dispScreen.h };
+  if (dispWindow) opts.window = dispWindow; // camoufox-js expects a [width, height] tuple
 
   // Stable per-profile fingerprint (identical across sessions, unique per profile).
   const stableFp = getStableFingerprint(profile);
   if (stableFp) {
+    // CRITICAL: when a custom fingerprint is passed, camoufox-js IGNORES opts.window
+    // (generateFingerprint — which applies the window tuple — only runs when NO
+    // fingerprint is given). The actual on-screen window is sized from the
+    // fingerprint's own screen.outer/inner values. So write a full-work-area,
+    // internally-consistent geometry into the fingerprint's screen so Firefox
+    // opens filling the display instead of the generator's mismatched size.
+    if (dispScreen && stableFp.screen && typeof stableFp.screen === "object") {
+      const s = stableFp.screen;
+      const chrome = 88; // Firefox tab+toolbar height (approx) so inner < outer
+      s.width = dispScreen.w; s.height = dispScreen.h;                 // navigator.screen
+      s.availWidth = dispScreen.aw; s.availHeight = dispScreen.ah;
+      s.availTop = 0; s.availLeft = 0;
+      s.outerWidth = dispScreen.aw; s.outerHeight = dispScreen.ah;     // the real window fills the work area
+      s.innerWidth = dispScreen.aw; s.innerHeight = Math.max(400, dispScreen.ah - chrome);
+      s.screenX = 0; s.screenY = 0;
+      if ("pageXOffset" in s) s.pageXOffset = 0;
+      if ("pageYOffset" in s) s.pageYOffset = 0;
+      if ("clientWidth" in s) s.clientWidth = dispScreen.aw;
+      if ("clientHeight" in s) s.clientHeight = Math.max(400, dispScreen.ah - chrome);
+    }
     opts.fingerprint = stableFp;
-    delete opts.screen; // screen comes from the fingerprint
+    if (!dispScreen) delete opts.screen; // fall back to fingerprint screen only if no display info
     // Camoufox otherwise re-randomizes the GPU, canvas AA offset and font spacing
     // on EVERY launch (separate from the fingerprint object). Pin all three per
     // profile so the WHOLE fingerprint — GPU, canvas, text — is identical across
@@ -181,6 +239,10 @@ function profileToOptions(profile) {
       "fonts:spacing_seed": seedInt(profile.id + "|spacing") % 1073741824,
     };
   }
+
+  // Merge the explicit timezone/geolocation into the config (works with or
+  // without a stable fingerprint) so the resolved location always wins.
+  if (Object.keys(geoCfg).length) opts.config = Object.assign({}, opts.config, geoCfg);
 
   return opts;
 }
@@ -289,6 +351,17 @@ function isProfileRunning(profileId) {
   return Boolean(inst && isConnected(inst.handle));
 }
 
+// IDs of all profiles with a live Camoufox window — lets the UI show Live/Stop
+// for the Stealth engine the same way it does for the Chromium engine.
+function runningIds() {
+  const ids = [];
+  for (const [id, inst] of instances) {
+    if (isConnected(inst.handle)) ids.push(id);
+    else instances.delete(id);
+  }
+  return ids;
+}
+
 async function closeAll() {
   for (const [id, inst] of instances) {
     try { await inst.handle.close(); } catch (_) {}
@@ -300,6 +373,7 @@ module.exports = {
   launchProfile,
   closeProfile,
   isProfileRunning,
+  runningIds,
   isEngineReady,
   closeAll,
   profileToOptions, // exported for tests

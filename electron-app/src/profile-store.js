@@ -123,20 +123,32 @@ function proxyEntryForRuntime(entry) {
   return proxyForRuntime(entry);
 }
 
-function sanitizeProfileForSync(profile) {
-  const clone = JSON.parse(JSON.stringify(profile || {}));
-  if (clone.proxy) {
-    delete clone.proxy.password;
-    delete clone.proxy.passwordEnc;
+const LOCAL_ONLY_PROFILE_FIELDS = ["cookies", "localStorageData", "session"];
+const LOCAL_ONLY_PROXY_FIELDS = ["username", "password", "passwordEnc", "rotationUrl"];
+
+function cloneForSync(value, fallback = {}) {
+  try {
+    return JSON.parse(JSON.stringify(value || fallback));
+  } catch (_) {
+    return fallback;
   }
+}
+
+function stripLocalProxyFields(proxy) {
+  const clone = cloneForSync(proxy);
+  for (const field of LOCAL_ONLY_PROXY_FIELDS) delete clone[field];
+  return clone;
+}
+
+function sanitizeProfileForSync(profile) {
+  const clone = cloneForSync(profile);
+  for (const field of LOCAL_ONLY_PROFILE_FIELDS) delete clone[field];
+  if (clone.proxy) clone.proxy = stripLocalProxyFields(clone.proxy);
   return clone;
 }
 
 function sanitizeProxyForSync(entry) {
-  const clone = JSON.parse(JSON.stringify(entry || {}));
-  delete clone.password;
-  delete clone.passwordEnc;
-  return clone;
+  return stripLocalProxyFields(entry);
 }
 
 // ── Profiles ──────────────────────────────────────────────────────────────────
@@ -159,6 +171,48 @@ function getProxyLibrary() {
 
 function saveProxyLibrary(lib) {
   writeJson(getProxyLibFile(), Array.isArray(lib) ? lib.map(proxyEntryForDisk) : []);
+}
+
+function mergeProxySecretsFromLocal(remoteProxy, localProxy) {
+  const merged = { ...(remoteProxy || {}) };
+  if (localProxy && typeof localProxy === "object") {
+    for (const field of LOCAL_ONLY_PROXY_FIELDS) {
+      if (!merged[field] && localProxy[field]) merged[field] = localProxy[field];
+    }
+  }
+  return merged;
+}
+
+function mergeProfileFromSync(remoteProfile, localProfile) {
+  const merged = sanitizeProfileForSync(remoteProfile);
+  const local = localProfile && typeof localProfile === "object" ? localProfile : {};
+  merged.cookies = Array.isArray(local.cookies) ? local.cookies : [];
+  merged.localStorageData = local.localStorageData && typeof local.localStorageData === "object" ? local.localStorageData : {};
+  merged.session = Object.prototype.hasOwnProperty.call(local, "session") ? local.session : null;
+  merged.proxy = mergeProxySecretsFromLocal(merged.proxy || local.proxy || getDefaultProxy(), local.proxy);
+  return merged;
+}
+
+function mergeProxyFromSync(remoteProxy, localProxy) {
+  return mergeProxySecretsFromLocal(sanitizeProxyForSync(remoteProxy), localProxy);
+}
+
+function saveSyncedProfiles(remoteProfiles) {
+  const localById = new Map(getProfiles().map((profile) => [profile.id, profile]));
+  const merged = (Array.isArray(remoteProfiles) ? remoteProfiles : [])
+    .filter((profile) => profile && profile.id)
+    .map((profile) => mergeProfileFromSync(profile, localById.get(profile.id)));
+  saveProfiles(merged);
+  return getProfiles();
+}
+
+function saveSyncedProxyLibrary(remoteProxies) {
+  const localById = new Map(getProxyLibrary().map((proxy) => [proxy.id, proxy]));
+  const merged = (Array.isArray(remoteProxies) ? remoteProxies : [])
+    .filter((proxy) => proxy && proxy.id)
+    .map((proxy) => mergeProxyFromSync(proxy, localById.get(proxy.id)));
+  saveProxyLibrary(merged);
+  return getProxyLibrary();
 }
 
 function getProxyProviderConfig() {
@@ -414,6 +468,10 @@ function createProfile(data) {
     os: data.os || "windows",
     browserApp: data.browserApp || "chrome",
     windowMode: data.windowMode || "normal",
+    // Which engine launches on Start: "chromium" (bundled Chrome) or
+    // "stealthfox" (patched Firefox / Camoufox). All fingerprint/proxy settings
+    // apply to whichever engine is chosen.
+    engine: data.engine === "stealthfox" ? "stealthfox" : "chromium",
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -1526,6 +1584,19 @@ function pickDeviceMemory(seed, isMobile) {
     isMobile ? [[2, 25], [4, 45], [8, 30]]
              : [[4, 30], [8, 70]]);
 }
+// navigator.deviceMemory / Sec-CH-Device-Memory only ever expose 0.25/0.5/1/2/4/8
+// in real Chrome (rounded down to a power of two, capped at 8) to limit
+// fingerprinting. A physical-RAM figure like 16 or 32 is impossible and is an
+// instant bot tell, so the runtime config value must be clamped even though the
+// stored profile keeps the real RAM for display.
+function clampDeviceMemory(gb) {
+  const n = Number(gb);
+  if (!isFinite(n) || n <= 0) return 8;
+  if (n >= 8) return 8;
+  let best = 0.25;
+  for (const b of [0.25, 0.5, 1, 2, 4, 8]) if (n >= b) best = b;
+  return best;
+}
 const TZ_BY_COUNTRY = {
   us: ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix"],
   gb: ["Europe/London"],
@@ -1606,10 +1677,26 @@ function buildConfigFromProfile(profile) {
     blockFonts: true,
     blockHardware: true,
     blockScreen: true,
-    _mediaDevices: fp.mediaDevices || "real",
-    _cameras: typeof fp.cameras === "number" ? fp.cameras : 1,
-    _microphones: typeof fp.microphones === "number" ? fp.microphones : 1,
-    _speakers: typeof fp.speakers === "number" ? fp.speakers : 1,
+    // Media devices: an explicit "manual" pick keeps the user's counts. Otherwise
+    // ("real"/"auto"/unset) derive a realistic per-profile device topology from the
+    // seed and spoof it — leaving it "real" leaks the machine's actual device
+    // layout identically across every profile (a same-machine linkage signal).
+    ...(function () {
+      if (fp.mediaDevices === "manual") {
+        return {
+          _mediaDevices: "manual",
+          _cameras: typeof fp.cameras === "number" ? fp.cameras : 1,
+          _microphones: typeof fp.microphones === "number" ? fp.microphones : 1,
+          _speakers: typeof fp.speakers === "number" ? fp.speakers : 1,
+        };
+      }
+      return {
+        _mediaDevices: "manual",
+        _microphones: pickWeighted(profileSeededInt(_seedDef, "mics"), [[1, 40], [2, 60]]),
+        _speakers: pickWeighted(profileSeededInt(_seedDef, "spk"), [[1, 35], [2, 65]]),
+        _cameras: pickWeighted(profileSeededInt(_seedDef, "cam"), [[0, 45], [1, 55]]),
+      };
+    })(),
     _deviceName: fp.deviceName || "off",
     _deviceNameValue: fp.deviceNameValue || "",
     _hardwareId: fp.hardwareId || "",
@@ -1756,7 +1843,8 @@ function buildConfigFromProfile(profile) {
   }
 
   if (fp.cpuCores === "manual") cfg.hardwareConcurrency = Number(fp.cpuCoresValue) || 4;
-  if (fp.ram === "manual") cfg.deviceMemory = Number(fp.ramValue) || 8;
+  if (fp.ram === "manual") cfg.deviceMemory = clampDeviceMemory(fp.ramValue);
+  cfg.deviceMemory = clampDeviceMemory(cfg.deviceMemory);
 
   if (fp.screen === "manual") {
     cfg.screen = {
@@ -1970,8 +2058,12 @@ function browserLabelForAudit(browser) {
 module.exports = {
   getProfiles,
   saveProfiles,
+  saveSyncedProfiles,
   getProxyLibrary,
   saveProxyLibrary,
+  saveSyncedProxyLibrary,
+  sanitizeProfileForSync,
+  sanitizeProxyForSync,
   getProxyProviderConfig,
   saveProxyProviderConfig,
   getVpsProxies,

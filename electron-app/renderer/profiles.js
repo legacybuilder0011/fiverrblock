@@ -277,6 +277,7 @@ function startNewProfile() {
     session: null
   };
   populateForm(placeholder);
+  setEditMode(true); // new profile starts unlocked so it can be configured
   // Update the save button label
   const saveBtn = $("btnSave");
   if (saveBtn) saveBtn.textContent = "Create profile";
@@ -296,6 +297,7 @@ async function saveCurrentProfile() {
     populateForm(r.profile);
     const saveBtn = $("btnSave");
     if (saveBtn) saveBtn.textContent = "Save";
+    setEditMode(false); // lock right after creating — saved and stable
     renderList();
     toast("Profile created");
     return;
@@ -307,6 +309,7 @@ async function saveCurrentProfile() {
   await loadProfiles();
   const savedProfile = profiles.find((p) => p.id === selectedId);
   if (savedProfile) populateForm(savedProfile);
+  setEditMode(false); // re-lock after saving — settings stay put until Edit
   renderList();
   toast("Profile saved");
 }
@@ -430,10 +433,11 @@ function renderList() {
     card.className = "pm-card" + (isActive ? " active" : "");
     card.dataset.id = p.id;
 
-    const isRunning = p.id in openWindows;
+    const isRunning = (p.id in openWindows) || stealthRunning.has(p.id);
+    const isStealthLive = stealthRunning.has(p.id);
     const proxyBadge   = p.proxy?.enabled ? `<span class="chip proxy-on">Proxy</span>` : "";
     const assignedBadge = isAssigned ? `<span class="chip status-active">On Tab</span>` : "";
-    const runningBadge  = isRunning ? `<span class="chip status-active">Live</span>` : "";
+    const runningBadge  = isRunning ? `<span class="chip status-active">${isStealthLive ? "🦊 Live" : "Live"}</span>` : "";
     const tags = (p.tags || []).slice(0, 3).map((t) => `<span class="chip status-new">${escHtml(t)}</span>`).join("");
     const browserIcons = { privacy: "PS", chrome: "&#9689;", brave: "&#129321;", edge: "&#127919;", firefox: "FF", safari: "SF" };
     const browserName = p.browserApp || "chrome";
@@ -462,8 +466,7 @@ function renderList() {
       <div class="pm-card-actions">
         ${isRunning
           ? `<button class="pm-btn-xs danger" data-action="stop" data-id="${p.id}" title="Stop and save the session">Stop</button>`
-          : `<button class="pm-btn-xs success" data-action="start" data-id="${p.id}" title="Start browser with this profile">Start</button>`}
-        <button class="pm-btn-xs" data-action="stealth" data-id="${p.id}" title="Open in the Stealth Engine (patched Firefox) — for hard bot-detection sites like Fiverr">🦊 Stealth</button>
+          : `<button class="pm-btn-xs success" data-action="start" data-id="${p.id}" title="Start with this profile's chosen engine (${(p.engine === "stealthfox") ? "🦊 Stealthfox" : "Chromium"})">Start${(p.engine === "stealthfox") ? " 🦊" : ""}</button>`}
         <button class="pm-btn-xs" data-action="dup" data-id="${p.id}" title="Duplicate">Dup</button>
         <button class="pm-btn-xs danger" data-action="del" data-id="${p.id}" title="Delete">Del</button>
       </div>
@@ -508,6 +511,7 @@ async function selectProfile(id) {
   $("formWrap").hidden = false;
   setLaunchError(null);
   populateForm(p);
+  setEditMode(false); // a saved profile opens LOCKED — click Edit to change it
   renderList();
   updateSessionTab();
 }
@@ -543,6 +547,7 @@ async function generateCoherentIdentity() {
       status: $("fp-status")?.value || "new",
       os: d.os || os,
       browserApp: d.browserApp || browserApp,
+      engine: $("fp-engine")?.value || "chromium", // keep the chosen engine
       windowMode: $("fp-windowMode")?.value || "normal",
       tags: ($("fp-tags")?.value || "").split(",").map((s) => s.trim()).filter(Boolean),
       notes: $("fp-notes")?.value || "",
@@ -561,6 +566,8 @@ function populateForm(p) {
   applyMobileUIMode(p.os || "windows");
   setVal("fp-browserApp",  p.browserApp  || "chrome");
   setVal("fp-windowMode",  p.windowMode  || "normal");
+  setVal("fp-engine",      p.engine === "stealthfox" ? "stealthfox" : "chromium");
+  updateEngineHint();
   $("fp-tags").value = (p.tags || []).join(", ");
   $("fp-notes").value = p.notes || "";
   updateAssignedTabInfo();
@@ -705,6 +712,39 @@ function setVal(id, val) {
   el.value = String(val ?? "");
 }
 
+// Show the "Stealthfox runs Firefox" note + grey the Chromium-only Browser rows
+// when the Stealthfox engine is selected, so it's clear Start won't open Chrome.
+function updateEngineHint() {
+  const isStealth = $("fp-engine")?.value === "stealthfox";
+  const note = $("stealthEngineNote");
+  if (note) note.hidden = !isStealth;
+  const browserRow = $("fp-browser")?.closest(".pm-row");
+  const verRow = $("browserVersionRow");
+  [browserRow, verRow].forEach((r) => { if (r) r.style.opacity = isStealth ? "0.45" : "1"; });
+}
+
+// Locked "view" vs "edit" mode. Once a profile is saved it stays LOCKED — every
+// setting keeps the saved value and can't change (across close/reopen too) until
+// the user clicks Edit. Creating a new profile or clicking Edit unlocks the form;
+// Save re-locks it. Duplicate/Delete/tab-switching stay available while locked.
+let editMode = true;
+function setEditMode(on) {
+  editMode = on;
+  const wrap = $("formWrap");
+  if (wrap) {
+    wrap.querySelectorAll("input, select, textarea").forEach((el) => { el.disabled = !on; });
+    wrap.querySelectorAll("button").forEach((b) => {
+      if (b.classList.contains("pm-tab")) return;                                    // tab switching stays live
+      if (["btnEdit", "btnSave", "btnDuplicate", "btnDelete", "btnAssignTab"].includes(b.id)) return;
+      b.disabled = !on;
+    });
+    wrap.classList.toggle("view-locked", !on);
+  }
+  const save = $("btnSave"), edit = $("btnEdit");
+  if (save) save.hidden = !on;
+  if (edit) edit.hidden = on;
+}
+
 function collectForm() {
   return {
     name: $("fp-name").value.trim() || "Unnamed",
@@ -712,6 +752,7 @@ function collectForm() {
     os: $("fp-os").value,
     browserApp: $("fp-browserApp")?.value || "chrome",
     windowMode: $("fp-windowMode")?.value || "normal",
+    engine: $("fp-engine")?.value === "stealthfox" ? "stealthfox" : "chromium",
     tags: $("fp-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
     notes: $("fp-notes").value,
     fingerprint: {
@@ -1611,6 +1652,8 @@ function bindSidebarEvents() {
 function bindFormEvents() {
   $("btnGenIdentity")?.addEventListener("click", generateCoherentIdentity);
   $("btnSave").addEventListener("click", saveCurrentProfile);
+  $("btnEdit")?.addEventListener("click", () => setEditMode(true));
+  $("fp-engine")?.addEventListener("change", updateEngineHint);
   $("btnDelete").addEventListener("click", () => selectedId && deleteProfile(selectedId));
   $("btnDuplicate").addEventListener("click", () => selectedId && duplicateProfile(selectedId));
   $("btnAssignTab").addEventListener("click", () => selectedId && assignToTab(selectedId));
@@ -1862,10 +1905,15 @@ function bindSessionEvents() {
 
 // Map of { profileId: windowId } for currently open profile windows
 let openWindows = {};
+let stealthRunning = new Set(); // profileIds with a live Stealthfox (Camoufox) window
 
 async function refreshOpenWindows() {
   const r = await msg("PROFILE_GET_WINDOWS");
   openWindows = r.windows || {};
+  try {
+    const s = await msg("CAMOUFOX_RUNNING");
+    stealthRunning = new Set((s && s.ids) || []);
+  } catch (_) { /* keep last known */ }
 }
 
 function isProfileRunning(profileId) {
@@ -1954,15 +2002,18 @@ function showVpnLocationConfirm(r) {
 // into Camoufox in the main process.
 async function openInStealthEngine(profileId) {
   const p = profiles.find((p) => p.id === profileId);
-  // Resolve a real, fully-qualified start URL. A bare word like "fiverr" isn't a
-  // hostname (Firefox shows "Server Not Found"), so only accept a saved startUrl
-  // that has a scheme or a dot; otherwise default to Fiverr.
+  // Start URL is OPT-IN. Only navigate if the profile has an explicit, real
+  // startUrl (scheme or a dot). Otherwise open Firefox on a blank page and let
+  // the user type their own URL — do NOT force-load any site (Fiverr used to be
+  // hardcoded here, which dropped every launch straight into PerimeterX).
   let url = String((p && p.fingerprint && p.fingerprint.startUrl) || "").trim();
   if (!/^https?:\/\//i.test(url)) url = /\./.test(url) ? "https://" + url : "";
-  if (!url) url = "https://www.fiverr.com/";
-  toast("🦊 Launching Stealth Engine… first run downloads the engine (~150MB), please wait");
+  // url === "" → main process passes no start URL → no forced navigation.
+  toast("🦊 Launching Stealth Engine…");
   const r = await msg("PROFILE_OPEN_CAMOUFOX", { profileId, url });
   if (r && r.ok) {
+    stealthRunning.add(profileId);   // so the card shows Live + a Stop button
+    renderList();
     toast(r.reused ? "Stealth Engine window focused" : "Stealth Engine launched");
   } else {
     const reason = r && (r.reason || r.detail) || "unknown error";
@@ -1977,6 +2028,11 @@ async function openInStealthEngine(profileId) {
 async function openProfileWindow(profileId) {
   const btn = $("btnOpenWindow");
   setLaunchError(null);
+
+  // Engine choice is a saved profile setting: Start launches whichever engine
+  // the profile picked. Stealthfox routes to the Camoufox (patched Firefox) path.
+  const chosen = profiles.find((p) => p.id === profileId);
+  if (chosen && chosen.engine === "stealthfox") { return openInStealthEngine(profileId); }
 
   // Client-side required-field check (mirrors main-process check)
   const p = profiles.find((p) => p.id === profileId);
@@ -2027,6 +2083,17 @@ async function openProfileWindow(profileId) {
 }
 
 async function stopProfile(profileId) {
+  // A Stealthfox (Camoufox) profile runs as a separate Firefox process, not a
+  // Chromium window — stop it via the Camoufox path.
+  if (stealthRunning.has(profileId)) {
+    const r = await msg("PROFILE_CLOSE_CAMOUFOX", { profileId });
+    stealthRunning.delete(profileId);
+    if (!r || !r.ok) toast("Stop failed: " + ((r && r.detail) || "unknown"));
+    else toast("Stealth Engine stopped");
+    await refreshOpenWindows();
+    renderList();
+    return;
+  }
   const r = await msg("PROFILE_CLOSE_WINDOW", { profileId });
   if (!r.ok) { toast("Stop failed: " + (r.error || "no open window")); return; }
   toast("Stopped — session saved");

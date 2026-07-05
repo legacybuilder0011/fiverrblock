@@ -1,0 +1,789 @@
+# ============================================================================
+# Privacy Shield — Anti-fingerprinting Blink patch
+# Injection points: canvas (getImageData/toDataURL/toBlob/webgl), webrtc
+# (port allocator), navigator (hardwareConcurrency/platform/userAgent).
+#
+# Consolidated from the adversarial-reviewer-CORRECTED diffs for all three
+# points. Cross-patch conflicts resolved by the orchestrator:
+#   * features.h / features.cc: kFarbleCanvas, kFarbleWebRTC, kSpoofNavigator
+#     are each DECLARED once and DEFINED once (the three source patches each
+#     tried to emit them -> would be a duplicate-symbol/ODR link error).
+#   * Session-token switch UNIFIED to --antidetect-session-token across all
+#     three readers (writer drafts used myapp-session-token in canvas/webrtc
+#     and antidetect-session-token in navigator). One browser-appended switch
+#     now drives every hook: canvas parses it as a uint64 HMAC seed; webrtc and
+#     navigator gate on presence.
+#
+# *** NOT COMPILED. *** Hook-body hunks use APPROXIMATE context (the writers had
+# no live Chromium tree). This will NOT `git apply` clean as-is. Apply with:
+#     git apply --recount --reject privacy-shield-antidetect.patch
+# then hand-place every *.rej against the actual milestone. New files apply
+# cleanly; the 8 hook hunks and the BUILD.gn/DEPS hunks need reconciliation.
+# See the `verification` section for the full unverified-symbol list.
+# ============================================================================
+
+diff --git a/third_party/blink/public/common/features.h b/third_party/blink/public/common/features.h
+--- a/third_party/blink/public/common/features.h
++++ b/third_party/blink/public/common/features.h
+@@ namespace blink {
+ namespace features {
+ 
++// === Antidetect / privacy-hardening kill switches (all DISABLED_BY_DEFAULT) ===
++// Each hook ALSO requires a non-empty per-profile --antidetect-session-token,
++// so a profile launched without a token is a strict no-op even when the
++// feature is enabled. IMPORTANT: declare each of these exactly ONCE in the tree
++// (here) and define exactly once in features.cc — the three source patches were
++// each emitting them, which would be a duplicate-symbol link error.
++BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kFarbleCanvas);
++BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kFarbleWebRTC);
++BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kSpoofNavigator);
++
+ // (existing feature declarations continue below)
+diff --git a/third_party/blink/common/features.cc b/third_party/blink/common/features.cc
+--- a/third_party/blink/common/features.cc
++++ b/third_party/blink/common/features.cc
+@@ namespace blink {
+ namespace features {
+ 
++// Antidetect kill switches. Off by default; flip per browser process with
++// --enable-features=FarbleCanvas,FarbleWebRTC,SpoofNavigator. Per-profile
++// behavior comes from the session-token switch, NOT from the feature (the
++// FeatureList is process-global). Defined exactly once here.
++BASE_FEATURE(kFarbleCanvas, "FarbleCanvas", base::FEATURE_DISABLED_BY_DEFAULT);
++BASE_FEATURE(kFarbleWebRTC, "FarbleWebRTC", base::FEATURE_DISABLED_BY_DEFAULT);
++BASE_FEATURE(kSpoofNavigator,
++             "SpoofNavigator",
++             base::FEATURE_DISABLED_BY_DEFAULT);
++
+ // (existing feature definitions continue below)
+diff --git a/third_party/blink/renderer/core/DEPS b/third_party/blink/renderer/core/DEPS
+--- a/third_party/blink/renderer/core/DEPS
++++ b/third_party/blink/renderer/core/DEPS
+@@ include_rules = [
++    # Required by core/farble/farble_session_cache.cc (HMAC-SHA256 domain key).
++    # MANDATORY: core does not depend on //crypto by default and core/DEPS does
++    # not otherwise allow +crypto, so `gn check` fails without this line.
++    "+crypto",
+     # (existing include_rules continue)
+ ]
+diff --git a/third_party/blink/renderer/core/BUILD.gn b/third_party/blink/renderer/core/BUILD.gn
+--- a/third_party/blink/renderer/core/BUILD.gn
++++ b/third_party/blink/renderer/core/BUILD.gn
+@@ blink_core_sources("core") {  (the aggregated sources list)
+   sources += [
++    "farble/farble_session_cache.cc",
++    "farble/farble_session_cache.h",
++    "frame/antidetect_navigator_config.cc",
++    "frame/antidetect_navigator_config.h",
+     # ... existing entries such as "frame/navigator_id.cc",
+     #     "frame/navigator_base.cc", "frame/navigator_concurrent_hardware.cc",
+     #     "html/canvas/html_canvas_element.cc" ...
+   ]
++
++  # farble_session_cache.cc uses crypto::HMAC. MANDATORY (paired with the
++  # "+crypto" line added to core/DEPS above): core does not link //crypto by
++  # default.
++  deps += [ "//crypto" ]
+ }
+diff --git a/third_party/blink/renderer/modules/peerconnection/BUILD.gn b/third_party/blink/renderer/modules/peerconnection/BUILD.gn
+--- a/third_party/blink/renderer/modules/peerconnection/BUILD.gn
++++ b/third_party/blink/renderer/modules/peerconnection/BUILD.gn
+@@ blink_modules_sources("peerconnection") {
+   sources = [
++    "antidetect_webrtc_policy.cc",
++    "antidetect_webrtc_policy.h",
+     "peer_connection_dependency_factory.cc",
+     "peer_connection_dependency_factory.h",
+     # ... existing peerconnection sources ...
+   ]
+diff --git a/third_party/blink/renderer/core/farble/farble_session_cache.h b/third_party/blink/renderer/core/farble/farble_session_cache.h
+new file mode 100644
+--- /dev/null
++++ b/third_party/blink/renderer/core/farble/farble_session_cache.h
+@@ -0,0 +1,66 @@
++// Copyright 2026 The Privacy Shield Authors.
++// Use of this source code is governed by a BSD-style license.
++//
++// Per-session, per-origin deterministic canvas farbling. Mirrors Brave's
++// brave_session_cache.{h,cc}: a Supplement<ExecutionContext> (one instance per
++// Document AND per worker/worklet global scope) seeded from a hash of
++// (top-frame registrable domain, per-profile session token). Reachable from
++// both frame and worker canvas code; each thread gets its own supplement
++// instance -> thread-safe with no shared mutable state.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FARBLE_FARBLE_SESSION_CACHE_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_FARBLE_FARBLE_SESSION_CACHE_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <random>
++
++#include "base/memory/scoped_refptr.h"
++#include "third_party/blink/renderer/core/core_export.h"
++#include "third_party/blink/renderer/core/execution_context/execution_context.h"
++#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
++#include "third_party/blink/renderer/platform/supplementable.h"
++
++namespace blink {
++
++class StaticBitmapImage;
++
++class CORE_EXPORT FarbleSessionCache final
++    : public GarbageCollected<FarbleSessionCache>,
++      public Supplement<ExecutionContext> {
++ public:
++  static const char kSupplementName[];
++
++  explicit FarbleSessionCache(ExecutionContext&);
++  FarbleSessionCache(const FarbleSessionCache&) = delete;
++  FarbleSessionCache& operator=(const FarbleSessionCache&) = delete;
++
++  // Supplement for |context|, created on first use. Returns nullptr when the
++  // context has no usable (non-opaque) origin (no stable seed). The (possibly
++  // invalid) supplement is cached either way, so repeat calls are cheap.
++  static FarbleSessionCache* From(ExecutionContext& context);
++
++  // True iff kFarbleCanvas is enabled AND a non-empty per-profile session token
++  // was supplied on the command line. False => every hook is a strict no-op.
++  static bool IsFarblingEnabled();
++
++  void Trace(Visitor*) const override;
++
++  // Deterministic per-(origin, session) perturbation of an interleaved,
++  // 8-bit-per-channel buffer, in place. Flips only the LSB of each channel byte
++  // (max +/-1, imperceptible, stable). Channel-order agnostic (RGBA or BGRA).
++  void PerturbPixels(unsigned char* data, size_t size);
++
++  // Reads |image| into a writable software SkBitmap, farbles it, returns a new
++  // immutable StaticBitmapImage. For toDataURL / toBlob (which do NOT share
++  // getImageData's buffer). Returns the original on any failure / invalid cache.
++  scoped_refptr<StaticBitmapImage> PerturbImage(
++      scoped_refptr<StaticBitmapImage> image);
++
++ private:
++  std::mt19937_64 MakePRNG() const;
++
++  // Per-profile token, delivered once on the renderer command line and cached
++  // process-wide (0 == "no token" -> farbling disabled).
++  static uint64_t SessionToken();
++
++  // 8-byte PRNG seed = HMAC-SHA256(session_token, registrable_domain)[0..8).
++  uint64_t domain_key_ = 0;
++  bool valid_ = false;
++};
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_FARBLE_FARBLE_SESSION_CACHE_H_
+diff --git a/third_party/blink/renderer/core/farble/farble_session_cache.cc b/third_party/blink/renderer/core/farble/farble_session_cache.cc
+new file mode 100644
+--- /dev/null
++++ b/third_party/blink/renderer/core/farble/farble_session_cache.cc
+@@ -0,0 +1,140 @@
++// Copyright 2026 The Privacy Shield Authors.
++// Use of this source code is governed by a BSD-style license.
++
++#include "third_party/blink/renderer/core/farble/farble_session_cache.h"
++
++#include <cstring>
++#include <string_view>  // reviewer fix: crypto::HMAC::Sign(std::string_view,...)
++#include <utility>      // reviewer fix: std::move
++
++#include "base/command_line.h"
++#include "base/feature_list.h"
++#include "base/strings/string_number_conversions.h"
++#include "crypto/hmac.h"
++#include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
++#include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
++#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
++#include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "third_party/skia/include/core/SkColorSpace.h"
++#include "third_party/skia/include/core/SkImage.h"
++#include "third_party/skia/include/core/SkImageInfo.h"
++
++namespace blink {
++
++namespace {
++
++// UNIFIED session-token switch (orchestrator): the SAME switch gates canvas,
++// webrtc and navigator hooks. Appended once per profile by the browser in
++// ContentBrowserClient::AppendExtraCommandLineSwitches. Here the VALUE is also
++// used as the uint64 HMAC seed, so the browser must emit a decimal uint64.
++constexpr char kSessionTokenSwitch[] = "antidetect-session-token";
++
++}  // namespace
++
++// static
++const char FarbleSessionCache::kSupplementName[] = "FarbleSessionCache";
++
++// static
++uint64_t FarbleSessionCache::SessionToken() {
++  // Parsed once, before any script/worker runs, into a function-local static:
++  // write-once, read-only thereafter, lock-free.
++  static const uint64_t token = []() -> uint64_t {
++    const base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
++    uint64_t value = 0;
++    if (cmd->HasSwitch(kSessionTokenSwitch)) {
++      base::StringToUint64(cmd->GetSwitchValueASCII(kSessionTokenSwitch),
++                           &value);
++    }
++    return value;
++  }();
++  return token;
++}
++
++// static
++bool FarbleSessionCache::IsFarblingEnabled() {
++  return base::FeatureList::IsEnabled(features::kFarbleCanvas) &&
++         SessionToken() != 0u;
++}
++
++FarbleSessionCache::FarbleSessionCache(ExecutionContext& context)
++    : Supplement<ExecutionContext>(context) {
++  const SecurityOrigin* origin = context.GetSecurityOrigin();
++  if (!origin || origin->IsOpaque()) {
++    return;
++  }
++  // eTLD+1 keeps every subdomain of a site consistent; fall back to full host
++  // for hosts with no registrable domain (e.g. IP literals).
++  String domain = origin->RegistrableDomain();
++  if (domain.empty()) {
++    domain = origin->Host();
++  }
++  if (domain.empty()) {
++    return;
++  }
++  StringUTF8Adaptor domain_utf8(domain);
++
++  const uint64_t token = SessionToken();
++  crypto::HMAC hmac(crypto::HMAC::SHA256);
++  uint8_t digest[sizeof(domain_key_)] = {0};
++  // NOTE: if this tree's crypto roll dropped the raw-pointer Init/Sign
++  // overloads, switch to Init(base::byte_span_from_ref(token)) and
++  // Sign(<string_view>, base::span(digest)) (add base/containers/span.h).
++  if (hmac.Init(reinterpret_cast<const uint8_t*>(&token), sizeof(token)) &&
++      hmac.Sign(std::string_view(domain_utf8.data(), domain_utf8.size()),
++                digest, sizeof(digest))) {
++    std::memcpy(&domain_key_, digest, sizeof(domain_key_));
++    valid_ = true;
++  }
++}
++
++// static
++FarbleSessionCache* FarbleSessionCache::From(ExecutionContext& context) {
++  FarbleSessionCache* cache =
++      Supplement<ExecutionContext>::From<FarbleSessionCache>(context);
++  if (!cache) {
++    cache = MakeGarbageCollected<FarbleSessionCache>(context);
++    Supplement<ExecutionContext>::ProvideTo(context, cache);
++  }
++  return cache->valid_ ? cache : nullptr;
++}
++
++void FarbleSessionCache::Trace(Visitor* visitor) const {
++  Supplement<ExecutionContext>::Trace(visitor);
++}
++
++std::mt19937_64 FarbleSessionCache::MakePRNG() const {
++  return std::mt19937_64(domain_key_);
++}
++
++void FarbleSessionCache::PerturbPixels(unsigned char* data, size_t size) {
++  if (!valid_ || !data || size == 0) {
++    return;
++  }
++  std::mt19937_64 prng = MakePRNG();
++  uint64_t bit_pool = 0;
++  int bits_left = 0;
++  for (size_t i = 0; i < size; ++i) {
++    if (bits_left == 0) {
++      bit_pool = prng();
++      bits_left = 64;
++    }
++    data[i] ^= static_cast<unsigned char>(bit_pool & 0x1u);
++    bit_pool >>= 1;
++    --bits_left;
++  }
++}
++
++scoped_refptr<StaticBitmapImage> FarbleSessionCache::PerturbImage(
++    scoped_refptr<StaticBitmapImage> image) {
++  if (!valid_ || !image) {
++    return image;
++  }
++  sk_sp<SkImage> sk_image = image->PaintImageForCurrentFrame().GetSwSkImage();
++  if (!sk_image) {
++    return image;
++  }
++  // Unpremultiplied 8-bit RGBA so the LSB flip on a semi-transparent pixel
++  // doesn't get alpha-rounded away.
++  const SkImageInfo info = SkImageInfo::Make(
++      sk_image->width(), sk_image->height(), kRGBA_8888_SkColorType,
++      kUnpremul_SkAlphaType, sk_image->refColorSpace());
++  SkBitmap bitmap;
++  if (!bitmap.tryAllocPixels(info)) {
++    return image;
++  }
++  if (!sk_image->readPixels(bitmap.pixmap(), 0, 0)) {
++    return image;
++  }
++  PerturbPixels(static_cast<unsigned char*>(bitmap.getPixels()),
++                bitmap.computeByteSize());
++  bitmap.setImmutable();
++  sk_sp<SkImage> perturbed = SkImages::RasterFromBitmap(bitmap);
++  if (!perturbed) {
++    return image;
++  }
++  return UnacceleratedStaticBitmapImage::Create(std::move(perturbed));
++}
++
++}  // namespace blink
+diff --git a/third_party/blink/renderer/modules/peerconnection/antidetect_webrtc_policy.h b/third_party/blink/renderer/modules/peerconnection/antidetect_webrtc_policy.h
+new file mode 100644
+--- /dev/null
++++ b/third_party/blink/renderer/modules/peerconnection/antidetect_webrtc_policy.h
+@@ -0,0 +1,34 @@
++// Copyright 2026 The Antidetect Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license.
++//
++// Runtime gate for the WebRTC IP-leak suppression hook in
++// PeerConnectionDependencyFactory::CreatePortAllocator. Active only when BOTH:
++//   1. blink::features::kFarbleWebRTC is enabled, and
++//   2. a non-empty per-profile session token switch is present on the renderer
++//      command line.
++// Off by default; never alters ICE behavior for an unconfigured profile.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_ANTIDETECT_WEBRTC_POLICY_H_
++#define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_ANTIDETECT_WEBRTC_POLICY_H_
++
++#include "third_party/blink/renderer/modules/modules_export.h"
++
++namespace blink {
++
++// UNIFIED session-token switch (orchestrator): identical value to the canvas
++// and navigator hooks, so one browser-appended switch marks a configured
++// profile for all of them. Presence (not value) is what this hook checks.
++inline constexpr char kMyAppSessionTokenSwitch[] = "antidetect-session-token";
++
++// True iff kFarbleWebRTC is enabled AND a non-empty session token is present.
++// Command line + FeatureList are immutable after renderer startup, so the
++// result is computed once and cached; safe on the signaling/renderer thread.
++MODULES_EXPORT bool ShouldSuppressNonProxiedWebRTC();
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_ANTIDETECT_WEBRTC_POLICY_H_
+diff --git a/third_party/blink/renderer/modules/peerconnection/antidetect_webrtc_policy.cc b/third_party/blink/renderer/modules/peerconnection/antidetect_webrtc_policy.cc
+new file mode 100644
+--- /dev/null
++++ b/third_party/blink/renderer/modules/peerconnection/antidetect_webrtc_policy.cc
+@@ -0,0 +1,38 @@
++// Copyright 2026 The Antidetect Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license.
++
++#include "third_party/blink/renderer/modules/peerconnection/antidetect_webrtc_policy.h"
++
++#include "base/command_line.h"
++#include "base/feature_list.h"
++#include "third_party/blink/public/common/features.h"
++
++namespace blink {
++
++namespace {
++
++bool ComputeSuppress() {
++  // The base::Feature state is serialized from the browser onto the renderer
++  // command line at launch, so IsEnabled() here returns the browser's answer.
++  if (!base::FeatureList::IsEnabled(features::kFarbleWebRTC))
++    return false;
++
++  // Require a non-empty per-profile session token. Feature on but token absent
++  // (unconfigured profile) => no-op; we never change ICE behavior blindly.
++  const base::CommandLine* command_line =
++      base::CommandLine::ForCurrentProcess();
++  return !command_line->GetSwitchValueASCII(kMyAppSessionTokenSwitch).empty();
++}
++
++}  // namespace
++
++bool ShouldSuppressNonProxiedWebRTC() {
++  // Write-once-before-threads-read; cache so repeated allocator creations pay
++  // the cost once and the value is stable/thread-safe for the process life.
++  static const bool kSuppress = ComputeSuppress();
++  return kSuppress;
++}
++
++}  // namespace blink
+diff --git a/third_party/blink/renderer/core/frame/antidetect_navigator_config.h b/third_party/blink/renderer/core/frame/antidetect_navigator_config.h
+new file mode 100644
+--- /dev/null
++++ b/third_party/blink/renderer/core/frame/antidetect_navigator_config.h
+@@ -0,0 +1,60 @@
++// Copyright 2026 The Privacy Shield Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_ANTIDETECT_NAVIGATOR_CONFIG_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_ANTIDETECT_NAVIGATOR_CONFIG_H_
++
++#include "base/no_destructor.h"
++#include "third_party/blink/renderer/core/core_export.h"
++#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
++
++namespace blink {
++
++// Process-global, per-renderer (== per-profile) antidetect navigator config.
++// Delivered as command-line switches appended by the browser process:
++//   --antidetect-session-token=<uint64 decimal>  (presence == configured;
++//                                                  value is the shared seed)
++//   --antidetect-hw-concurrency=<unsigned>        (navigator.hardwareConcurrency)
++//   --antidetect-platform=<string>                (navigator.platform)
++//   --antidetect-user-agent=<string>             (navigator.userAgent)
++//
++// Snapshotted ONCE, on first access, into an immutable instance via a
++// magic-static: thread-safe C++11 init, then const forever. Safe from the
++// NavigatorConcurrentHardware / NavigatorID mixins, which also run on worker
++// threads (WorkerNavigator) with no Document to consult.
++//
++// Missing session token => unconfigured profile => every accessor reports
++// "absent" and callers fall through to real values.
++class CORE_EXPORT AntidetectNavigatorConfig {
++ public:
++  static const AntidetectNavigatorConfig& Get();
++
++  AntidetectNavigatorConfig(const AntidetectNavigatorConfig&) = delete;
++  AntidetectNavigatorConfig& operator=(const AntidetectNavigatorConfig&) =
++      delete;
++
++  bool HasSessionToken() const { return has_session_token_; }
++
++  bool HasHardwareConcurrency() const { return has_hw_concurrency_; }
++  unsigned HardwareConcurrency() const { return hw_concurrency_; }
++
++  bool HasPlatform() const { return !platform_.empty(); }
++  const String& Platform() const { return platform_; }
++
++  bool HasUserAgent() const { return !user_agent_.empty(); }
++  const String& UserAgent() const { return user_agent_; }
++
++ private:
++  friend class base::NoDestructor<AntidetectNavigatorConfig>;
++
++  AntidetectNavigatorConfig();
++  ~AntidetectNavigatorConfig();
++
++  bool has_session_token_ = false;
++  bool has_hw_concurrency_ = false;
++  unsigned hw_concurrency_ = 0;
++  String platform_;
++  String user_agent_;
++};
++
++}  // namespace blink
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_FRAME_ANTIDETECT_NAVIGATOR_CONFIG_H_
+diff --git a/third_party/blink/renderer/core/frame/antidetect_navigator_config.cc b/third_party/blink/renderer/core/frame/antidetect_navigator_config.cc
+new file mode 100644
+--- /dev/null
++++ b/third_party/blink/renderer/core/frame/antidetect_navigator_config.cc
+@@ -0,0 +1,62 @@
++// Copyright 2026 The Privacy Shield Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license.
++
++#include "third_party/blink/renderer/core/frame/antidetect_navigator_config.h"
++
++#include <string>
++
++#include "base/command_line.h"
++#include "base/no_destructor.h"
++#include "base/strings/string_number_conversions.h"
++
++namespace blink {
++
++namespace {
++
++// UNIFIED session-token switch: same value the canvas/webrtc hooks read.
++constexpr char kAntidetectSessionToken[] = "antidetect-session-token";
++constexpr char kAntidetectHwConcurrency[] = "antidetect-hw-concurrency";
++constexpr char kAntidetectPlatform[] = "antidetect-platform";
++constexpr char kAntidetectUserAgent[] = "antidetect-user-agent";
++
++}  // namespace
++
++// static
++const AntidetectNavigatorConfig& AntidetectNavigatorConfig::Get() {
++  static const base::NoDestructor<AntidetectNavigatorConfig> instance;
++  return *instance;
++}
++
++AntidetectNavigatorConfig::AntidetectNavigatorConfig() {
++  const base::CommandLine& cmd = *base::CommandLine::ForCurrentProcess();
++
++  const std::string token = cmd.GetSwitchValueASCII(kAntidetectSessionToken);
++  has_session_token_ = !token.empty();
++  if (!has_session_token_) {
++    return;  // Unconfigured profile: every field absent -> callers no-op.
++  }
++
++  const std::string hw = cmd.GetSwitchValueASCII(kAntidetectHwConcurrency);
++  unsigned parsed = 0;
++  if (!hw.empty() && base::StringToUint(hw, &parsed) && parsed > 0) {
++    hw_concurrency_ = parsed;
++    has_hw_concurrency_ = true;
++  }
++
++  // Portable form (reviewer note): String::FromUTF8(s.data(), s.size()) is safe
++  // across branches where FromUTF8(std::string_view) may not exist.
++  const std::string platform = cmd.GetSwitchValueASCII(kAntidetectPlatform);
++  platform_ = String::FromUTF8(platform.data(), platform.size());
++  const std::string ua = cmd.GetSwitchValueASCII(kAntidetectUserAgent);
++  user_agent_ = String::FromUTF8(ua.data(), ua.size());
++}
++
++AntidetectNavigatorConfig::~AntidetectNavigatorConfig() = default;
++
++}  // namespace blink
+diff --git a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@
+ #include "third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.h"
+ 
++#include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/farble/farble_session_cache.h"
++
+@@ ImageData* BaseRenderingContext2D::getImageDataInternal(
+   if (!read_pixels_successful) {
+     SkIRect bounds =
+         snapshot->PaintImageForCurrentFrame().GetSkImageInfo().bounds();
+     DCHECK(!bounds.intersect(SkIRect::MakeXYWH(sx, sy, sw, sh)));
+   }
+ 
++  // Privacy hardening: perturb the JS-visible pixel buffer in place.
++  // image_data_pixmap aliases image_data->data(). The shared StaticBitmapImage
++  // snapshot is never mutated, so on-screen compositing/drawImage is unaffected.
++  // UNVERIFIED: GetTopExecutionContext() must be reachable on
++  // BaseRenderingContext2D. If it is only on the concrete subclass, reach the
++  // context via the canvas host instead. Single most likely compile break.
++  if (read_pixels_successful && FarbleSessionCache::IsFarblingEnabled()) {
++    if (ExecutionContext* ec = GetTopExecutionContext()) {
++      if (FarbleSessionCache* cache = FarbleSessionCache::From(*ec)) {
++        cache->PerturbPixels(
++            static_cast<unsigned char*>(image_data_pixmap.writable_addr()),
++            image_data_pixmap.computeByteSize());
++      }
++    }
++  }
+   return image_data;
+ }
+diff --git a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+--- a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
++++ b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+@@
+ #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
+ 
++#include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/farble/farble_session_cache.h"
++
+@@ String HTMLCanvasElement::ToDataURLInternal(
+   scoped_refptr<StaticBitmapImage> image_bitmap =
+       Snapshot(FlushReason::kToDataURL, source_buffer);
+   if (image_bitmap) {
++    // Farble a writable COPY before PNG/JPEG/WebP encode, keyed off the same
++    // session seed as getImageData so a toDataURL-vs-getImageData cross-check
++    // sees identical farbled pixels. Does NOT reuse getImageDataInternal.
++    if (FarbleSessionCache::IsFarblingEnabled()) {
++      if (FarbleSessionCache* cache =
++              FarbleSessionCache::From(*GetExecutionContext())) {
++        image_bitmap = cache->PerturbImage(std::move(image_bitmap));
++      }
++    }
+     std::unique_ptr<ImageDataBuffer> data_buffer =
+         ImageDataBuffer::Create(image_bitmap);
+     if (!data_buffer)
+       return String("data:,");
+diff --git a/third_party/blink/renderer/core/html/canvas/canvas_async_blob_creator.cc b/third_party/blink/renderer/core/html/canvas/canvas_async_blob_creator.cc
+--- a/third_party/blink/renderer/core/html/canvas/canvas_async_blob_creator.cc
++++ b/third_party/blink/renderer/core/html/canvas/canvas_async_blob_creator.cc
+@@
+ #include "third_party/blink/renderer/core/html/canvas/canvas_async_blob_creator.h"
+ 
++#include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/farble/farble_session_cache.h"
++
+@@ CanvasAsyncBlobCreator::CanvasAsyncBlobCreator(
+   DCHECK(context);
+   DCHECK(image);
++  // Farble the snapshot before the async encode reads its pixels, so toBlob
++  // stays consistent with getImageData / toDataURL. MUST run BEFORE the member
++  // (image_ / static_bitmap_image_) is set from `image`. If the member is
++  // captured in the initializer list instead of assigned in the body, move this
++  // into the body and perturb the MEMBER: image_ = cache->PerturbImage(...).
++  if (FarbleSessionCache::IsFarblingEnabled() && context) {
++    if (FarbleSessionCache* cache = FarbleSessionCache::From(*context)) {
++      image = cache->PerturbImage(std::move(image));
++    }
++  }
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
+ 
++#include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/farble/farble_session_cache.h"
++
+@@ void WebGLRenderingContextBase::ReadPixelsHelper(
+   {
+     ScopedDrawingBufferBinder binder(GetDrawingBuffer(),
+                                      framebuffer_binding_.Get());
+     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
+   }
++
++  // Farble 8-bit readbacks only, so gl.readPixels matches the 2D canvas farble.
++  // FLOAT/HALF_FLOAT/packed formats are deliberately left untouched (out of
++  // scope; a float-renderbuffer readback still yields un-farbled pixels).
++  // UNVERIFIED (least-certain hook): confirm the destination local is `data`,
++  // the `offset` type, that `pixels` is a raw DOMArrayBufferView* (else
++  // pixels.Get()), and Host()->GetTopExecutionContext() on the host.
++  if (type == GL_UNSIGNED_BYTE && FarbleSessionCache::IsFarblingEnabled()) {
++    if (ExecutionContext* ec = Host()->GetTopExecutionContext()) {
++      if (FarbleSessionCache* cache = FarbleSessionCache::From(*ec)) {
++        cache->PerturbPixels(static_cast<unsigned char*>(data),
++                             static_cast<size_t>(pixels->byteLength()) -
++                                 static_cast<size_t>(offset));
++      }
++    }
++  }
+ }
+diff --git a/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc b/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
+--- a/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
++++ b/third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.cc
+@@
+ #include "third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.h"
+ 
+ #include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
++#include "third_party/blink/renderer/modules/peerconnection/antidetect_webrtc_policy.h"
+ // ... existing includes ...
+ #include "third_party/webrtc/p2p/base/port_allocator.h"
+ 
+@@ CONTEXT: place block #1 immediately AFTER GetWebRTCRendererPreferences() and
+@@ BEFORE the if/else-if chain mapping the policy string to the Config bools. @@
+   blink::WebString webrtc_ip_handling_policy;
+   Platform::Current()->GetWebRTCRendererPreferences(
+       web_frame, &webrtc_ip_handling_policy, &min_port, &max_port,
+       &allow_mdns_obfuscation);
+ 
++  // === Antidetect WebRTC hardening (inject BEFORE the policy->Config map) ===
++  // Force the strongest IP-handling policy so the mapping below sets
++  // enable_multiple_routes=false / enable_nonproxied_udp=false /
++  // enable_default_local_candidate=false. Only proxied TCP/TLS TURN candidates
++  // form -> proxy exit IP only. Gated on kFarbleWebRTC + session token.
++  if (ShouldSuppressNonProxiedWebRTC()) {
++    // NOTE: webrtc_ip_handling_policy is blink::WebString on current main. If a
++    // target revision types it as std::string, replace the RHS with the bare
++    // constant: webrtc_ip_handling_policy = kWebRTCIPHandlingDisableNonProxiedUdp;
++    webrtc_ip_handling_policy =
++        WebString::FromUTF8(kWebRTCIPHandlingDisableNonProxiedUdp);
++    allow_mdns_obfuscation = true;
++  }
++
+   // ... existing code: default the policy if empty, then map the string to the
+   // P2PPortAllocator::Config bools via the kWebRTCIPHandling* comparisons ...
+ 
+@@ CONTEXT: place block #2 immediately AFTER the P2PPortAllocator is
+@@ constructed and BEFORE `return`. @@
+   auto port_allocator = std::make_unique<P2PPortAllocator>(
+       std::move(network_manager), socket_factory_.get(), port_config);
+ 
++  // Belt-and-suspenders on the freshly-constructed (not-yet-Initialize()'d)
++  // allocator, so suppression survives future policy->Config mapping changes.
++  // NAMESPACE UNVERIFIED: match third_party/webrtc/p2p/base/port_allocator.h in
++  // THIS branch. Post-merge tree: webrtc::PORTALLOCATOR_*. Pre-merge branches:
++  // switch all four (and only these) to cricket::PORTALLOCATOR_* (and the
++  // return type to cricket::PortAllocator).
++  if (ShouldSuppressNonProxiedWebRTC()) {
++    port_allocator->set_flags(
++        port_allocator->flags() | webrtc::PORTALLOCATOR_DISABLE_UDP |
++        webrtc::PORTALLOCATOR_DISABLE_STUN |
++        webrtc::PORTALLOCATOR_DISABLE_ADAPTER_ENUMERATION |
++        webrtc::PORTALLOCATOR_DISABLE_DEFAULT_LOCAL_CANDIDATE);
++  }
++
+   return port_allocator;
+ }
+diff --git a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+--- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+@@
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
+ 
+ #include "base/system/sys_info.h"
++#include "base/feature_list.h"
++#include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/frame/antidetect_navigator_config.h"
+ 
+ namespace blink {
+ 
+ unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
++  // Per-profile spoofed core count. This mixin is inherited by WorkerNavigator,
++  // so it can run on worker threads; Get() is a thread-safe magic-static read
++  // of a write-once command-line snapshot.
++  if (base::FeatureList::IsEnabled(features::kSpoofNavigator)) {
++    const AntidetectNavigatorConfig& config = AntidetectNavigatorConfig::Get();
++    if (config.HasSessionToken() && config.HasHardwareConcurrency())
++      return config.HardwareConcurrency();
++  }
+   return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
+ }
+ 
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/core/frame/navigator_id.cc b/third_party/blink/renderer/core/frame/navigator_id.cc
+--- a/third_party/blink/renderer/core/frame/navigator_id.cc
++++ b/third_party/blink/renderer/core/frame/navigator_id.cc
+@@
+ #include "third_party/blink/renderer/core/frame/navigator_id.h"
++
++#include "base/feature_list.h"
++#include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/frame/antidetect_navigator_config.h"
+ 
+ #include "build/build_config.h"
+@@ String NavigatorID::platform() const {
+ String NavigatorID::platform() const {
++  // Coherence trap: navigator.platform is compiled from BUILDFLAGs and does NOT
++  // follow the (overridable) UA, so override it explicitly to match the spoofed
++  // UA/UA-CH. Thread-safe (also used by WorkerNavigator).
++  if (base::FeatureList::IsEnabled(features::kSpoofNavigator)) {
++    const AntidetectNavigatorConfig& config = AntidetectNavigatorConfig::Get();
++    if (config.HasSessionToken() && config.HasPlatform())
++      return config.Platform();
++  }
+ #if BUILDFLAG(IS_MAC)
+diff --git a/third_party/blink/renderer/core/frame/navigator_base.cc b/third_party/blink/renderer/core/frame/navigator_base.cc
+--- a/third_party/blink/renderer/core/frame/navigator_base.cc
++++ b/third_party/blink/renderer/core/frame/navigator_base.cc
+@@
+ #include "third_party/blink/renderer/core/frame/navigator_base.h"
++
++#include "base/feature_list.h"
++#include "third_party/blink/public/common/features.h"
++#include "third_party/blink/renderer/core/frame/antidetect_navigator_config.h"
+ 
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+@@ String NavigatorBase::userAgent() const {
+ String NavigatorBase::userAgent() const {
++  // Substitute the per-profile UA inside Blink so appVersion() (which is
++  // userAgent().Substring(find('/')+1)) stays coherent for free. PREFER
++  // RendererPreferences.user_agent_override in production so Sec-CH-UA /
++  // User-Agent request headers match; this covers the JS surface for a
++  // self-contained fork.
++  if (base::FeatureList::IsEnabled(features::kSpoofNavigator)) {
++    const AntidetectNavigatorConfig& config = AntidetectNavigatorConfig::Get();
++    if (config.HasSessionToken() && config.HasUserAgent())
++      return config.UserAgent();
++  }
+   ExecutionContext* execution_context = GetExecutionContext();
+   return execution_context ? execution_context->UserAgent() : String();
+ }

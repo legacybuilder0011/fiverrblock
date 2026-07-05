@@ -356,7 +356,19 @@
   // ── Hardware ─────────────────────────────────────────────────────────────────
   if (config.blockHardware) {
     defineRO(Navigator.prototype, "hardwareConcurrency", () => config.hardwareConcurrency);
-    defineRO(Navigator.prototype, "deviceMemory", () => config.deviceMemory);
+    // navigator.deviceMemory is capped by the spec/Chrome to the set
+    // {0.25,0.5,1,2,4,8} (round down to a power of two, max 8) to limit
+    // fingerprinting. Reporting a raw RAM figure like 16 or 32 is impossible in
+    // real Chrome and is an instant bot tell — clamp it here.
+    const _validDeviceMemory = (gb) => {
+      const n = Number(gb);
+      if (!isFinite(n) || n <= 0) return 8;
+      if (n >= 8) return 8;
+      let best = 0.25;
+      for (const b of [0.25, 0.5, 1, 2, 4, 8]) if (n >= b) best = b;
+      return best;
+    };
+    defineRO(Navigator.prototype, "deviceMemory", () => _validDeviceMemory(config.deviceMemory));
     defineRO(Navigator.prototype, "maxTouchPoints", () => Number(config._maxTouchPoints) || 0);
     try {
       const fakeConn = {

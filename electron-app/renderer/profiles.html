@@ -134,6 +134,7 @@
             <button type="button" class="pm-btn-sm" id="btnAssignTab" title="Apply to current tab" hidden>Apply to tab</button>
             <button type="button" class="pm-btn-sm" id="btnDuplicate">Duplicate</button>
             <button type="button" class="pm-btn-sm danger" id="btnDelete">Delete</button>
+            <button type="button" class="pm-btn primary" id="btnEdit" hidden title="Unlock the settings to make changes">Edit</button>
             <button type="button" class="pm-btn primary" id="btnSave">Save</button>
           </div>
         </div>
@@ -161,6 +162,10 @@
           <select id="fp-windowMode" class="pm-sel-sm">
             <option value="normal">Normal window</option>
             <option value="incognito">Incognito window</option>
+          </select>
+          <select id="fp-engine" class="pm-sel-sm" title="Which browser engine launches when you click Start. All the settings you pick apply to whichever engine you choose.">
+            <option value="chromium">Engine: Chromium (Chrome)</option>
+            <option value="stealthfox">Engine: Stealthfox (Firefox)</option>
           </select>
           <input type="text" id="fp-tags" class="pm-tags-input" placeholder="tags, comma, separated" />
         </div>
@@ -228,6 +233,7 @@
 
         <div class="pm-section">
           <div class="pm-section-title">Browser</div>
+          <div class="pm-hint" id="stealthEngineNote" hidden style="background:#3a2a10;border:1px solid #7a5a1a;color:#f0c674;padding:8px;border-radius:6px;margin-bottom:8px">🦊 This profile's engine is <b>Stealthfox (Firefox)</b> — clicking Start opens patched Firefox, <b>not</b> Chrome/Brave/Edge. The Browser and Version options below apply only to the Chromium engine and are ignored by Stealthfox (which builds its own coherent Firefox identity). All other settings — proxy, screen, timezone, language, geolocation — still apply.</div>
           <div class="pm-row">
             <label class="pm-label">Browser</label>
             <select id="fp-browser" class="pm-sel">

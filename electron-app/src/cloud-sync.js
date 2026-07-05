@@ -9,8 +9,8 @@ const path = require("path");
 const os = require("os");
 const { app } = require("electron");
 
-const SUPABASE_URL = "https://tlavlrntgzsqvgicyzzz.supabase.co";
-const SUPABASE_KEY = "sb_publishable_tu-E950ukBD0lJ3z7OKfXg_DUSpzhdX";
+const SUPABASE_URL = "https://pnhzsteoouhngjdgsfeh.supabase.co";
+const SUPABASE_KEY = "sb_publishable_8xJbMF4kr6yTALY-XJua-Q_XFT0iKe2";
 
 const BASE_DIR     = path.join(app.getPath("userData"), "privacy-shield");
 const SESSION_FILE = path.join(BASE_DIR, "supabase-session.json");
@@ -44,6 +44,32 @@ function readJson(file, fallback) {
 function writeJson(file, data) {
   ensureDir(path.dirname(file));
   fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+}
+
+function cloneJson(value, fallback) {
+  try {
+    return JSON.parse(JSON.stringify(value || fallback));
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function sanitizeProxyForCloud(proxy) {
+  const clone = cloneJson(proxy, {});
+  delete clone.username;
+  delete clone.password;
+  delete clone.passwordEnc;
+  delete clone.rotationUrl;
+  return clone;
+}
+
+function sanitizeProfileForCloud(profile) {
+  const clone = cloneJson(profile, {});
+  delete clone.cookies;
+  delete clone.localStorageData;
+  delete clone.session;
+  if (clone.proxy) clone.proxy = sanitizeProxyForCloud(clone.proxy);
+  return clone;
 }
 
 // Defensive Supabase load — if the package is missing or fails to init,
@@ -180,7 +206,7 @@ async function pullProfiles() {
     // Belt-and-suspenders: drop any row whose user_id doesn't match — guards
     // against an RLS misconfig on the server. Should be a no-op when RLS is on.
     const rows = (data || []).filter((r) => r.user_id === userId);
-    return { ok: true, profiles: rows.map((r) => r.data) };
+    return { ok: true, profiles: rows.map((r) => sanitizeProfileForCloud(r.data)) };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -191,10 +217,11 @@ async function pushProfile(profile) {
   try {
     const userId = getCurrentUserId();
     if (!userId || !profile || !profile.id) return { ok: false, error: "not logged in" };
+    const cloudProfile = sanitizeProfileForCloud(profile);
     const { error } = await supabase
       .from("profiles")
       .upsert(
-        { user_id: userId, profile_id: profile.id, data: profile, updated_at: new Date().toISOString() },
+        { user_id: userId, profile_id: profile.id, data: cloudProfile, updated_at: new Date().toISOString() },
         { onConflict: "user_id,profile_id" }
       );
     if (error) return { ok: false, error: error.message };
@@ -209,12 +236,16 @@ async function pushAllProfiles(profiles) {
   try {
     const userId = getCurrentUserId();
     if (!userId || !profiles || !profiles.length) return { ok: true, count: 0 };
-    const rows = profiles.map((p) => ({
-      user_id: userId,
-      profile_id: p.id,
-      data: p,
-      updated_at: new Date().toISOString()
-    }));
+    const rows = profiles
+      .map((p) => sanitizeProfileForCloud(p))
+      .filter((p) => p && p.id)
+      .map((p) => ({
+        user_id: userId,
+        profile_id: p.id,
+        data: p,
+        updated_at: new Date().toISOString()
+      }));
+    if (!rows.length) return { ok: true, count: 0 };
     const { error } = await supabase
       .from("profiles")
       .upsert(rows, { onConflict: "user_id,profile_id" });
@@ -255,7 +286,7 @@ async function pullProxies() {
       .eq("user_id", userId);
     if (error) return { ok: false, error: error.message };
     const rows = (data || []).filter((r) => r.user_id === userId);
-    return { ok: true, proxies: rows.map((r) => r.data) };
+    return { ok: true, proxies: rows.map((r) => sanitizeProxyForCloud(r.data)) };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -266,12 +297,16 @@ async function pushAllProxies(proxies) {
   try {
     const userId = getCurrentUserId();
     if (!userId || !proxies || !proxies.length) return { ok: true, count: 0 };
-    const rows = proxies.map((p) => ({
-      user_id: userId,
-      proxy_id: p.id,
-      data: p,
-      updated_at: new Date().toISOString()
-    }));
+    const rows = proxies
+      .map((p) => sanitizeProxyForCloud(p))
+      .filter((p) => p && p.id)
+      .map((p) => ({
+        user_id: userId,
+        proxy_id: p.id,
+        data: p,
+        updated_at: new Date().toISOString()
+      }));
+    if (!rows.length) return { ok: true, count: 0 };
     const { error } = await supabase
       .from("proxies")
       .upsert(rows, { onConflict: "user_id,proxy_id" });

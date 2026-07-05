@@ -1108,3 +1108,15 @@ html, body {
     overflow: auto;
   }
 }
+
+/* Locked "view" mode: profile is saved and settings can't change until Edit.
+   Keep values legible (default disabled styling dims too hard). */
+.pm-form-wrap.view-locked input:disabled,
+.pm-form-wrap.view-locked select:disabled,
+.pm-form-wrap.view-locked textarea:disabled {
+  opacity: 0.9;
+  cursor: default;
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+}
+#btnEdit { background: #2563eb; }
