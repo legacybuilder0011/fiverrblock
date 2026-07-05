@@ -140,6 +140,9 @@ app.whenReady().then(async () => {
 
   createTray();
   openLoginOrMain();
+
+  // Background auto-update from GitHub Releases (packaged app only).
+  try { require("./updater").initAutoUpdater(logInfo, logError); } catch (e) { logError(e); }
 });
 
 function openLoginOrMain() {
