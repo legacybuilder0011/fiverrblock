@@ -63,6 +63,32 @@ async function loadCamoufox() {
   return _cam;
 }
 
+// A STABLE per-profile Camoufox fingerprint. Camoufox generates a NEW random
+// fingerprint on every launch when none is passed — so a returning account would
+// show a different canvas/GPU/screen each session, a detection red flag. Generate
+// one Firefox fingerprint per profile (same generator config Camoufox uses),
+// persist it, and reuse it on every launch → identical across sessions AND unique
+// per profile. Falls back to Camoufox's own generation if unavailable.
+function getStableFingerprint(profile) {
+  if (!electronApp || !profile || !profile.id) return null;
+  const safe = String(profile.id).replace(/[^a-zA-Z0-9_-]/g, "_");
+  if (!safe) return null;
+  const dir = path.join(electronApp.getPath("userData"), "camoufox-profiles");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  const fpFile = path.join(dir, safe + "-fingerprint.json");
+  try { if (fs.existsSync(fpFile)) return JSON.parse(fs.readFileSync(fpFile, "utf8")); } catch (_) {}
+  try {
+    const { FingerprintGenerator } = require("fingerprint-generator");
+    const os = mapOs(profile.os);
+    const gen = new FingerprintGenerator({ browsers: ["firefox"], operatingSystems: [os] });
+    const { fingerprint } = gen.getFingerprint({ operatingSystems: [os] });
+    try { fs.writeFileSync(fpFile, JSON.stringify(fingerprint)); } catch (_) {}
+    return fingerprint;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Per-profile persistent storage dir (cookies/localStorage) → account isolation.
 function profileUserDataDir(profileId) {
   if (!electronApp) return null;
@@ -136,6 +162,25 @@ function profileToOptions(profile) {
       opts.window = [winW, winH]; // camoufox-js expects a [width, height] tuple
     }
   } catch (_) {}
+
+  // Stable per-profile fingerprint (identical across sessions, unique per profile).
+  const stableFp = getStableFingerprint(profile);
+  if (stableFp) {
+    opts.fingerprint = stableFp;
+    delete opts.screen; // screen comes from the fingerprint
+    // Camoufox otherwise re-randomizes the GPU, canvas AA offset and font spacing
+    // on EVERY launch (separate from the fingerprint object). Pin all three per
+    // profile so the WHOLE fingerprint — GPU, canvas, text — is identical across
+    // sessions yet unique per profile.
+    const seedInt = (s) => { let x = 0x811c9dc5; for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 0x01000193); } return x >>> 0; };
+    const vc = stableFp.videoCard || {};
+    if (vc.vendor && vc.renderer) opts.webgl_config = [vc.vendor, vc.renderer];
+    opts.config = {
+      "canvas:aaOffset": (seedInt(profile.id) % 101) - 50,
+      "canvas:aaCapOffset": true,
+      "fonts:spacing_seed": seedInt(profile.id + "|spacing") % 1073741824,
+    };
+  }
 
   return opts;
 }

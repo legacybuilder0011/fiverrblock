@@ -1,3 +1,34 @@
+diff --git a/node_modules/camoufox-js/dist/utils.js b/node_modules/camoufox-js/dist/utils.js
+index 1827286..508ca5f 100644
+--- a/node_modules/camoufox-js/dist/utils.js
++++ b/node_modules/camoufox-js/dist/utils.js
+@@ -377,8 +377,10 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
+     else {
+         updateFonts(config, targetOS);
+     }
+-    // Set a fixed font spacing seed
+-    setInto(config, "fonts:spacing_seed", Math.floor(Math.random() * 1_073_741_824));
++    // Set a font spacing seed. Respect a caller-provided value (in the `config`
++    // option) so a profile's text/canvas rendering stays STABLE across sessions;
++    // only randomize when none was supplied.
++    setInto(config, "fonts:spacing_seed", (config["fonts:spacing_seed"] !== undefined) ? config["fonts:spacing_seed"] : Math.floor(Math.random() * 1_073_741_824));
+     // Handle proxy
+     const proxyUrl = getProxyUrl(proxy);
+     // Set geolocation
+@@ -457,9 +459,11 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
+             "webgl.force-enabled": true,
+         });
+     }
+-    // Canvas anti-fingerprinting
++    // Canvas anti-fingerprinting. Respect a caller-provided canvas:aaOffset (in
++    // the `config` option) so a profile's canvas stays STABLE across sessions;
++    // only randomize when none was supplied.
+     mergeInto(config, {
+-        "canvas:aaOffset": Math.floor(Math.random() * 101) - 50, // nosec
++        "canvas:aaOffset": (config["canvas:aaOffset"] !== undefined) ? config["canvas:aaOffset"] : (Math.floor(Math.random() * 101) - 50), // nosec
+         "canvas:aaCapOffset": true,
+     });
+     // Cache previous pages, requests, etc (uses more memory)
 diff --git a/node_modules/camoufox-js/dist/webgl/sample.js b/node_modules/camoufox-js/dist/webgl/sample.js
 index 3ac1706..443f3f1 100644
 --- a/node_modules/camoufox-js/dist/webgl/sample.js
