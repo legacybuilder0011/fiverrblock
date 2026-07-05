@@ -1000,8 +1000,21 @@
   try { defineRO(Navigator.prototype, "doNotTrack", config._doNotTrack ? "1" : "0"); } catch (_) {}
 
   // ── ClientRects noise ─────────────────────────────────────────────────────────
-  if (config._clientRects === "noise") {
-    const noiseRect = (orig) => { const noise = (stableNoise(Math.round((orig.top + orig.left) * 100)) - 0.5) * 0.2; return { top: orig.top + noise, left: orig.left + noise, right: orig.right + noise, bottom: orig.bottom + noise, width: orig.width, height: orig.height, x: (orig.x != null ? orig.x : orig.left) + noise, y: (orig.y != null ? orig.y : orig.top) + noise, toJSON() { return { top: this.top, left: this.left, right: this.right, bottom: this.bottom, width: this.width, height: this.height, x: this.x, y: this.y }; } }; };
+  // Perturb getBoundingClientRect/getClientRects dimensions — INCLUDING width and
+  // height (the old code only moved position, leaving the font/geometry signal
+  // intact) — with per-profile deterministic sub-pixel noise. So element/text
+  // geometry (a fingerprint AND a getBoundingClientRect-based font-detection
+  // vector) is unique per profile yet stable per session. Sub-pixel (±0.01px) →
+  // imperceptible and layout-safe. Tied to canvas spoofing: ON for full profiles,
+  // OFF in stealth/softened mode (applySoftening sets blockCanvas=false).
+  if (config.blockCanvas && config._clientRects !== "off") {
+    const jit = (v, salt) => (typeof v === "number" ? v + ((stableNoise(Math.round(Math.abs(v) * 100) + salt) - 0.5) * 0.02) : v);
+    const noiseRect = (orig) => {
+      const left = jit(orig.left, 3), top = jit(orig.top, 4);
+      const width = jit(orig.width, 1), height = jit(orig.height, 2);
+      return { x: left, y: top, left, top, width, height, right: left + width, bottom: top + height,
+        toJSON() { return { x: this.x, y: this.y, left: this.left, top: this.top, width: this.width, height: this.height, right: this.right, bottom: this.bottom }; } };
+    };
     try { wrap(Element.prototype, "getBoundingClientRect", (orig) => function () { return noiseRect(orig.call(this)); }); wrap(Range.prototype, "getBoundingClientRect", (orig) => function () { return noiseRect(orig.call(this)); }); wrap(Element.prototype, "getClientRects", (orig) => function () { return Array.from(orig.call(this)).map(noiseRect); }); wrap(Range.prototype, "getClientRects", (orig) => function () { return Array.from(orig.call(this)).map(noiseRect); }); } catch (_) {}
   }
 
