@@ -6,6 +6,43 @@
 "use strict";
 
 (function () {
+  // ── Captcha / bot-challenge frame exemption ─────────────────────────────────
+  // This script is injected into EVERY frame (main page + all iframes) via CDP on
+  // full-spoof profiles. Captcha vendors — Arkose FunCaptcha (Instagram's
+  // "Help us confirm it's you"), hCaptcha, reCAPTCHA, Cloudflare Turnstile,
+  // DataDome, GeeTest, PerimeterX — render their challenge on canvas/WebGL and
+  // run integrity checks that FAIL when they detect canvas / WebGL / navigator
+  // overridden inside their own frame. The result is a blank challenge box that
+  // never paints and a Submit/Next button that hangs forever. A real browser
+  // shows these frames a pristine, un-tampered environment, so we must too:
+  // if this frame's origin is a known challenge vendor, bail out entirely and
+  // leave the frame 100% native. The main page frame (e.g. instagram.com) is
+  // still fully spoofed — only the vendor's own iframe is exempted.
+  try {
+    var __ch = (typeof location !== "undefined" && location.hostname || "").toLowerCase();
+    var __cp = (typeof location !== "undefined" && location.pathname || "").toLowerCase();
+    var __CAPTCHA_HOSTS = [
+      "arkoselabs.com", "arkose.com", "funcaptcha.com",
+      "hcaptcha.com", "hcaptcha.net",
+      "recaptcha.net",
+      "challenges.cloudflare.com",
+      "captcha-delivery.com",
+      "geetest.com", "geetest.net",
+      "px-cdn.net", "px-cloud.net", "perimeterx.net", "pxchk.net", "px-cloud.com"
+    ];
+    var __captchaFrame = false;
+    for (var __i = 0; __i < __CAPTCHA_HOSTS.length; __i++) {
+      var __d = __CAPTCHA_HOSTS[__i];
+      if (__ch === __d || __ch.length > __d.length && __ch.slice(-(__d.length + 1)) === "." + __d) { __captchaFrame = true; break; }
+    }
+    // reCAPTCHA is served from www.google.com/recaptcha/ and www.gstatic.com/recaptcha/.
+    // Don't blanket-exempt google.com / gstatic.com — only their recaptcha paths.
+    if (!__captchaFrame && (/(^|\.)google\.com$/.test(__ch) || /(^|\.)gstatic\.com$/.test(__ch)) && __cp.indexOf("/recaptcha") !== -1) {
+      __captchaFrame = true;
+    }
+    if (__captchaFrame) return;
+  } catch (_) {}
+
   const { ipcRenderer } = require("electron");
 
   // ── Default config ──────────────────────────────────────────────────────────
