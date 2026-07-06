@@ -127,11 +127,38 @@ async function attachStealth(webContents, config, logger) {
         .catch((e) => log(`stealth-cdp worker inject failed: ${e && (e.message || e)}`))
         .finally(resume);
     });
-    await webContents.debugger.sendCommand("Target.setAutoAttach", {
+    // CRITICAL (captcha rendering): auto-attach ONLY to worker targets, and never
+    // pause on start. Pausing a cross-origin / out-of-process iframe target — which
+    // is exactly what reCAPTCHA, hCaptcha, Arkose and Instagram's fbsbx captcha all
+    // render inside — makes Chromium ABORT the iframe load (net::ERR_ABORTED), so the
+    // challenge shows a blank box that never resolves and Submit hangs. Those OOPIF
+    // frames are separate targets that never received the top-frame fingerprint script
+    // anyway, so touching them buys nothing and only breaks captchas. Workers are the
+    // only targets we actually need to reach (navigator/timezone spoof in worker
+    // scope), so we filter the auto-attach to worker types and leave every iframe
+    // completely untouched. waitForDebuggerOnStart stays false so nothing is ever left
+    // paused even on a runtime that ignores the filter param.
+    const autoAttachParams = {
       autoAttach: true,
-      waitForDebuggerOnStart: true,
-      flatten: true
-    });
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [
+        { type: "worker", exclude: false },
+        { type: "shared_worker", exclude: false },
+        { type: "service_worker", exclude: false },
+        { exclude: true }
+      ]
+    };
+    try {
+      await webContents.debugger.sendCommand("Target.setAutoAttach", autoAttachParams);
+    } catch (filterErr) {
+      // Older CDP builds may reject the `filter` param — retry without it, still
+      // without pausing (the critical part for not aborting captcha iframes).
+      log(`stealth-cdp setAutoAttach filter rejected (${filterErr && (filterErr.message || filterErr)}); retrying without filter`);
+      await webContents.debugger.sendCommand("Target.setAutoAttach", {
+        autoAttach: true, waitForDebuggerOnStart: false, flatten: true
+      });
+    }
     log(`stealth-cdp worker auto-attach armed profile=${(config && config._profileId) || "?"}`);
   } catch (err) {
     // Non-fatal: frame spoofing still works even if worker auto-attach is unavailable.
