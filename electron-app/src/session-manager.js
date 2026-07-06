@@ -226,7 +226,7 @@ async function configureSessionProxy(sess, proxy, profileId, options = {}) {
   if (tlsSpoof && (scheme === "http" || scheme === "https") && hasAuth) {
     const local = await mitmBridge.getMitmBridge(profileId, {
       scheme, host: proxy.host, port, username: proxy.username, password: proxy.password
-    }, options.fingerprintSeed);
+    }, options.fingerprintSeed, options.identity);
     if (local) {
       const proxyRules = `http://127.0.0.1:${local.port}`;
       await sess.setProxy({
@@ -496,7 +496,10 @@ async function setupProfileSession(profile) {
   const proxyWithExpandedUser = { ...proxy, username: proxyUsername };
   const tlsSpoof = Boolean(profile.fingerprint && profile.fingerprint.tlsSpoof);
   const fingerprintSeed = (profile.fingerprint && profile.fingerprint.fingerprintSeed) || profile.id;
-  const proxyResult = await configureSessionProxy(sess, proxyWithExpandedUser, profile.id, { tlsSpoof, fingerprintSeed });
+  // Identity so the TLS bridge can pick a JA3 coherent with the spoofed browser/OS
+  // and re-originate with the profile's real User-Agent.
+  const identity = { userAgent: config.userAgent, browser: config._browserApp, os: config._uaOS };
+  const proxyResult = await configureSessionProxy(sess, proxyWithExpandedUser, profile.id, { tlsSpoof, fingerprintSeed, identity });
   sessLog(`proxy setup profile=${profile.id} result=${proxyResult.mode}${proxyResult.reason ? " reason=" + proxyResult.reason : ""}${tlsSpoof ? " tlsSpoof=on" : ""}`);
   if (proxyResult.mode === "mitm") installMitmCertTrust(sess, profile.id);
   else sess.setCertificateVerifyProc(null);

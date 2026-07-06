@@ -113,13 +113,23 @@ const bridges = new Map();      // profileId -> { server, port, key, caPem, leaf
 const caCache = new Map();      // profileId -> { caPem, caKeyPem, caCertObj, caKeyObj }
 const leafCacheLimit = 64;
 
+// Each entry carries `family` (the TLS stack, which is what JA3 actually encodes)
+// and `version` (browser major) so pickJa3ForProfile can choose a ClientHello that
+// is COHERENT with the profile's spoofed identity. JA3 encodes the engine's TLS
+// library, not the OS: Chrome/Brave/Edge/Opera all use BoringSSL → a Chromium JA3;
+// Firefox uses NSS → a Gecko JA3; Safari uses Secure Transport → a WebKit JA3.
+// The modern Chromium JA3 string is stable from ~Chrome 136 through 150, so 150
+// reuses it. The `ua` here is ONLY a fallback label — at request time we send the
+// profile's REAL spoofed User-Agent, never this one.
+const CHROME_JA3_MODERN = "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-5-10-11-13-16-18-21-23-27-35-43-45-51-17513-65037-65281,29-23-24,0";
+const CHROME_JA3_LEGACY = "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0";
 const JA3_PROFILES = [
-  { label: "chrome-131", ja3: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0", ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" },
-  { label: "chrome-136", ja3: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-5-10-11-13-16-18-21-23-27-35-43-45-51-17513-65037-65281,29-23-24,0", ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36" },
-  { label: "chrome-144", ja3: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-5-10-11-13-16-18-21-23-27-35-43-45-51-17513-65037-65281,29-23-24,0", ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36" },
-  { label: "firefox-128", ja3: "771,4865-4867-4866-49195-49199-52393-52392-49196-49200-49162-49161-49171-49172-156-157-47-53,0-23-65281-10-11-16-5-34-51-43-13-45-28-21,29-23-24-25-256-257,0", ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0" },
-  { label: "safari-17", ja3: "771,4865-4866-4867-49196-49195-52393-49200-49199-52392-49162-49161-49172-49171-157-156-53-47,0-23-65281-10-11-16-5-13-18-51-45-43-27-21,29-23-24-25,0", ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" },
-  { label: "edge-131", ja3: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0", ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0" }
+  { label: "chrome-150", family: "chrome", version: 150, ja3: CHROME_JA3_MODERN, ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36" },
+  { label: "chrome-144", family: "chrome", version: 144, ja3: CHROME_JA3_MODERN, ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36" },
+  { label: "chrome-136", family: "chrome", version: 136, ja3: CHROME_JA3_MODERN, ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36" },
+  { label: "chrome-131", family: "chrome", version: 131, ja3: CHROME_JA3_LEGACY, ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" },
+  { label: "firefox-128", family: "firefox", version: 128, ja3: "771,4865-4867-4866-49195-49199-52393-52392-49196-49200-49162-49161-49171-49172-156-157-47-53,0-23-65281-10-11-16-5-34-51-43-13-45-28-21,29-23-24-25-256-257,0", ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0" },
+  { label: "safari-17", family: "safari", version: 17, ja3: "771,4865-4866-4867-49196-49195-52393-49200-49199-52392-49162-49161-49172-49171-157-156-53-47,0-23-65281-10-11-16-5-13-18-51-45-43-27-21,29-23-24-25,0", ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" }
 ];
 
 function mitmLog(msg) {
@@ -236,15 +246,39 @@ function getLeafCert(hostname, ca, cache) {
   return leaf;
 }
 
-function pickJa3ForProfile(seed) {
-  const text = String(seed || "default");
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
+// Map the profile's browser to the TLS-stack family JA3 belongs to.
+function ja3FamilyForBrowser(browser, os) {
+  const b = String(browser || "").toLowerCase();
+  const o = String(os || "").toLowerCase();
+  if (b === "firefox" || b === "stealthfox" || b === "librewolf" || b === "tor") return "firefox";
+  if (b === "safari" || o === "ios" || o === "ipados") return "safari";
+  return "chrome"; // chrome, brave, edge, chromium, opera, vivaldi, default
+}
+
+function parseBrowserMajor(ua) {
+  const m = String(ua || "").match(/(?:Chrome|Firefox|Version|CriOS|FxiOS)\/(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+// Choose a JA3 that is COHERENT with the profile's identity: same TLS-stack family
+// as the claimed browser, and the table version closest to (but not above) the
+// claimed major. Picking by browser — not by a hash of the seed — is the whole
+// point: a Chrome-150 profile that sent a Firefox ClientHello would be a glaring
+// tell, worse than not spoofing at all. Profiles claiming the same browser share
+// a JA3, which is correct — that is exactly what real users of that browser look
+// like; unlinkability at this layer comes from matching a real browser, not from
+// every profile being artificially different.
+function pickJa3ForProfile(seed, identity) {
+  const family = ja3FamilyForBrowser(identity && identity.browser, identity && identity.os);
+  const claimedMajor = parseBrowserMajor(identity && identity.userAgent);
+  let pool = JA3_PROFILES.filter((p) => p.family === family);
+  if (!pool.length) pool = JA3_PROFILES.filter((p) => p.family === "chrome");
+  if (claimedMajor) {
+    const atOrBelow = pool.filter((p) => p.version <= claimedMajor).sort((a, b) => b.version - a.version);
+    if (atOrBelow.length) return atOrBelow[0];
   }
-  const idx = (h >>> 0) % JA3_PROFILES.length;
-  return JA3_PROFILES[idx];
+  // No usable major → newest in the family.
+  return pool.slice().sort((a, b) => b.version - a.version)[0];
 }
 
 function readHttpRequest(socket, headBuffer) {
@@ -478,13 +512,16 @@ async function handleHttpsRequest(clientSocket, hostname, port, ca, leafCache, p
   // conversion only if we never decompress them.
   headers["accept-encoding"] = "identity";
 
-  if (profile.userAgent) headers["user-agent"] = profile.userAgent;
+  // Keep the browser's real (spoofed) User-Agent that arrived on the request; only
+  // fall back to the stored identity UA if the header is somehow absent. Never
+  // substitute the JA3 table's UA — that would contradict the JS/client-hint UA.
+  if (!headers["user-agent"] && profile.userAgent) headers["user-agent"] = profile.userAgent;
 
   try {
     const opts = {
       body: req.body && req.body.length ? req.body.toString("utf8") : "",
       ja3: profile.ja3,
-      userAgent: profile.userAgent,
+      userAgent: headers["user-agent"] || profile.userAgent,
       headers,
       timeout: 30,
       disableRedirect: true,
@@ -507,11 +544,14 @@ async function handleHttpsRequest(clientSocket, hostname, port, ca, leafCache, p
   }
 }
 
-function createMitmServer(profileId, upstream, ja3Profile, ca, leafCache, cycleClient) {
+function createMitmServer(profileId, upstream, ja3Profile, ca, leafCache, cycleClient, realUserAgent) {
   const server = net.createServer();
   const profile = {
     ja3: ja3Profile.ja3,
-    userAgent: ja3Profile.ua,
+    // The profile's REAL spoofed UA (from the fingerprint identity). The JA3
+    // table's own `ua` is only a last-resort fallback — sending it would make the
+    // HTTP User-Agent contradict what JavaScript reports.
+    userAgent: realUserAgent || ja3Profile.ua,
     upstreamProxyUrl: buildUpstreamProxyUrl(upstream),
     cycleClient
   };
@@ -566,10 +606,11 @@ async function handlePlainHttp(clientSocket, firstLine, fullHead, bodyBuf, profi
   delete headers["connection"];
 
   try {
+    if (!headers["user-agent"] && profile.userAgent) headers["user-agent"] = profile.userAgent;
     const opts = {
       body: bodyBuf && bodyBuf.length ? bodyBuf.toString("utf8") : "",
       ja3: profile.ja3,
-      userAgent: profile.userAgent,
+      userAgent: headers["user-agent"] || profile.userAgent,
       headers,
       timeout: 30,
       disableRedirect: true,
@@ -593,7 +634,7 @@ function upstreamKey(upstream) {
   return [upstream.scheme || "http", upstream.host, upstream.port, upstream.username || "", upstream.password || ""].join("|");
 }
 
-async function getMitmBridge(profileId, upstream, fingerprintSeed) {
+async function getMitmBridge(profileId, upstream, fingerprintSeed, identity) {
   if (!lazyLoadDeps()) {
     mitmLog(`deps unavailable, MITM disabled for profile=${profileId}`);
     return null;
@@ -612,7 +653,8 @@ async function getMitmBridge(profileId, upstream, fingerprintSeed) {
 
   try {
     const ca = loadOrCreateCA(profileId);
-    const ja3 = pickJa3ForProfile(fingerprintSeed || profileId);
+    const ja3 = pickJa3ForProfile(fingerprintSeed || profileId, identity);
+    const realUserAgent = (identity && identity.userAgent) || ja3.ua;
     const cycleTlsPort = await pickFreePort();
     mitmLog(`starting cycletls profile=${profileId} port=${cycleTlsPort} binary=${cycletlsBinaryPath}`);
     const cycleClient = await initCycleTLS({
@@ -621,14 +663,14 @@ async function getMitmBridge(profileId, upstream, fingerprintSeed) {
       timeout: 30000
     });
     const leafCache = new Map();
-    const server = createMitmServer(profileId, upstream, ja3, ca, leafCache, cycleClient);
+    const server = createMitmServer(profileId, upstream, ja3, ca, leafCache, cycleClient, realUserAgent);
     await new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => resolve());
     });
     const port = server.address().port;
     bridges.set(profileId, { server, port, key, caPem: ca.caPem, leafCache, cycleClient, ja3: ja3.label, userAgent: ja3.ua, upstream });
-    mitmLog(`mitm bridge profile=${profileId} ja3=${ja3.label} local=127.0.0.1:${port} -> ${scheme}://${upstream.host}:${upstream.port}`);
+    mitmLog(`mitm bridge profile=${profileId} ja3=${ja3.label} ua="${realUserAgent.slice(0, 60)}" local=127.0.0.1:${port} -> ${scheme}://${upstream.host}:${upstream.port}`);
     return { host: "127.0.0.1", port, caPem: ca.caPem };
   } catch (err) {
     mitmLog(`mitm bridge start failed profile=${profileId} ${err.message || err}`);
@@ -658,4 +700,4 @@ function getCAForProfile(profileId) {
   }
 }
 
-module.exports = { getMitmBridge, stopMitmBridge, stopAll, getCAForProfile };
+module.exports = { getMitmBridge, stopMitmBridge, stopAll, getCAForProfile, pickJa3ForProfile, ja3FamilyForBrowser, JA3_PROFILES };
