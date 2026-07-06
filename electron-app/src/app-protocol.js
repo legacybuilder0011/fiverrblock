@@ -22,12 +22,22 @@ const MIME = {
 };
 
 function createHandler(logInfo = () => {}, logError = () => {}) {
+  const appRoot = path.resolve(app.getAppPath());
   return (request) => {
     let filePath = "<unresolved>";
     try {
       const url = new URL(request.url);
       const relativePath = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
-      filePath = path.join(app.getAppPath(), relativePath);
+      // Resolve, then enforce containment. path.resolve collapses any `..`
+      // segments; if the result escapes the app root, refuse. This protocol is
+      // registered on profile browsing sessions too, so without this check a
+      // hostile page could read arbitrary local files (profiles.json, session
+      // tokens, OS files) via psapp:///../../../..  path traversal.
+      filePath = path.resolve(appRoot, relativePath);
+      if (filePath !== appRoot && !filePath.startsWith(appRoot + path.sep)) {
+        logError(`psapp BLOCKED path traversal: ${request.url} -> ${filePath}`);
+        return new Response("Forbidden", { status: 403 });
+      }
       const data = fs.readFileSync(filePath);
       const extension = path.extname(filePath).toLowerCase();
       logInfo(`psapp served ${request.url} -> ${filePath} (${data.length} bytes)`);
