@@ -1359,6 +1359,28 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
     return { ok: true, windowId: existing.id, existing: true };
   }
 
+  // Memory guard: each open profile is a full Chromium renderer (~200-300 MB).
+  // Without a ceiling, opening too many at once exhausts RAM and the OS kills
+  // the whole app — losing every open session at once. Refuse gracefully with an
+  // actionable message (the renderer surfaces {ok:false,error}) instead. Refocus
+  // of an already-open profile is exempt (handled above, doesn't reach here).
+  {
+    const PER_PROFILE_MB = 300;
+    const openCount = [...profileWindows.values()].filter((w) => w && !w.isDestroyed()).length;
+    const totalMB = os.totalmem() / (1024 * 1024);
+    const freeMB = os.freemem() / (1024 * 1024);
+    // Absolute soft cap scaled to total RAM (min 5), plus a live free-RAM check.
+    const capByTotal = Math.max(5, Math.floor(totalMB / 400));
+    const tooMany = openCount >= capByTotal;
+    const lowMemory = openCount > 0 && freeMB < PER_PROFILE_MB * 1.5;
+    if (tooMany || lowMemory) {
+      const reason = tooMany
+        ? `You already have ${openCount} profiles open, which is the safe limit for this PC's memory (${Math.round(totalMB / 1024)} GB RAM).`
+        : `This PC is low on free memory (${Math.round(freeMB)} MB left) — opening another profile could crash the app.`;
+      return { ok: false, error: `${reason} Close some open profiles and try again.` };
+    }
+  }
+
   const profiles = store.getProfiles();
   let profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
   if (!profile) return { ok: false, error: "Profile not found" };
@@ -2140,9 +2162,12 @@ async function bulkCreateProfiles(count, countryCode, assignProxies, networkMode
         bypassList: ["localhost", "127.0.0.1"]
       };
     }
-    const profile = store.createProfile(item.data);
-    created.push(profile);
   }
+  // ONE read + ONE write + ONE batched cloud push instead of N of each.
+  // Looping store.createProfile() here rewrote the whole (growing) file per
+  // profile — O(n²) synchronous disk I/O that froze the UI on "generate 100".
+  const batch = store.createProfilesBatch(pending.map((item) => item.data));
+  created.push(...batch);
   return { ok: true, created: created.length, profiles: created };
 }
 

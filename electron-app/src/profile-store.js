@@ -38,9 +38,26 @@ function readJson(file, fallback) {
   }
 }
 
+// Atomic write: serialize to a temp file, fsync it, keep the last-known-good
+// copy as <file>.bak, then rename the temp over the target. rename() is atomic
+// on the same volume, so a crash/OOM/power-loss mid-write can never leave a
+// half-written (corrupt) profiles.json — the live file is either the old or the
+// new complete version, and .bak is a recovery point. This matters more the
+// bigger the account gets (a torn write on a large file would lose everything).
 function writeJson(file, data) {
   ensureDir();
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+  const json = JSON.stringify(data, null, 2);
+  const tmp = file + ".tmp";
+  const fd = fs.openSync(tmp, "w");
+  try {
+    fs.writeFileSync(fd, json, "utf8");
+    try { fs.fsyncSync(fd); } catch (_) {}
+  } finally {
+    fs.closeSync(fd);
+  }
+  // Preserve the previous good file as .bak before overwriting.
+  try { if (fs.existsSync(file)) fs.copyFileSync(file, file + ".bak"); } catch (_) {}
+  fs.renameSync(tmp, file);
 }
 
 // Secrets are persisted through Electron safeStorage when available. The fallback
@@ -456,12 +473,14 @@ function syncDeleteProfileBg(id) {
   } catch (_) {}
 }
 
-function createProfile(data) {
-  const profiles = getProfiles();
+// Build a fully-formed profile object from user data WITHOUT touching disk.
+// Shared by createProfile (single) and createProfilesBatch (bulk) so the two
+// paths can never drift.
+function buildNewProfile(data, nameIndex) {
   const now = Date.now();
   const profile = {
     id: generateId(),
-    name: data.name || "Profile " + (profiles.length + 1),
+    name: data.name || "Profile " + nameIndex,
     status: data.status || "new",
     tags: Array.isArray(data.tags) ? data.tags : [],
     notes: data.notes || "",
@@ -483,10 +502,39 @@ function createProfile(data) {
     session: data.session || null
   };
   profile.fingerprint = normalizeProfileFingerprint(profile, { randomizeDefaultGpu: true });
+  return profile;
+}
+
+function createProfile(data) {
+  const profiles = getProfiles();
+  const profile = buildNewProfile(data, profiles.length + 1);
   profiles.push(profile);
   saveProfiles(profiles);
   syncProfileBg(profile);
   return profile;
+}
+
+// Create many profiles in ONE read + ONE write + ONE batched cloud push.
+// Replaces looping createProfile() (which re-read and re-wrote the entire,
+// ever-growing file per profile — O(n²) synchronous disk I/O that froze the
+// UI on bulk generate, and fired one Supabase request per profile).
+function createProfilesBatch(dataList) {
+  const list = Array.isArray(dataList) ? dataList : [];
+  if (!list.length) return [];
+  const profiles = getProfiles();
+  const created = [];
+  for (let i = 0; i < list.length; i++) {
+    const profile = buildNewProfile(list[i], profiles.length + 1);
+    profiles.push(profile);
+    created.push(profile);
+  }
+  saveProfiles(profiles);            // single write
+  // Single batched cloud push (fire-and-forget) instead of N requests.
+  try {
+    const cloud = require("./cloud-sync");
+    cloud.pushAllProfiles(created.map(sanitizeProfileForSync)).catch(() => {});
+  } catch (_) {}
+  return created;
 }
 
 function updateProfile(id, data) {
@@ -2078,6 +2126,7 @@ module.exports = {
   getDefaultFingerprint,
   getDefaultProxy,
   createProfile,
+  createProfilesBatch,
   updateProfile,
   deleteProfile,
   purgeDeletedProfiles,
