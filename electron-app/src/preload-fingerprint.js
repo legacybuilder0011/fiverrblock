@@ -83,22 +83,48 @@
     }
   } catch (_) {}
 
+  // Defense-in-depth for Electron/Node artifacts. With nodeIntegration:false these
+  // are already absent from page scope (verified via live probe), but if a future
+  // webPreferences change or a subframe ever exposed them, strip ONLY the ones that
+  // carry Electron-specific markers. We deliberately do NOT touch `require`,
+  // `module`, `exports`, or a bare `process` shim — real sites legitimately define
+  // those (RequireJS, webpack/browserify), and blanket-deleting them would break
+  // pages. Electron's real `process` is identifiable by `versions.electron` / `type`.
   try {
-    Object.defineProperty(window, "__privacyShieldProfile", {
-      value: Object.freeze({
-        profileId: config._profileId || "",
-        profileName: config._profileName || "Profile",
-        browser: config._browserApp || "chrome",
-        os: config._uaOS || "Windows",
-        deviceClass: config._deviceClass || "desktop",
-        mobileModel: config._mobileModel || "",
-        screen: config.screen ? `${config.screen.width || ""}x${config.screen.height || ""}` : "",
-        timezone: config.timezone || "",
-        language: config.language || ""
-      }),
-      configurable: false,
-      enumerable: false
+    const _p = window.process;
+    if (_p && typeof _p === "object" && _p.versions && (_p.versions.electron || _p.type === "renderer" || _p.type === "browser")) {
+      try { delete window.process; } catch (_) { try { window.process = undefined; } catch (_) {} }
+    }
+    ["ipcRenderer", "electron", "electronAPI", "__electronApi", "require_electron"].forEach(function (k) {
+      try { if (Object.prototype.hasOwnProperty.call(window, k)) delete window[k]; } catch (_) {}
     });
+  } catch (_) {}
+
+  // Expose the profile meta ONLY on the app's own internal pages (psapp://, e.g.
+  // the new-tab / browser-start page reads it). A `window.__privacyShieldProfile`
+  // global on a real website is a dead giveaway that this is Privacy Shield —
+  // `enumerable:false` does NOT hide it (getOwnPropertyNames and a direct property
+  // read both find it), so it must simply never be defined on real pages.
+  try {
+    let _internalPage = false;
+    try { _internalPage = (location.protocol === "psapp:" || location.protocol === "file:"); } catch (_) {}
+    if (_internalPage) {
+      Object.defineProperty(window, "__privacyShieldProfile", {
+        value: Object.freeze({
+          profileId: config._profileId || "",
+          profileName: config._profileName || "Profile",
+          browser: config._browserApp || "chrome",
+          os: config._uaOS || "Windows",
+          deviceClass: config._deviceClass || "desktop",
+          mobileModel: config._mobileModel || "",
+          screen: config.screen ? `${config.screen.width || ""}x${config.screen.height || ""}` : "",
+          timezone: config.timezone || "",
+          language: config.language || ""
+        }),
+        configurable: false,
+        enumerable: false
+      });
+    }
   } catch (_) {}
 
   if (!config.enabled) return;
