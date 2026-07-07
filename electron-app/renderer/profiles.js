@@ -1395,13 +1395,14 @@ function applyProxyGeoToFingerprint(n) {
   if (n.ispName) setVal("fp-ispName", n.ispName);
   if (n.ispAsn) setVal("fp-ispAsn", n.ispAsn);
   if (n.ispOrg || n.organization) setVal("fp-ispOrg", n.ispOrg || n.organization);
-  // Mobile proxy → lock to Android
+  // Mobile proxy detected — do NOT override the user's device. A desktop browser
+  // on a mobile carrier IP is a normal tethered/hotspot setup and stays coherent,
+  // so we keep whatever OS/device the profile already has instead of forcing
+  // Android (which would switch a PC profile to a phone-size mobile identity).
   if (n.proxyType === "mobile") {
     const os = $("fp-os")?.value;
     if (os && !["android", "ios"].includes(os)) {
-      setVal("fp-os", "android");
-      setVal("fp-browserApp", "chrome");
-      toast("Mobile proxy detected → OS locked to Android");
+      toast("Mobile proxy detected — keeping your desktop device (mobile IP works fine with a PC identity)");
     }
   }
   updateConditionalRows();
@@ -1686,17 +1687,15 @@ function bindFormEvents() {
   $("btnTestProxy").addEventListener("click", testProxy);
   $("btnRandDeviceName").addEventListener("click", () => { $("fp-deviceNameValue").value = randDeviceName(); });
 
-  // Mobile proxy detection: rotation URL filled → suggest Android
+  // Rotation URL implies a mobile proxy, but that does NOT require a mobile
+  // device — a desktop browser on a mobile IP is a normal tethered setup. Respect
+  // the user's chosen OS instead of forcing Android / a phone-size viewport.
   $("px-rotationUrl")?.addEventListener("change", () => {
     const url = ($("px-rotationUrl")?.value || "").trim();
     if (!url) return;
     const os = $("fp-os")?.value;
     if (os && !["android", "ios"].includes(os)) {
-      setVal("fp-os", "android");
-      setVal("fp-browserApp", "chrome");
-      updateConditionalRows();
-      updateUAPreview();
-      toast("Mobile proxy (rotation URL) detected → OS set to Android");
+      toast("Mobile proxy (rotation URL) — keeping your desktop device");
     }
   });
 

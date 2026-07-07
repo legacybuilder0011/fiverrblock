@@ -95,6 +95,7 @@ const TAB_STRIP_URL     = "psapp://app/renderer/tab-strip.html";
 const DESKTOP_CHROME_HEIGHT = 78; // tabs row (38) + url row (40)
 const MOBILE_CHROME_HEIGHT = 56;  // compact address bar only
 const MOBILE_BOTTOM_NAV_HEIGHT = 42; // phone-style bottom navigation bar
+const BUILTIN_CDP_SKIP_HOSTS = ["instagram.com"];
 
 function profileInitials(name) {
   const words = String(name || "Profile").trim().split(/\s+/).filter(Boolean);
@@ -206,6 +207,88 @@ function createProfileOverlayIcon(profile) {
 function startPageUrl(errorMsg, failedUrl) {
   if (!errorMsg) return BROWSER_START_URL;
   return BROWSER_START_URL + "?error=" + encodeURIComponent(errorMsg) + (failedUrl ? "&url=" + encodeURIComponent(failedUrl) : "");
+}
+
+function hostMatches(rawUrl, hosts) {
+  let host = "";
+  try { host = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, ""); } catch (_) { return false; }
+  if (!host) return false;
+  for (const raw of hosts || []) {
+    const entry = String(raw || "").toLowerCase().trim().replace(/^\*?\.?/, "").replace(/^www\./, "");
+    if (entry && (host === entry || host.endsWith("." + entry))) return true;
+  }
+  return false;
+}
+
+function mergeSkipHosts(hosts) {
+  return [...new Set([...BUILTIN_CDP_SKIP_HOSTS, ...(hosts || [])].map((host) => String(host || "").trim()).filter(Boolean))];
+}
+
+function safeWebContentsUrl(wc) {
+  try { return wc && !wc.isDestroyed() ? (wc.getURL() || "") : ""; } catch (_) { return ""; }
+}
+
+function usablePageUrl(rawUrl) {
+  const url = String(rawUrl || "").trim();
+  if (/^(https?|file|psapp):\/\//i.test(url)) return url;
+  return "";
+}
+
+function tabStateUrl(tabEntry) {
+  if (!tabEntry) return "";
+  const wc = tabEntry.view && tabEntry.view.webContents;
+  return usablePageUrl(tabEntry.url) || usablePageUrl(safeWebContentsUrl(wc));
+}
+
+function setTabUrl(tabEntry, rawUrl) {
+  const url = usablePageUrl(rawUrl);
+  if (!url || !tabEntry || tabEntry.url === url) return false;
+  tabEntry.url = url;
+  return true;
+}
+
+function syncTabUrlFromPage(windowId, tabEntry) {
+  if (!tabEntry || tabEntry._urlSyncPending) return;
+  const wc = tabEntry.view && tabEntry.view.webContents;
+  if (!wc || wc.isDestroyed()) return;
+
+  const wcUrl = safeWebContentsUrl(wc);
+  const fromWc = usablePageUrl(tabEntry.url) ? false : setTabUrl(tabEntry, wcUrl);
+  const shouldReadLocation = /^https?:\/\//i.test(tabEntry.url || wcUrl || "");
+  if (!shouldReadLocation) {
+    if (fromWc) emitTabState(windowId);
+    return;
+  }
+
+  tabEntry._urlSyncPending = true;
+  wc.executeJavaScript("window.location.href", true)
+    .then((pageUrl) => {
+      if (setTabUrl(tabEntry, pageUrl) || fromWc) emitTabState(windowId);
+    })
+    .catch(() => {
+      if (fromWc) emitTabState(windowId);
+    })
+    .finally(() => {
+      tabEntry._urlSyncPending = false;
+    });
+}
+
+function queueTabUrlSync(windowId, tabEntry, delays = [50, 350, 1200]) {
+  if (!tabEntry) return;
+  if (!tabEntry._urlSyncTimers) tabEntry._urlSyncTimers = new Set();
+  for (const delay of delays) {
+    const timer = setTimeout(() => {
+      tabEntry._urlSyncTimers.delete(timer);
+      syncTabUrlFromPage(windowId, tabEntry);
+    }, delay);
+    tabEntry._urlSyncTimers.add(timer);
+  }
+}
+
+function clearTabUrlSyncTimers(tabEntry) {
+  if (!tabEntry || !tabEntry._urlSyncTimers) return;
+  for (const timer of tabEntry._urlSyncTimers) clearTimeout(timer);
+  tabEntry._urlSyncTimers.clear();
 }
 
 // profileId → BrowserWindow reference for profile browser windows
@@ -806,7 +889,11 @@ function registerIpcHandlers() {
     const active = winId != null ? getActiveTab(winId) : null;
     if (!active) return { ok: false };
     const target = url === "home" ? startPageUrl() : url;
+    setTabUrl(active, target);
+    active.loading = true;
+    emitTabState(winId);
     active.view.webContents.loadURL(target);
+    queueTabUrlSync(winId, active, [50, 350, 1200]);
     return { ok: true };
   });
 
@@ -874,7 +961,7 @@ function registerIpcHandlers() {
         return {
           id: t.id,
           title: alive ? (wc.getTitle() || t.url || "New tab") : t.title,
-          url: alive ? wc.getURL() : t.url,
+          url: alive ? tabStateUrl(t) : t.url,
           canBack: alive ? wcCanGoBack(wc) : false,
           canForward: alive ? wcCanGoForward(wc) : false,
           loading: alive ? wc.isLoadingMainFrame() : false
@@ -1710,7 +1797,7 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
         for (const t of state.tabs) {
           try {
             const wc = t && t.view && t.view.webContents;
-            const url = wc && !wc.isDestroyed() ? wc.getURL() : (t && t.url) || "";
+            const url = wc && !wc.isDestroyed() ? tabStateUrl(t) : (t && t.url) || "";
             if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
               tabs.push({ url, title: (t && t.title) || "" });
             }
@@ -1808,7 +1895,7 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
     const state = windowTabState.get(win.id);
     if (state) {
       const tabs = state.tabs.map((t) => ({
-        url: !t.view.webContents.isDestroyed() ? t.view.webContents.getURL() : "",
+        url: !t.view.webContents.isDestroyed() ? tabStateUrl(t) : "",
         title: !t.view.webContents.isDestroyed() ? t.view.webContents.getTitle() : ""
       })).filter((t) => t.url && (t.url.startsWith("http://") || t.url.startsWith("https://")));
       if (tabs.length) {
@@ -1822,6 +1909,7 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
     const state = windowTabState.get(win.id);
     if (state) {
       for (const t of state.tabs) {
+        try { clearTabUrlSyncTimers(t); } catch (_) {}
         try { webContentsProfileMap.delete(t.view.webContents.id); } catch (_) {}
       }
       windowTabState.delete(win.id);
@@ -1931,12 +2019,14 @@ function addTab(windowId, url) {
   // aggressive detection — we DON'T attach CDP at all: the top-frame preload spoof
   // is enough, and skipping CDP removes the biggest remaining "you are a bot" tell.
   // Full-spoof profiles keep CDP for iframe/worker coverage (farming/linkability).
-  let skipHosts = [];
+  let skipHosts = mergeSkipHosts([]);
   try {
     const cfg = profile ? store.buildConfigFromProfile(profile) : null;
-    if (cfg) skipHosts = Array.isArray(cfg._spoofSkipHosts) ? cfg._spoofSkipHosts.filter(Boolean) : [];
+    if (cfg) skipHosts = mergeSkipHosts(Array.isArray(cfg._spoofSkipHosts) ? cfg._spoofSkipHosts.filter(Boolean) : []);
     if (cfg && cfg._stealth === true) {
       logError(`cdp-stealth skipped (stealth profile — no debugger footprint) profile=${cfg._profileId || "?"}`);
+    } else if (cfg && hostMatches(url || "", skipHosts)) {
+      logError(`cdp-stealth skipped for sensitive host profile=${cfg._profileId || "?"} url=${url || ""}`);
     } else if (cfg) {
       cdpStealth.attachStealth(view.webContents, cfg, logError).catch((err) => {
         logError(`cdp-stealth attachStealth threw: ${err && (err.message || err)}`);
@@ -1980,11 +2070,41 @@ function addTab(windowId, url) {
 
   // Reload tab strip on tab/page events
   const wc = view.webContents;
-  wc.on("page-title-updated", (_e, title) => { tabEntry.title = title; emitTabState(windowId); });
-  wc.on("did-navigate", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
-  wc.on("did-navigate-in-page", (_e, navUrl) => { tabEntry.url = navUrl; emitTabState(windowId); });
-  wc.on("did-start-loading", () => { tabEntry.loading = true; emitTabState(windowId); });
-  wc.on("did-stop-loading", () => { tabEntry.loading = false; emitTabState(windowId); });
+  wc.on("page-title-updated", (_e, title) => {
+    tabEntry.title = title;
+    queueTabUrlSync(windowId, tabEntry, [0]);
+    emitTabState(windowId);
+  });
+  wc.on("did-start-navigation", (_e, navUrl, _isInPlace, isMainFrame) => {
+    if (isMainFrame && setTabUrl(tabEntry, navUrl)) emitTabState(windowId);
+    if (isMainFrame) queueTabUrlSync(windowId, tabEntry, [50, 350, 1200]);
+  });
+  wc.on("did-redirect-navigation", (_e, navUrl, _isInPlace, isMainFrame) => {
+    if (isMainFrame && setTabUrl(tabEntry, navUrl)) emitTabState(windowId);
+    if (isMainFrame) queueTabUrlSync(windowId, tabEntry, [50, 350]);
+  });
+  wc.on("did-frame-navigate", (_e, navUrl, _httpResponseCode, _httpStatusText, isMainFrame) => {
+    if (isMainFrame && setTabUrl(tabEntry, navUrl)) emitTabState(windowId);
+    if (isMainFrame) queueTabUrlSync(windowId, tabEntry, [50, 350]);
+  });
+  wc.on("did-navigate", (_e, navUrl) => {
+    if (setTabUrl(tabEntry, navUrl)) emitTabState(windowId);
+    queueTabUrlSync(windowId, tabEntry, [50, 350]);
+  });
+  wc.on("did-navigate-in-page", (_e, navUrl) => {
+    if (setTabUrl(tabEntry, navUrl)) emitTabState(windowId);
+    queueTabUrlSync(windowId, tabEntry, [50, 350, 1200]);
+  });
+  wc.on("did-start-loading", () => {
+    tabEntry.loading = true;
+    queueTabUrlSync(windowId, tabEntry, [50, 350, 1200]);
+    emitTabState(windowId);
+  });
+  wc.on("did-stop-loading", () => {
+    tabEntry.loading = false;
+    queueTabUrlSync(windowId, tabEntry, [0, 150, 700]);
+    emitTabState(windowId);
+  });
   wc.setWindowOpenHandler(({ url: u }) => { addTab(windowId, u); return { action: "deny" }; });
 
   // F12 / Ctrl+Shift+I — open DevTools for the active tab. Needed for
@@ -2054,6 +2174,7 @@ function addTab(windowId, url) {
   // The fingerprint preload (runs before any page JS) covers JS-level spoofing.
   // CDP overrides are applied concurrently and take effect before page scripts run.
   if (!wc.isDestroyed()) wc.loadURL(url || startPageUrl());
+  queueTabUrlSync(windowId, tabEntry, [50, 350, 1200]);
   if (profile) applyTabEmulation(wc, profile, win).catch(logError);
 
   emitTabState(windowId);
@@ -2110,6 +2231,7 @@ function closeTab(windowId, tabId, { crashRecovery = false } = {}) {
   const idx = state.tabs.findIndex((t) => t.id === tabId);
   if (idx === -1) return;
   const tab = state.tabs[idx];
+  clearTabUrlSyncTimers(tab);
   try { webContentsProfileMap.delete(tab.view.webContents.id); } catch (_) {}
   try { win.contentView.removeChildView(tab.view); } catch (_) {}
   try { tab.view.webContents.close(); } catch (_) {}
@@ -2169,7 +2291,7 @@ function emitTabState(windowId) {
     return {
       id: t.id,
       title: alive ? (wc.getTitle() || t.url || "New tab") : t.title,
-      url: alive ? wc.getURL() : t.url,
+      url: alive ? tabStateUrl(t) : t.url,
       canBack: alive ? wcCanGoBack(wc) : false,
       canForward: alive ? wcCanGoForward(wc) : false,
       loading: alive ? wc.isLoadingMainFrame() : false
@@ -2321,7 +2443,7 @@ async function saveWindowSession(profileId, win) {
     const tabs = state.tabs.map((t) => {
       const wc = t.view.webContents;
       if (wc.isDestroyed()) return null;
-      const url = wc.getURL();
+      const url = tabStateUrl(t);
       if (!url || !(url.startsWith("http://") || url.startsWith("https://"))) return null;
       return { url, title: wc.getTitle(), active: t.id === state.activeTabId };
     }).filter(Boolean);
