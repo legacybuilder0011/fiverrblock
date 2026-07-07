@@ -227,6 +227,10 @@ html, body {
 .chip.status-work      { background: #451a03; color: #fb923c; }
 .chip.status-suspended { background: #450a0a; color: #f87171; }
 .chip.proxy-on         { background: #1e3a5f; color: #38bdf8; }
+/* Exit-IP badges: neutral = unique IP, dup = shared with another profile, untested = proxy on but IP not detected yet */
+.chip.ip-badge   { background: #0f2e3a; color: #67e8f9; cursor: help; font-variant-numeric: tabular-nums; }
+.chip.ip-dup     { background: #450a0a; color: #f87171; cursor: help; font-variant-numeric: tabular-nums; border-color: #7f1d1d; }
+.chip.ip-untested{ background: #1e293b; color: #94a3b8; cursor: help; }
 /* Antidetect strength badge */
 .chip.str-strong { background: #14532d; color: #4ade80; cursor: help; }
 .chip.str-good   { background: #1e3a2f; color: #86efac; cursor: help; }

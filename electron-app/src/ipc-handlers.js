@@ -432,10 +432,10 @@ function registerIpcHandlers() {
 
   // ── Window management ─────────────────────────────────────────────────────────
 
-  ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url, acceptNewLocation } = {}) => {
-    logError(`PROFILE_OPEN_WINDOW start profileId=${profileId} url=${url || "<none>"} acceptNewLocation=${Boolean(acceptNewLocation)}`);
+  ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url, acceptNewLocation, acceptSharedIp } = {}) => {
+    logError(`PROFILE_OPEN_WINDOW start profileId=${profileId} url=${url || "<none>"} acceptNewLocation=${Boolean(acceptNewLocation)} acceptSharedIp=${Boolean(acceptSharedIp)}`);
     try {
-      const result = await openProfileWindow(profileId, url, { acceptNewLocation: Boolean(acceptNewLocation) });
+      const result = await openProfileWindow(profileId, url, { acceptNewLocation: Boolean(acceptNewLocation), acceptSharedIp: Boolean(acceptSharedIp) });
       logError(`PROFILE_OPEN_WINDOW result ok=${result?.ok} err=${result?.error || ""}`);
       return result;
     } catch (err) {
@@ -1386,13 +1386,54 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   if (!profile) return { ok: false, error: "Profile not found" };
 
   // ── Required fields & consistency checks ─────────────────────────────────────
-  const px = profile.proxy || {};
+  let px = profile.proxy || {};
   const networkMode = px.networkMode || (px.enabled ? "proxy" : "direct");
   if (networkMode === "proxy" && px.enabled) {
     if (!px.host || !px.port) {
       return { ok: false, error: "Proxy is enabled but host/port are missing. Fill them in the Proxy tab and click Test, then save." };
     }
   }
+  // ── Proxy geo auto-detection at launch ──────────────────────────────────────
+  // For proxy profiles the exit is the proxy itself (not the OS network), so the
+  // VPN location lock below — which reads the system connection — can't see it.
+  // Route an IP-geo lookup THROUGH the proxy every launch and refresh the
+  // detected* fields, so "Auto (from VPN / proxy IP)" timezone / language /
+  // geolocation resolve to the proxy's REAL current location instead of a stale
+  // Test result (or nothing, if the user never clicked Test). Placeholders are
+  // expanded with this profile so the sticky session ID matches the browser's.
+  if (networkMode === "proxy" && px.enabled && px.host && px.port) {
+    try {
+      const expandedUser = sessionMgr.expandProxyPlaceholders(px.username, profile);
+      const geo = await detectProxyGeo({
+        host: px.host, port: px.port, scheme: px.scheme,
+        username: expandedUser, password: px.password
+      });
+      if (geo && geo.countryCode) {
+        const updated = store.updateProfile(profileId, {
+          proxy: {
+            detectedCountryCode: geo.countryCode,
+            detectedCountry: geo.country,
+            detectedCity: geo.city,
+            detectedState: geo.state,
+            detectedTimezone: geo.timezone,
+            detectedLatitude: geo.latitude,
+            detectedLongitude: geo.longitude,
+            detectedIp: geo.ip,
+            proxyType: geo.proxyType || (geo.isMobile ? "mobile" : ""),
+            detectedAt: Date.now()
+          }
+        });
+        if (updated) { profile = updated; px = profile.proxy || {}; }
+      } else {
+        logError(`proxy geo auto-detect returned nothing profile=${profileId} host=${px.host}:${px.port}`);
+      }
+    } catch (err) {
+      // Non-fatal: fall back to whatever was last detected. Never block a launch
+      // just because the geo API was unreachable.
+      logError(`proxy geo auto-detect failed profile=${profileId}: ${err && (err.message || err)}`);
+    }
+  }
+
   // Geo consistency: runs for both proxy and VPN modes
   if ((networkMode === "proxy" || networkMode === "vpn") && px.detectedCountryCode && profile.fingerprint) {
     const fp = profile.fingerprint;
@@ -1505,6 +1546,38 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
       const updated = store.updateProfile(profileId, patch);
       if (updated) profile = updated; // use the fresh object for THIS launch's session/config
     } catch (_) {}
+  }
+
+  // ── Same-exit-IP collision guard ────────────────────────────────────────────
+  // Two profiles sharing ONE exit IP are linkable no matter how distinct their
+  // fingerprints are — the dominant multi-account tell ("all these accounts come
+  // from one machine"). By this point the exit IP is freshly known: proxy mode
+  // refreshed it via the auto-detect above, vpn/direct via the location lock.
+  // Warn (not block) if another saved profile is already on the same IP so the
+  // user can give this profile its own proxy — or knowingly launch anyway.
+  if (!options.acceptSharedIp) {
+    const thisIp = String((profile.proxy && profile.proxy.detectedIp) || "").trim();
+    if (thisIp) {
+      const clash = store.getProfiles().find((p) =>
+        p.id !== profileId && !p.deletedAt &&
+        String((p.proxy && p.proxy.detectedIp) || "").trim() === thisIp
+      );
+      if (clash) {
+        const otherWin = profileWindows.get(clash.id);
+        const otherOpen = Boolean(otherWin && !otherWin.isDestroyed());
+        logError(`ip collision profile=${profileId} shares ip=${thisIp} with profile=${clash.id} (${clash.name || ""}) open=${otherOpen}`);
+        return {
+          ok: false,
+          needsIpConfirm: true,
+          profileId,
+          profileName: profile.name || "Profile",
+          sharedIp: thisIp,
+          otherProfileId: clash.id,
+          otherProfileName: clash.name || "Another profile",
+          otherProfileOpen: otherOpen
+        };
+      }
+    }
   }
 
   let sess;
@@ -2405,6 +2478,45 @@ async function configureTempProxySession(tempSess, bridgeId, { host, port, schem
   return () => {};
 }
 
+// Detect the real exit location of a proxy by routing an IP-geo lookup THROUGH
+// it. `username` should already have any {{profile}} placeholders expanded so the
+// sticky session ID matches the one the browser will use — otherwise a rotating
+// provider could hand back a different exit IP than the profile actually runs on.
+// Returns a normalized network capture (ip/country/timezone/lat/lng/…) or null.
+async function detectProxyGeo({ host, port, scheme, username, password } = {}) {
+  if (!host || !port) return null;
+  const { session: electronSession } = require("electron");
+  const partitionId = "proxy-geo-launch-" + Date.now();
+  const tempSess = electronSession.fromPartition(partitionId, { cache: false });
+  let cleanupProxy = () => {};
+  try {
+    cleanupProxy = await configureTempProxySession(tempSess, partitionId, { host, port, scheme, username, password });
+  } catch (_) {
+    return null;
+  }
+  const GEO_URLS = [
+    "http://ip-api.com/json/?fields=status,message,continent,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,mobile,proxy,hosting,query",
+    "https://ipwho.is/",
+    "https://ipapi.co/json/"
+  ];
+  try {
+    for (const geoUrl of GEO_URLS) {
+      const result = await fetchJsonViaProxy(geoUrl, tempSess, username, password);
+      if (result.ok && result.data) {
+        const n = normalizeNetworkCapture(result.data);
+        if (n.ip) {
+          n.proxyType = detectProxyType(n.ispName, n.ispAsn, n.organization);
+          return n;
+        }
+      }
+      if (result.fatal) break;
+    }
+  } finally {
+    cleanupProxy();
+  }
+  return null;
+}
+
 async function testProxy(host, port, scheme, username, password) {
   if (!host || !port) return { ok: false, error: "missing host or port" };
 
@@ -2862,4 +2974,4 @@ function tryTestUrl(url, session, username, password) {
   });
 }
 
-module.exports = { registerIpcHandlers, openProfileWindow };
+module.exports = { registerIpcHandlers, openProfileWindow, detectProxyGeo, captureCurrentNetwork, classifyConnection };

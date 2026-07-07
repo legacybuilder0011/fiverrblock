@@ -240,7 +240,9 @@ async function restoreOpenProfiles() {
     const profile = profiles.find((p) => p.id === id && !p.deletedAt);
     // Only restore profiles that have a real saved session (user was actually browsing)
     if (profile && profile.session && profile.session.tabs && profile.session.tabs.length) {
-      try { await openProfileWindow(id); } catch (_) {}
+      // Bypass the same-IP confirm on startup restore — these windows were open
+      // (and their IP already accepted) in the previous session.
+      try { await openProfileWindow(id, undefined, { acceptSharedIp: true }); } catch (_) {}
     }
   }
 }

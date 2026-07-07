@@ -945,20 +945,64 @@
 
   // ── Canvas ────────────────────────────────────────────────────────────────────
   if (config.blockCanvas) {
+    // Native handles captured BEFORE the wraps below replace them, so the WebGL
+    // snapshot path can read/encode without re-entering our own noised overrides
+    // (which would double-apply noise or recurse).
+    const _natToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    const _natToBlob = HTMLCanvasElement.prototype.toBlob;
+    const _natGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+    const applyLsbNoise = (d) => {
+      for (let i = 0; i < d.length; i += 4) { if (stableNoise(i) < 0.01) d[i] ^= 1; if (stableNoise(i + 1) < 0.01) d[i + 1] ^= 1; if (stableNoise(i + 2) < 0.01) d[i + 2] ^= 1; }
+    };
     const noiseAndRead = (canvas, ctx, origFn, args) => {
       const w = canvas.width, h = canvas.height;
       if (!w || !h || !ctx) return origFn.apply(canvas, args);
       const imgData = ctx.getImageData(0, 0, w, h);
       const backup = new Uint8ClampedArray(imgData.data);
-      const d = imgData.data;
-      for (let i = 0; i < d.length; i += 4) { if (stableNoise(i) < 0.01) d[i] ^= 1; if (stableNoise(i + 1) < 0.01) d[i + 1] ^= 1; if (stableNoise(i + 2) < 0.01) d[i + 2] ^= 1; }
+      applyLsbNoise(imgData.data);
       ctx.putImageData(imgData, 0, 0);
       const result = origFn.apply(canvas, args);
       const restore = ctx.createImageData(w, h); restore.data.set(backup); ctx.putImageData(restore, 0, 0);
       return result;
     };
-    wrap(HTMLCanvasElement.prototype, "toDataURL", (orig) => function (...args) { try { const ctx = this.getContext("2d"); if (ctx) return noiseAndRead(this, ctx, orig, args); } catch (_) {} return orig.apply(this, args); });
-    wrap(HTMLCanvasElement.prototype, "toBlob", (orig) => function (cb, ...rest) { try { const ctx = this.getContext("2d"); if (ctx) { const w = this.width, h = this.height; if (w && h) { const imgData = ctx.getImageData(0, 0, w, h); const backup = new Uint8ClampedArray(imgData.data); const d = imgData.data; for (let i = 0; i < d.length; i += 4) { if (stableNoise(i) < 0.01) d[i] ^= 1; if (stableNoise(i + 1) < 0.01) d[i + 1] ^= 1; if (stableNoise(i + 2) < 0.01) d[i + 2] ^= 1; } ctx.putImageData(imgData, 0, 0); const r = orig.call(this, cb, ...rest); const restore = ctx.createImageData(w, h); restore.data.set(backup); ctx.putImageData(restore, 0, 0); return r; } } } catch (_) {} return orig.call(this, cb, ...rest); });
+    // A WebGL/WebGL2-backed canvas can't yield a 2D context, so the pixel-noise
+    // path above never fired for it — meaning two profiles on ONE physical GPU
+    // produced an IDENTICAL WebGL image hash via toDataURL/toBlob and were
+    // linkable. Fix: snapshot the live WebGL frame onto a scratch 2D canvas with
+    // drawImage (synchronous, captures the current drawing buffer), apply the
+    // same per-profile LSB noise, then encode the scratch with the NATIVE
+    // encoder. Result: every profile's WebGL image hash is distinct-but-stable.
+    const snapshotWebglNoised = (srcCanvas) => {
+      if (typeof document === "undefined") return null;
+      const w = srcCanvas.width, h = srcCanvas.height;
+      if (!w || !h) return null;
+      const scratch = document.createElement("canvas");
+      scratch.width = w; scratch.height = h;
+      const sctx = scratch.getContext("2d");
+      if (!sctx) return null;
+      sctx.drawImage(srcCanvas, 0, 0);
+      const img = _natGetImageData.call(sctx, 0, 0, w, h);
+      applyLsbNoise(img.data);
+      sctx.putImageData(img, 0, 0);
+      return scratch;
+    };
+    wrap(HTMLCanvasElement.prototype, "toDataURL", (orig) => function (...args) {
+      try {
+        const ctx = this.getContext("2d");
+        if (ctx) return noiseAndRead(this, ctx, orig, args);
+        const scratch = snapshotWebglNoised(this);
+        if (scratch) return _natToDataURL.apply(scratch, args);
+      } catch (_) {}
+      return orig.apply(this, args);
+    });
+    wrap(HTMLCanvasElement.prototype, "toBlob", (orig) => function (cb, ...rest) {
+      try {
+        const ctx = this.getContext("2d");
+        if (ctx) { const w = this.width, h = this.height; if (w && h) { const imgData = ctx.getImageData(0, 0, w, h); const backup = new Uint8ClampedArray(imgData.data); applyLsbNoise(imgData.data); ctx.putImageData(imgData, 0, 0); const r = orig.call(this, cb, ...rest); const restore = ctx.createImageData(w, h); restore.data.set(backup); ctx.putImageData(restore, 0, 0); return r; } }
+        else { const scratch = snapshotWebglNoised(this); if (scratch) return _natToBlob.call(scratch, cb, ...rest); }
+      } catch (_) {}
+      return orig.call(this, cb, ...rest);
+    });
     wrap(CanvasRenderingContext2D.prototype, "getImageData", (orig) => function (...args) { const imgData = orig.apply(this, args); try { const d = imgData.data; for (let i = 0; i < d.length; i += 4) { if (stableNoise(i) < 0.005) d[i] ^= 1; if (stableNoise(i + 1) < 0.005) d[i + 1] ^= 1; if (stableNoise(i + 2) < 0.005) d[i + 2] ^= 1; } } catch (_) {} return imgData; });
     // OffscreenCanvas — used by headless fingerprinting scripts; apply same noise
     try {

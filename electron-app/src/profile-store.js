@@ -1304,7 +1304,12 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
   // desktop OS still carrying mobile-only traits from a previous mobile pick.
   {
     // 1) WebGL GPU must match the OS family — re-pick a matching one if not.
-    if (fp.webglInfo === "manual" && fp.webglRenderer && !webglRendererMatchesOs(fp.webglRenderer, osName)) {
+    //    Enforced regardless of webglInfo mode ("manual"/"noise"/"real"): a stored
+    //    renderer that contradicts the OS (e.g. an Apple/Metal string on a Windows
+    //    profile, or a Direct3D11 string on macOS) is an instant ban tell wherever
+    //    it surfaces — runtime injection, coherence audits, or cloud sync — so it
+    //    must never persist, even when the user picked noise/passthrough mode.
+    if (fp.webglRenderer && !webglRendererMatchesOs(fp.webglRenderer, osName)) {
       const webgl = randomWebglForOs(osName);
       fp.webglVendor = webgl.vendor;
       fp.webglRenderer = webgl.renderer;

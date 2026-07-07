@@ -583,5 +583,6 @@ module.exports = {
   getProfileForWindow,
   getWindowForProfile,
   getAllProfileWindows,
-  getDownloadDirectory
+  getDownloadDirectory,
+  expandProxyPlaceholders
 };

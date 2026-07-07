@@ -426,6 +426,14 @@ function renderList() {
     return;
   }
 
+  // Count each detected exit IP across ALL profiles (not just the filtered view)
+  // so a shared-IP badge fires even when the other profile is filtered out.
+  const ipCounts = {};
+  for (const pr of profiles) {
+    const ip = String(pr.proxy?.detectedIp || "").trim();
+    if (ip) ipCounts[ip] = (ipCounts[ip] || 0) + 1;
+  }
+
   for (const p of filtered) {
     const isActive = p.id === selectedId;
     const isAssigned = p.id === tabAssignedProfileId;
@@ -447,6 +455,23 @@ function renderList() {
     const strengthTitle = `Antidetect strength ${st.score}/100 (${st.grade})` + (st.reasons.length ? " — fix: " + st.reasons.join("; ") : " — no issues found");
     const strengthBadge = `<span class="chip ${st.cls}" title="${escHtml(strengthTitle)}">&#128737; ${st.score}</span>`;
 
+    // Exit-IP badge: the fastest way to eyeball whether two profiles share an IP
+    // (which links them regardless of fingerprint). Red ⚠ = shared with another
+    // profile; cyan 🌐 = unique to this profile; grey = proxy on but not tested yet.
+    const pxMode = p.proxy?.networkMode || (p.proxy?.enabled ? "proxy" : "direct");
+    const detIp = String(p.proxy?.detectedIp || "").trim();
+    let ipBadge = "";
+    if (detIp) {
+      const dup = (ipCounts[detIp] || 0) > 1;
+      const cc = p.proxy?.detectedCountryCode ? String(p.proxy.detectedCountryCode).toUpperCase() : "";
+      const ipTitle = dup
+        ? `Shared exit IP ${detIp} — ${ipCounts[detIp]} profiles use it. Accounts on one IP can be linked as the same person. Give each profile its own proxy.`
+        : `Exit IP ${detIp}${cc ? " (" + cc + ")" : ""} — unique to this profile.`;
+      ipBadge = `<span class="chip ${dup ? "ip-dup" : "ip-badge"}" title="${escHtml(ipTitle)}">${dup ? "&#9888;&#65039; " : "&#127760; "}${escHtml(detIp)}${cc ? " " + escHtml(cc) : ""}</span>`;
+    } else if (pxMode === "proxy" && p.proxy?.enabled) {
+      ipBadge = `<span class="chip ip-untested" title="Proxy set but exit IP not detected yet — open this profile and click Test &amp; Detect on the Proxy tab.">&#127760; IP not tested</span>`;
+    }
+
     card.innerHTML = `
       <input type="checkbox" class="pm-card-check" data-id="${p.id}" />
       <div class="pm-card-body">
@@ -457,6 +482,7 @@ function renderList() {
           ${osChip(p.os)}
           ${statusChip(p.status)}
           ${proxyBadge}
+          ${ipBadge}
           ${incogBadge}
           ${runningBadge}
           ${assignedBadge}
@@ -2060,6 +2086,29 @@ async function openProfileWindow(profileId) {
       // back to the last location, then clicks Start again.
       setLaunchError("Launch cancelled. Switch your VPN to " + locationText(r.last) + ", then click Start.");
       toast("Launch cancelled — VPN location not changed");
+      if (btn) { btn.textContent = "Start"; btn.disabled = false; }
+      return;
+    }
+  }
+
+  // Same-exit-IP collision: another profile is already on this exact IP. Sharing
+  // one IP links the accounts no matter how distinct the fingerprints are, so
+  // make the user decide before the browser opens.
+  if (r.needsIpConfirm) {
+    const openNote = r.otherProfileOpen ? " (currently open)" : "";
+    const proceed = confirm(
+      "⚠ Same IP as another profile\n\n" +
+      "\"" + (r.profileName || "This profile") + "\" would launch on IP " + r.sharedIp + ",\n" +
+      "which \"" + (r.otherProfileName || "another profile") + "\"" + openNote + " is also using.\n\n" +
+      "Two profiles on one IP can be linked as the same person — give this profile its own proxy for real separation.\n\n" +
+      "Launch anyway on the shared IP?"
+    );
+    if (proceed) {
+      if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
+      r = await msg("PROFILE_OPEN_WINDOW", { profileId, acceptSharedIp: true });
+    } else {
+      setLaunchError("Launch cancelled — this profile shares IP " + r.sharedIp + " with \"" + (r.otherProfileName || "another profile") + "\". Give it its own proxy in the Proxy tab, then click Start.");
+      toast("Launch cancelled — shared IP");
       if (btn) { btn.textContent = "Start"; btn.disabled = false; }
       return;
     }
