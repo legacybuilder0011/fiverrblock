@@ -1209,6 +1209,61 @@ function versionForBrowser(browser, osName) {
   return String(randomChoice(majors));
 }
 
+// Recent real-world Chrome full versions, newest first, with population weights
+// (most users are on the newest, a realistic minority trail behind). Two Chrome
+// users on the same version share a byte-identical UA — that's correct and NOT a
+// linking signal (the UA is frozen/low-entropy). But a whole batch of profiles on
+// the EXACT same build looks like one cloned image, so we spread them across the
+// recent releases, seeded per profile (stable per profile, varied across).
+const CHROME_VERSION_POOL = [
+  { v: "150.0.7871.46", w: 46 },
+  { v: "149.0.7793.140", w: 30 },
+  { v: "148.0.7778.215", w: 17 },
+  { v: "147.0.7712.108", w: 7 }
+];
+// Per-profile Sec-CH-UA-Platform-Version (high-entropy client hint). The UA string
+// itself stays frozen (macOS → 10_15_7, Windows → 10.0), but this hint carries the
+// real OS version, so varying it per profile adds realistic diversity.
+const MAC_PLATFORM_VERSIONS = [
+  { v: "15.2.0", w: 34 }, { v: "15.1.1", w: 26 }, { v: "14.6.1", w: 22 }, { v: "14.5.0", w: 12 }, { v: "13.6.9", w: 6 }
+];
+const WIN_PLATFORM_VERSIONS = [
+  { v: "15.0.0", w: 60 }, { v: "14.0.0", w: 22 }, { v: "10.0.0", w: 18 }  // Win11 (15/14) vs Win10 (10) in CH terms
+];
+
+// Highest Chrome major an engine can honestly advertise. The patched-chromium
+// engine is a real Chrome 148 binary, so it must never claim a newer version
+// (advertising features it doesn't have is itself a tell); claiming OLDER is safe.
+function engineMaxChromeMajor(engine) {
+  return String(engine || "").toLowerCase() === "patched-chromium" ? 148 : 9999;
+}
+
+// The exact Chrome version of the bundled patched-chromium binary. Patched-engine
+// profiles report EXACTLY this (matching the real binary) rather than a spread —
+// there is only one binary, and claiming a version it isn't is the thing to avoid.
+// Keep in sync with real-browser-manager.PATCHED_VERSION.
+const PATCHED_CHROMIUM_FULL_VERSION = "148.0.7778.215";
+
+// Seeded, stable-per-profile Chrome full version, capped at the engine's real max.
+function pickChromeVersionForProfile(seed, engine, browser, osName) {
+  const b = String(browser || "chrome").toLowerCase();
+  if (b === "safari") return LATEST_SAFARI;
+  if (String(engine || "").toLowerCase() === "patched-chromium") return PATCHED_CHROMIUM_FULL_VERSION;
+  const cap = engineMaxChromeMajor(engine);
+  const pool = CHROME_VERSION_POOL.filter((x) => Number(String(x.v).split(".")[0]) <= cap);
+  const usable = pool.length ? pool : [{ v: latestVersionFor(browser, osName), w: 1 }];
+  return pickWeighted(profileSeededInt(seed, "chromever"), usable.map((x) => [x.v, x.w]));
+}
+
+// Seeded, stable-per-profile OS platform version for the Sec-CH-UA-Platform-Version
+// client hint (desktop only). Empty for mobile (handled by device profiles).
+function pickPlatformVersionForProfile(seed, osName) {
+  const os = String(osName || "").toLowerCase();
+  const pool = os === "macos" ? MAC_PLATFORM_VERSIONS : os === "windows" ? WIN_PLATFORM_VERSIONS : null;
+  if (!pool) return "";
+  return pickWeighted(profileSeededInt(seed, "platver"), pool.map((x) => [x.v, x.w]));
+}
+
 function screenForOs(osName) {
   if (osName === "android") {
     const device = randomChoice(ANDROID_DEVICE_PROFILES);
@@ -1856,14 +1911,22 @@ function buildConfigFromProfile(profile) {
     // "150.0.7871.46") is treated as a deliberate pin and kept as-is.
     let bv = fp.browserVersion;
     if (!bv || bv === "auto" || !String(bv).includes(".")) {
-      bv = latestVersionFor(_browserDef, profile.os || "windows");
+      // Seeded per-profile spread across recent real Chrome releases (stable per
+      // profile), capped at the engine's real version so we never claim a build
+      // newer than the engine actually is (patched-chromium is Chrome 148).
+      bv = pickChromeVersionForProfile(_seedDef, profile.engine, _browserDef, profile.os || "windows");
     }
     const built = buildProfileUA(profile.os || "windows", bv, _browserDef, fp);
     cfg.userAgent = built.ua;
     cfg.platform = built.platform;
     cfg._uaOS = built.os;
     cfg._uaVersion = built.version;
-    cfg._platformVersion = built.platformVersion || cfg._platformVersion;
+    // Desktop Sec-CH-UA-Platform-Version: seeded per profile when not manually set
+    // (the frozen UA string stays 10_15_7 / Windows 10.0 — only this hint varies).
+    cfg._platformVersion = built.platformVersion
+      || (fp.platformVersion && fp.platformVersion !== "" ? fp.platformVersion : "")
+      || (!_isMobileDef ? pickPlatformVersionForProfile(_seedDef, profile.os || "windows") : "")
+      || cfg._platformVersion;
     cfg._mobile = Boolean(built.mobile);
     cfg._mobileModel = built.model || cfg._mobileModel;
   }

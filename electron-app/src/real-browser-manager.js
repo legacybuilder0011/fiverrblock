@@ -433,6 +433,7 @@ function patchedFingerprintArgs(profile, cfg) {
   const brand = "Chrome";
   args.push(`--fingerprint-brand=${brand}`);
   if (cfg && cfg._uaVersion) args.push(`--fingerprint-brand-version=${cfg._uaVersion}`);
+  if (cfg && cfg._platformVersion) args.push(`--fingerprint-platform-version=${cfg._platformVersion}`);
   if (cfg && typeof cfg.hardwareConcurrency === "number") args.push(`--fingerprint-hardware-concurrency=${cfg.hardwareConcurrency}`);
   if (cfg && cfg.timezone && /^[A-Za-z]+\/[A-Za-z_+-]+/.test(cfg.timezone)) args.push(`--timezone=${cfg.timezone}`);
   return { args, seed };
