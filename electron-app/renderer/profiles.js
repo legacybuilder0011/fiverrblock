@@ -159,9 +159,9 @@ async function init() {
         const name = payload.profileName || "Profile";
         alert(`⚠️ ${name} was closed\n\n${payload.reason || "The VPN connection dropped."}`);
       } else if (payload.type === "PATCHED_ENGINE_PROGRESS") {
-        // Live progress for the one-time Patched Chromium engine download.
-        const btn = $("btnOpenWindow");
-        if (btn && !payload.done && typeof payload.pct === "number") btn.textContent = `Downloading engine… ${payload.pct}%`;
+        // Live progress for the one-time Patched Chromium engine download → the
+        // download modal's progress bar (see runPatchedEngineDownload).
+        patchedProgressUpdate(payload.pct, payload.done);
       }
     });
   }
@@ -2115,6 +2115,91 @@ function showVpnLocationConfirm(r) {
   });
 }
 
+// ── Patched Chromium engine download (first-run) ────────────────────────────
+// A prominent modal: confirm → live progress bar → done. Replaces the old
+// confirm()+button-text approach, which updated the wrong button (the card's
+// Start button is not #btnOpenWindow) so the user saw no progress and re-clicked.
+let patchedDownloadActive = false;
+let patchedProgressEl = null;
+
+// Called from the MAIN_EVENT dispatcher on PATCHED_ENGINE_PROGRESS.
+function patchedProgressUpdate(pct, done) {
+  if (!patchedProgressEl) return;
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  if (done || p >= 100) {
+    patchedProgressEl.bar.style.width = "100%";
+    patchedProgressEl.label.textContent = "Installing engine… (extracting, ~1 min)";
+  } else {
+    patchedProgressEl.bar.style.width = p + "%";
+    patchedProgressEl.label.textContent = "Downloading engine… " + p + "%";
+  }
+}
+
+function runPatchedEngineDownload() {
+  return new Promise((resolve) => {
+    if (patchedDownloadActive) { toast("Engine is already downloading…"); return resolve({ ok: false, busy: true }); }
+    const existing = $("patchedDlModal"); if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "patchedDlModal";
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;" +
+      "justify-content:center;background:rgba(4,6,10,.72);backdrop-filter:blur(2px);";
+    overlay.innerHTML =
+      '<div style="width:460px;max-width:92vw;background:#11151c;border:1px solid #2a3340;' +
+      'border-radius:14px;padding:22px 22px 18px;box-shadow:0 18px 60px rgba(0,0,0,.55);' +
+      'font-family:inherit;color:#e7edf5;">' +
+        '<div style="font-size:16px;font-weight:700;margin-bottom:6px;">⬇ Patched Chromium engine</div>' +
+        '<div style="font-size:13px;line-height:1.5;color:#aab6c4;margin-bottom:16px;">' +
+          'This profile uses the bundled <b>Patched Chromium</b> engine (each profile becomes a different ' +
+          'physical PC). It needs a one-time download of about <b>190&nbsp;MB</b>. Keep this window open — ' +
+          'you\'ll see the progress here.' +
+        '</div>' +
+        '<div id="patchedDlProgWrap" style="display:none;margin-bottom:16px;">' +
+          '<div style="height:12px;background:#0d1117;border:1px solid #243042;border-radius:8px;overflow:hidden;">' +
+            '<div id="patchedDlBar" style="height:100%;width:0%;background:linear-gradient(90deg,#2b8a6e,#39c08f);transition:width .25s ease;"></div>' +
+          '</div>' +
+          '<div id="patchedDlLabel" style="font-size:12px;color:#9fb0c2;margin-top:8px;">Starting…</div>' +
+        '</div>' +
+        '<div id="patchedDlBtns" style="display:flex;gap:10px;justify-content:flex-end;">' +
+          '<button id="patchedDlCancel" style="padding:9px 16px;border-radius:9px;border:1px solid #3a4656;' +
+            'background:#1b2330;color:#e7edf5;font-size:13px;font-weight:600;cursor:pointer;">Cancel</button>' +
+          '<button id="patchedDlGo" style="padding:9px 16px;border-radius:9px;border:1px solid #2b6a55;' +
+            'background:#123026;color:#8fe3bf;font-size:13px;font-weight:600;cursor:pointer;">Download &amp; start</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    const btns = overlay.querySelector("#patchedDlBtns");
+    const go = overlay.querySelector("#patchedDlGo");
+    const cancel = overlay.querySelector("#patchedDlCancel");
+    const close = (val) => { patchedProgressEl = null; overlay.remove(); resolve(val); };
+
+    cancel.addEventListener("click", () => { if (!patchedDownloadActive) close({ ok: false, cancelled: true }); });
+    overlay.addEventListener("click", (e) => { if (e.target === overlay && !patchedDownloadActive) close({ ok: false, cancelled: true }); });
+
+    const start = async () => {
+      patchedDownloadActive = true;
+      btns.style.display = "none";
+      overlay.querySelector("#patchedDlProgWrap").style.display = "block";
+      patchedProgressEl = { bar: overlay.querySelector("#patchedDlBar"), label: overlay.querySelector("#patchedDlLabel") };
+      patchedProgressEl.label.textContent = "Starting download…";
+      const dl = await msg("PATCHED_ENGINE_FETCH", {});
+      patchedDownloadActive = false;
+      if (dl && dl.ok) {
+        if (patchedProgressEl) { patchedProgressEl.bar.style.width = "100%"; patchedProgressEl.label.textContent = "Engine ready ✓"; }
+        setTimeout(() => close({ ok: true }), 600);
+      } else {
+        if (patchedProgressEl) { patchedProgressEl.label.textContent = "❌ " + ((dl && dl.error) || "Download failed") + " — check your connection."; patchedProgressEl.label.style.color = "#f3b1b1"; }
+        btns.style.display = "flex";
+        go.textContent = "Retry";
+        cancel.textContent = "Close";
+      }
+    };
+    go.addEventListener("click", () => { if (!patchedDownloadActive) start(); });
+  });
+}
+
 // Launch a profile in the Camoufox "Stealth Engine" (patched Firefox) — for sites
 // that defeat the in-app Chromium (Fiverr/PerimeterX). Engine-level fingerprint,
 // no JS footprint. Separate process; the profile's proxy/geo/screen/OS are mapped
@@ -2207,26 +2292,14 @@ async function openProfileWindow(profileId) {
     }
   }
 
-  // Patched Chromium engine not downloaded yet — offer the one-time ~190MB fetch,
-  // then retry the launch automatically.
+  // Patched Chromium engine not downloaded yet — show a modal with a live progress
+  // bar (confirm → download → done), then retry the launch. The modal is a barrier,
+  // so the user can't re-trigger Start while it downloads.
   if (!r.ok && r.reason === "needs-engine-download") {
-    const go = confirm(
-      "Patched Chromium engine\n\n" +
-      "This profile uses the bundled Patched Chromium engine (each profile = a different physical PC). " +
-      "It needs a one-time download of about 190 MB.\n\nDownload it now?"
-    );
-    if (!go) {
-      setLaunchError("Patched Chromium engine not downloaded. Click Start to download it, or pick another engine.");
-      if (btn) { btn.textContent = "Start"; btn.disabled = false; }
-      return;
-    }
-    setLaunchError(null);
-    if (btn) { btn.textContent = "Downloading engine… 0%"; btn.disabled = true; }
-    // Live progress arrives via MAIN_EVENT "PATCHED_ENGINE_PROGRESS" (see dispatcher).
-    const dl = await msg("PATCHED_ENGINE_FETCH", {});
-    if (!dl || !dl.ok) {
-      setLaunchError("Engine download failed: " + ((dl && dl.error) || "unknown error") + ". Check your connection and try again.");
-      if (btn) { btn.textContent = "Start"; btn.disabled = false; }
+    if (btn) { btn.textContent = "Start"; btn.disabled = false; }
+    const res = await runPatchedEngineDownload();
+    if (!res || !res.ok) {
+      if (res && res.cancelled) setLaunchError("Patched Chromium engine not downloaded. Click Start to download it, or pick another engine.");
       return;
     }
     toast("Engine ready — launching");
