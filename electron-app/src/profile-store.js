@@ -141,6 +141,7 @@ function proxyEntryForRuntime(entry) {
 }
 
 const LOCAL_ONLY_PROFILE_FIELDS = ["cookies", "localStorageData", "session"];
+const BUILTIN_SPOOF_SKIP_HOSTS = ["instagram.com"];
 const LOCAL_ONLY_PROXY_FIELDS = ["username", "password", "passwordEnc", "rotationUrl"];
 
 function cloneForSync(value, fallback = {}) {
@@ -456,6 +457,28 @@ function getDefaultProxy() {
   return { networkMode: "direct", enabled: false, scheme: "socks5", host: "", port: 1080, username: "", password: "", rotationUrl: "", bypassList: [] };
 }
 
+function normalizeEngine(engine) {
+  const value = String(engine || "").toLowerCase();
+  if (value === "stealthfox" || value === "real-chrome" || value === "real-brave" || value === "patched-chromium") return value;
+  return "chromium";
+}
+
+function isRealBrowserEngine(engine) {
+  const e = String(engine || "").toLowerCase();
+  return e === "real-chrome" || e === "real-brave" || e === "patched-chromium";
+}
+
+function isPatchedChromiumEngine(engine) {
+  return String(engine || "").toLowerCase() === "patched-chromium";
+}
+
+function realBrowserRuntimeLabel(engine) {
+  const e = String(engine || "").toLowerCase();
+  if (e === "real-brave") return "Real Brave";
+  if (e === "patched-chromium") return "Patched Chromium";
+  return "Real Google Chrome";
+}
+
 // ── CRUD operations ────────────────────────────────────────────────────────────
 
 function syncProfileBg(profile) {
@@ -487,10 +510,9 @@ function buildNewProfile(data, nameIndex) {
     os: data.os || "windows",
     browserApp: data.browserApp || "chrome",
     windowMode: data.windowMode || "normal",
-    // Which engine launches on Start: "chromium" (bundled Chrome) or
-    // "stealthfox" (patched Firefox / Camoufox). All fingerprint/proxy settings
-    // apply to whichever engine is chosen.
-    engine: data.engine === "stealthfox" ? "stealthfox" : "chromium",
+    // Which engine launches on Start. External real-browser modes use installed
+    // Chrome/Brave with a separate user-data dir per profile.
+    engine: normalizeEngine(data.engine),
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -551,6 +573,7 @@ function updateProfile(id, data) {
     }
     profiles[idx].proxy = nextProxy;
   }
+  profiles[idx].engine = normalizeEngine(profiles[idx].engine);
   profiles[idx].fingerprint = normalizeProfileFingerprint(profiles[idx], { randomizeDefaultGpu: false });
   saveProfiles(profiles);
   syncProfileBg(profiles[idx]);
@@ -1787,7 +1810,12 @@ function buildConfigFromProfile(profile) {
     _webrtcIP: fp.webrtcIP || (profile.proxy && profile.proxy.detectedIp) || "",
     _fingerprintSeed: fp.fingerprintSeed || profile.id || "",
     _stealth: fp.spoofingLevel === "stealth",
-    _spoofSkipHosts: Array.isArray(fp.spoofSkipHosts) ? fp.spoofSkipHosts.filter(Boolean) : [],
+    _spoofSkipHosts: [
+      ...new Set([
+        ...BUILTIN_SPOOF_SKIP_HOSTS,
+        ...(Array.isArray(fp.spoofSkipHosts) ? fp.spoofSkipHosts : [])
+      ].map((host) => String(host || "").trim()).filter(Boolean))
+    ],
     _browserApp: _browserDef,
     _countryCode: fp.countryCode || "",
     _country: fp.country || "",
@@ -1921,14 +1949,15 @@ function getEngineCapabilities() {
     perProfileSessionPartition: true,
     bundledBrowserRuntime: true,
     storageIsolation: ["cookies", "cache", "localStorage", "IndexedDB", "serviceWorkers", "authCache"],
-    nativeEngines: ["chromium"],
+    nativeEngines: ["chromium", "real-chrome", "real-brave", "patched-chromium"],
     identityTemplates: ["privacy", "chrome", "brave", "edge", "firefox", "safari"],
     chromiumCppPatches: false,
     aiDailyFingerprints: false,
     firefoxGeckoRuntime: false,
     notes: [
-      "Profile windows run on Privacy Shield's bundled Electron Chromium runtime.",
+      "Profile windows can run on Privacy Shield's bundled Electron Chromium runtime or launch installed Chrome/Brave with isolated user-data directories.",
       "Firefox and Safari selections are identity templates, not separate Gecko/WebKit runtimes.",
+      "Real Chrome/Brave mode uses the installed browser network stack but does not run the Electron preload fingerprint layer.",
       "Fingerprint data is generated locally from coherent templates, not from a daily AI-tested real-device service.",
       "No Chromium/Blink C++ patches are included in this Electron build."
     ]
@@ -1940,8 +1969,70 @@ function getProfileSessionPartition(profileId) {
   return `persist:privacy-shield-profile-${safeId}`;
 }
 
+function getTransportFingerprintAudit(profile = {}) {
+  const fp = profile.fingerprint || {};
+  const px = profile.proxy || {};
+  const engine = normalizeEngine(profile.engine);
+  if (isRealBrowserEngine(engine)) {
+    if (isPatchedChromiumEngine(engine)) {
+      return {
+        state: "patched-chromium",
+        supported: true,
+        label: "Patched Chromium (per-seed device)",
+        message: "Bundled patched Chromium: canvas/audio/font/timezone/CPU/RAM are randomized per profile at the C++ level (stable per profile, different across profiles), with the WebGL GPU string + geolocation layered on. This is the strongest per-profile hardware identity."
+      };
+    }
+    const isBrave = String(engine || "").toLowerCase() === "real-brave";
+    if (isBrave) {
+      return {
+        state: "real-browser-spoofed",
+        supported: true,
+        label: "Real Brave transport + extension spoof",
+        message: "Transport comes from installed Brave with a separate data directory (no CDP attach). A per-profile extension applies canvas/WebGL/audio/screen/timezone/geolocation spoofing inside the real browser."
+      };
+    }
+    return {
+      state: "real-browser",
+      supported: true,
+      label: "Real Chrome transport (no JS spoof)",
+      message: "Transport comes from installed Chrome with a separate data directory. Current Chrome blocks command-line extensions, so the canvas/WebGL/audio JS spoof does not run; use Real Brave for full fingerprint spoofing."
+    };
+  }
+  const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+  const scheme = String(px.scheme || "").toLowerCase();
+  const hasProxy = mode === "proxy" && Boolean(px.enabled && px.host && px.port);
+  const isHttpProxy = hasProxy && (scheme === "http" || scheme === "https");
+
+  if (!fp.tlsSpoof) {
+    return {
+      state: "native",
+      supported: false,
+      label: "Native Chromium TLS/HTTP2",
+      message: "TLS/HTTP2 transport uses native Electron Chromium before page JavaScript runs; it can remain linkable across profiles."
+    };
+  }
+
+  if (!isHttpProxy) {
+    return {
+      state: "unsupported",
+      supported: false,
+      label: "TLS spoof requested but unsupported",
+      message: "TLS spoof is enabled, but this network mode cannot use the JA3 bridge. Use an enabled HTTP/HTTPS proxy, or it falls back to native Chromium transport."
+    };
+  }
+
+  return {
+    state: "mitm",
+    supported: true,
+    label: "JA3 bridge for normal HTTPS",
+    message: "TLS JA3 bridge is enabled for normal HTTPS through this HTTP/HTTPS proxy. HTTP/2 framing and WebSocket upgrades are still limited coverage."
+  };
+}
+
 function validateProfileConsistency(profile = {}) {
   const fp = profile.fingerprint || {};
+  const px = profile.proxy || {};
+  const selectedEngine = normalizeEngine(profile.engine);
   const osName = profile.os || "windows";
   const browser = fp.browser || profile.browserApp || "chrome";
   const deviceClass = fp.deviceClass || (osName === "android" ? "mobile" : "desktop");
@@ -1971,6 +2062,9 @@ function validateProfileConsistency(profile = {}) {
     else addPass("Desktop OS uses desktop device class.");
     if ((Number(fp.maxTouchPoints) || 0) > 0) addWarn("Desktop profile has touch points enabled.");
   }
+  if (isRealBrowserEngine(selectedEngine) && (osName === "android" || osName === "ios")) {
+    addIssue("Real Chrome/Brave mode launches a desktop browser; use Windows, macOS, or Linux for this engine.");
+  }
 
   if (browser === "safari" && osName !== "macos") {
     addIssue("Safari identity should only be used with macOS.");
@@ -1991,6 +2085,27 @@ function validateProfileConsistency(profile = {}) {
   else addWarn("Per-profile fingerprint seed will be generated when the profile is saved.");
   if (fp.hardwareId) addPass("Profile hardware id metadata is set.");
   else addWarn("Profile hardware id metadata will be generated when the profile is saved.");
+
+  const transport = getTransportFingerprintAudit({ ...profile, fingerprint: fp, proxy: px });
+  if (transport.state === "unsupported") addIssue(transport.message);
+  else if (transport.state === "patched-chromium") {
+    addPass(transport.message);
+    addPass("Per-profile fingerprint is engine-level (covers Web Workers and fonts), so profiles on one PC are not linkable by device signature.");
+  }
+  else if (transport.state === "real-browser-spoofed") {
+    addPass(transport.message);
+    addWarn("Extension spoofing does not run inside Web Workers, and Brave's own farbling may add extra canvas/audio noise on top of the profile's.");
+  }
+  else if (transport.state === "real-browser") {
+    addPass(transport.message);
+    addWarn("Real Chrome mode has no in-page fingerprint spoof (Chrome blocks command-line extensions). Switch this profile's engine to Real Brave for canvas/WebGL/audio/timezone spoofing.");
+  }
+  else if (transport.supported) {
+    addPass(transport.message);
+    addWarn("Transport spoofing is partial: full HTTP/2 fingerprint control requires a browser/network stack that supports it natively.");
+  } else {
+    addWarn(transport.message);
+  }
 
   const screenWidth = Number(fp.screenWidth) || 0;
   const screenHeight = Number(fp.screenHeight) || 0;
@@ -2074,7 +2189,8 @@ function validateProfileConsistency(profile = {}) {
     storage: sessionPartition,
     screen: screenWidth > 0 && screenHeight > 0 ? `${screenWidth}x${screenHeight} @ ${dpr} DPR` : "missing",
     fonts: fp.fonts === "blocked" ? "blocked" : `${fontProfile}, ${effectiveFonts.length} fonts`,
-    gpu: gpuVendor && gpuRenderer ? `${gpuVendor} / ${gpuRenderer}` : "missing"
+    gpu: gpuVendor && gpuRenderer ? `${gpuVendor} / ${gpuRenderer}` : "missing",
+    transport: transport.label
   };
 
   return {
@@ -2087,7 +2203,7 @@ function validateProfileConsistency(profile = {}) {
       os: osName,
       browser,
       deviceClass,
-      actualRuntime: "Electron Chromium",
+      actualRuntime: selectedEngine === "stealthfox" ? "Stealthfox Firefox" : isRealBrowserEngine(selectedEngine) ? realBrowserRuntimeLabel(selectedEngine) : "Electron Chromium",
       sessionPartition
     },
     summary,

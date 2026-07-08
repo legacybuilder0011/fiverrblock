@@ -214,16 +214,13 @@ async function configureSessionProxy(sess, proxy, profileId, options = {}) {
   const scheme = String(proxy.scheme || "socks5").toLowerCase();
   const hasAuth = Boolean(proxy.username || proxy.password);
 
-  // TLS MITM bridge is opt-in per profile via fingerprint.tlsSpoof. It re-
-  // originates HTTPS via cycletls with a per-profile JA3 (verified: two
-  // profiles yield two distinct JA3 hashes at tls.peet.ws). The old "empty
-  // body through authenticated proxies" symptom was a cycletls v2 API mismatch
-  // (the bridge read resp.body, which v2 renamed to resp.data/arrayBuffer()) —
-  // fixed in tls-mitm-bridge.js. Stays default OFF pending live-proxy soak;
-  // a dead/expired upstream proxy now surfaces as a real 502 diagnostic page
-  // instead of a blank tab.
+  // TLS MITM bridge is opt-in per profile via fingerprint.tlsSpoof. It
+  // re-originates normal HTTPS via cycletls with a per-profile JA3. This only
+  // applies to enabled HTTP/HTTPS proxy profiles; direct/VPN/SOCKS profiles
+  // use Chromium's native transport, and HTTP/2/WebSocket coverage is limited
+  // by tls-mitm-bridge.js.
   const tlsSpoof = Boolean(options.tlsSpoof);
-  if (tlsSpoof && (scheme === "http" || scheme === "https") && hasAuth) {
+  if (tlsSpoof && (scheme === "http" || scheme === "https")) {
     const local = await mitmBridge.getMitmBridge(profileId, {
       scheme, host: proxy.host, port, username: proxy.username, password: proxy.password
     }, options.fingerprintSeed, options.identity);
@@ -236,7 +233,7 @@ async function configureSessionProxy(sess, proxy, profileId, options = {}) {
       bridge.stopBridge(profileId);
       return { mode: "mitm", scheme, host: proxy.host, port };
     }
-    sessLog(`mitm bridge FAILED to start profile=${profileId}, falling back to plain bridge`);
+    sessLog(`mitm bridge FAILED to start profile=${profileId}, falling back to native/bridge proxy transport`);
   } else {
     mitmBridge.stopMitmBridge(profileId);
   }

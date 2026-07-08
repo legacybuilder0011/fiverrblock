@@ -83,6 +83,8 @@ const RENDERER_PRELOAD    = path.join(__dirname, "renderer-preload.js");
 
 const cdpStealth = require("./cdp-stealth");
 const camoufox = require("./camoufox-manager");
+const realBrowser = require("./real-browser-manager");
+realBrowser.setChangeHandler(() => notifyManagerWindows("WINDOWS_CHANGED"));
 
 // HTML files load via the psapp:// custom protocol (registered in main.js).
 // file:// URLs to anything containing ".asar" in the path (including .asar.unpacked)
@@ -433,6 +435,31 @@ function registerIpcHandlers() {
     try { return { ok: true, ids: camoufox.runningIds() }; }
     catch (_) { return { ok: true, ids: [] }; }
   });
+  ipcMain.handle("REAL_BROWSER_STATUS", async (_ev, { profileId, engine } = {}) => {
+    try { return realBrowser.status(profileId, engine); }
+    catch (err) { return { ok: false, error: String(err && (err.message || err)) }; }
+  });
+  ipcMain.handle("REAL_BROWSER_RUNNING", async () => {
+    try { return { ok: true, ids: realBrowser.runningIds(), windows: realBrowser.runningMap() }; }
+    catch (_) { return { ok: true, ids: [], windows: {} }; }
+  });
+  // Patched-chromium (fingerprint-chromium) engine: check if the bundled binary is
+  // present, and fetch-on-first-run (~190MB) with progress pushed to the UI.
+  ipcMain.handle("PATCHED_ENGINE_STATUS", async () => {
+    try { return realBrowser.patchedStatus(); }
+    catch (err) { return { ok: false, error: String(err && (err.message || err)) }; }
+  });
+  ipcMain.handle("PATCHED_ENGINE_FETCH", async () => {
+    try {
+      let lastPct = -1;
+      const res = await realBrowser.fetchPatchedChromium((got, total) => {
+        const pct = total ? Math.floor((got / total) * 100) : 0;
+        if (pct !== lastPct) { lastPct = pct; notifyManagerWindows("PATCHED_ENGINE_PROGRESS", { pct, got, total }); }
+      });
+      notifyManagerWindows("PATCHED_ENGINE_PROGRESS", { pct: res && res.ok ? 100 : lastPct, done: true, ok: Boolean(res && res.ok) });
+      return res;
+    } catch (err) { return { ok: false, error: String(err && (err.message || err)) }; }
+  });
 
   // Tab assignment — no-op in Electron (each window IS the profile)
   ipcMain.handle("PROFILE_ASSIGN_TAB", async () => ({ ok: true }));
@@ -538,6 +565,13 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("PROFILE_CLOSE_WINDOW", async (_ev, { profileId } = {}) => {
+    if (realBrowser.isProfileRunning(profileId)) {
+      const closed = await realBrowser.closeProfile(profileId);
+      profileNetworkMeta.delete(profileId);
+      stopVpnWatchIfIdle();
+      notifyManagerWindows("WINDOWS_CHANGED");
+      return closed && closed.ok ? { ok: true, count: 0, external: true } : { ok: false, error: (closed && (closed.detail || closed.reason)) || "real browser is not running" };
+    }
     const win = profileWindows.get(profileId);
     if (!win || win.isDestroyed()) return { ok: false, error: "no open window" };
     const saved = await saveWindowSession(profileId, win);
@@ -546,6 +580,9 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("PROFILE_SAVE_SESSION", async (_ev, { profileId } = {}) => {
+    if (realBrowser.isProfileRunning(profileId)) {
+      return { ok: true, count: 0, external: true, message: "Real browser mode keeps session data in its own profile folder." };
+    }
     const win = profileWindows.get(profileId);
     if (!win || win.isDestroyed()) return { ok: false, error: "no open window" };
     const count = await saveWindowSession(profileId, win);
@@ -554,6 +591,9 @@ function registerIpcHandlers() {
 
   ipcMain.handle("PROFILE_CLEAR_BROWSER_DATA", async (_ev, { profileId } = {}) => {
     try {
+      if (realBrowser.isProfileRunning(profileId)) {
+        return { ok: false, error: "Close the real Chrome/Brave window before clearing browser data." };
+      }
       const sess = sessionMgr.getSessionForProfile(profileId);
       await sess.clearStorageData({
         storages: [
@@ -572,6 +612,7 @@ function registerIpcHandlers() {
       try { await sess.clearAuthCache(); } catch (_) {}
       try { await sess.clearHostResolverCache(); } catch (_) {}
       try { await sess.closeAllConnections(); } catch (_) {}
+      try { await realBrowser.clearProfileData(profileId); } catch (_) {}
       store.updateProfile(profileId, { cookies: [], localStorageData: {}, session: null });
       return { ok: true };
     } catch (err) {
@@ -581,7 +622,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("PROFILE_GET_WINDOWS", async () => {
-    return { ok: true, windows: sessionMgr.getAllProfileWindows() };
+    return { ok: true, windows: { ...sessionMgr.getAllProfileWindows(), ...realBrowser.runningMap() } };
   });
 
   // Android Cloud Phones manager. Real phones must come from a provider; these
@@ -1446,12 +1487,16 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
     return { ok: true, windowId: existing.id, existing: true };
   }
 
+  var profiles = store.getProfiles();
+  var profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
+  if (!profile) return { ok: false, error: "Profile not found" };
+
   // Memory guard: each open profile is a full Chromium renderer (~200-300 MB).
   // Without a ceiling, opening too many at once exhausts RAM and the OS kills
   // the whole app — losing every open session at once. Refuse gracefully with an
   // actionable message (the renderer surfaces {ok:false,error}) instead. Refocus
   // of an already-open profile is exempt (handled above, doesn't reach here).
-  {
+  if (!realBrowser.isRealBrowserEngine(profile.engine)) {
     const PER_PROFILE_MB = 300;
     const openCount = [...profileWindows.values()].filter((w) => w && !w.isDestroyed()).length;
     const totalMB = os.totalmem() / (1024 * 1024);
@@ -1468,8 +1513,8 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
     }
   }
 
-  const profiles = store.getProfiles();
-  let profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
+  var profiles = store.getProfiles();
+  var profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
   if (!profile) return { ok: false, error: "Profile not found" };
 
   // ── Required fields & consistency checks ─────────────────────────────────────
@@ -1651,7 +1696,7 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
       );
       if (clash) {
         const otherWin = profileWindows.get(clash.id);
-        const otherOpen = Boolean(otherWin && !otherWin.isDestroyed());
+        const otherOpen = Boolean((otherWin && !otherWin.isDestroyed()) || camoufox.isProfileRunning(clash.id) || realBrowser.isProfileRunning(clash.id));
         logError(`ip collision profile=${profileId} shares ip=${thisIp} with profile=${clash.id} (${clash.name || ""}) open=${otherOpen}`);
         return {
           ok: false,
@@ -1665,6 +1710,36 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
         };
       }
     }
+  }
+
+  if (realBrowser.isRealBrowserEngine(profile.engine)) {
+    const res = await realBrowser.launchProfile(profile, customUrl || "", {
+      expandProxyUsername: (value) => sessionMgr.expandProxyPlaceholders(value, profile)
+    });
+    if (!res || !res.ok) {
+      return {
+        ok: false,
+        error: (res && (res.detail || res.reason)) || "Real browser failed to launch",
+        reason: res && res.reason,
+        candidates: res && res.candidates
+      };
+    }
+    if (networkMode === "vpn" || networkMode === "direct") {
+      const freshProfile = store.getProfiles().find((p) => p.id === profileId) || profile;
+      const anchor = profileAnchor(freshProfile);
+      const anchorCountry = anchor && anchor.countryCode ? String(anchor.countryCode).toLowerCase() : "";
+      profileNetworkMeta.set(profileId, {
+        mode: networkMode,
+        realBrowser: true,
+        anchorCountry,
+        anchorLabel: anchor ? (anchor.city || anchor.country || String(anchor.countryCode || "").toUpperCase()) : "",
+        profileName: profile.name || "Profile"
+      });
+      logError(`vpn kill-switch: now watching REAL profile=${profileId} engine=${profile.engine} mode=${networkMode} anchorCountry=${anchorCountry || "(self-baseline)"}`);
+      startVpnWatch();
+    }
+    notifyManagerWindows("WINDOWS_CHANGED");
+    return { ok: true, external: true, engine: profile.engine, pid: res.pid, existing: Boolean(res.reused) };
   }
 
   let sess;
@@ -2835,7 +2910,7 @@ function ifaceSignature() {
 function watchedProfileIds() {
   // A profile is live if it has a Chromium window OR a running Stealth (Camoufox)
   // instance — both must be guarded by the kill-switch.
-  return [...profileNetworkMeta.keys()].filter((id) => profileWindows.has(id) || camoufox.isProfileRunning(id));
+  return [...profileNetworkMeta.keys()].filter((id) => profileWindows.has(id) || camoufox.isProfileRunning(id) || realBrowser.isProfileRunning(id));
 }
 
 function startVpnWatch() {
@@ -2933,6 +3008,9 @@ function killWatchedProfiles(ids, reason) {
     // VPN-bound Firefox keeps browsing on the naked real IP after the VPN drops.
     if ((meta && meta.camoufox) || camoufox.isProfileRunning(id)) {
       try { camoufox.closeProfile(id); } catch (_) {}
+    }
+    if ((meta && meta.realBrowser) || realBrowser.isProfileRunning(id)) {
+      try { realBrowser.closeProfile(id); } catch (_) {}
     }
     notifyManagerWindows("VPN_DROPPED", { profileId: id, profileName: name, reason });
   }

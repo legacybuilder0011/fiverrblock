@@ -169,6 +169,7 @@
       os: data.os || "windows",
       browserApp: data.browserApp || "chrome",
       windowMode: data.windowMode || "normal",
+      engine: ["chromium", "stealthfox", "real-chrome", "real-brave"].includes(data.engine) ? data.engine : "chromium",
       tags: Array.isArray(data.tags) ? data.tags : [],
       notes: data.notes || "",
       fingerprint: { ...defaultFingerprint(), ...(data.fingerprint || {}) },
@@ -322,7 +323,7 @@
             ok: true,
             capabilities: {
               actualEngine: "Browser preview",
-              nativeEngines: ["chromium-preview"],
+              nativeEngines: ["chromium-preview", "real-chrome", "real-brave"],
               chromiumCppPatches: false,
               aiDailyFingerprints: false,
               firefoxGeckoRuntime: false
@@ -346,6 +347,25 @@
           else warnings.push({ level: "warn", message: "Per-profile fingerprint seed will be generated when saved." });
           if (fp.hardwareId) passes.push({ level: "pass", message: "Profile hardware id metadata is set." });
           else warnings.push({ level: "warn", message: "Profile hardware id metadata will be generated when saved." });
+          const px = profile.proxy || {};
+          const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+          const scheme = String(px.scheme || "").toLowerCase();
+          const hasHttpProxy = mode === "proxy" && Boolean(px.enabled && px.host && px.port) && (scheme === "http" || scheme === "https");
+          const selectedEngine = ["real-chrome", "real-brave"].includes(profile.engine) ? profile.engine : "chromium";
+          let transportSummary = "Native Chromium TLS/HTTP2";
+          if (selectedEngine === "real-chrome" || selectedEngine === "real-brave") {
+            transportSummary = selectedEngine === "real-brave" ? "Real Brave transport" : "Real Google Chrome transport";
+            passes.push({ level: "pass", message: "Real browser mode uses the installed browser network stack instead of Electron Chromium." });
+            warnings.push({ level: "warn", message: "Electron JS/CDP fingerprint spoofing is not applied inside installed Chrome/Brave." });
+          } else if (!fp.tlsSpoof) {
+            warnings.push({ level: "warn", message: "TLS/HTTP2 transport uses native Chromium before page JavaScript runs; it can remain linkable across profiles." });
+          } else if (!hasHttpProxy) {
+            transportSummary = "TLS spoof requested but unsupported";
+            issues.push({ level: "issue", message: "TLS spoof is enabled, but this network mode cannot use the JA3 bridge. Use an enabled HTTP/HTTPS proxy, or it falls back to native Chromium transport." });
+          } else {
+            transportSummary = "JA3 bridge for normal HTTPS";
+            passes.push({ level: "pass", message: "TLS JA3 bridge is enabled for normal HTTPS through this HTTP/HTTPS proxy. HTTP/2 framing and WebSocket upgrades are still limited coverage." });
+          }
           if (profile.os === "android" && fp.deviceClass !== "mobile") issues.push({ level: "issue", message: "Android profiles should use mobile device class." });
           const screenWidth = Number(fp.screenWidth) || 0;
           const screenHeight = Number(fp.screenHeight) || 0;
@@ -374,7 +394,8 @@
                 storage: sessionPartition,
                 screen: screenWidth && screenHeight ? `${screenWidth}x${screenHeight} @ ${dpr} DPR` : "missing",
                 fonts: fp.fonts === "blocked" ? "blocked" : `${fp.fontProfile || profile.os || "windows"}, ${fonts.length} fonts`,
-                gpu: fp.webglVendor && fp.webglRenderer ? `${fp.webglVendor} / ${fp.webglRenderer}` : "missing"
+                gpu: fp.webglVendor && fp.webglRenderer ? `${fp.webglVendor} / ${fp.webglRenderer}` : "missing",
+                transport: transportSummary
               },
               issues,
               warnings,

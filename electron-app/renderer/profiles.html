@@ -163,8 +163,11 @@
             <option value="normal">Normal window</option>
             <option value="incognito">Incognito window</option>
           </select>
-          <select id="fp-engine" class="pm-sel-sm" title="Which browser engine launches when you click Start. All the settings you pick apply to whichever engine you choose.">
+          <select id="fp-engine" class="pm-sel-sm" title="Which browser engine launches when you click Start. Patched Chromium gives each profile a distinct engine-level hardware identity (recommended). Real Chrome/Brave use your installed browser; Electron JS/CDP spoofing applies only to bundled Chromium.">
+            <option value="patched-chromium">Engine: Patched Chromium (per-profile PC)</option>
             <option value="chromium">Engine: Chromium (Chrome)</option>
+            <option value="real-chrome">Engine: Real Chrome</option>
+            <option value="real-brave">Engine: Real Brave</option>
             <option value="stealthfox">Engine: Stealthfox (Firefox)</option>
           </select>
           <input type="text" id="fp-tags" class="pm-tags-input" placeholder="tags, comma, separated" />
@@ -195,15 +198,15 @@
           <div class="pm-engine-grid">
             <div>
               <span class="pm-engine-label">Runtime</span>
-              <span class="pm-engine-value">Privacy Shield bundled Chromium</span>
+              <span class="pm-engine-value">Bundled Chromium or installed real browser</span>
             </div>
             <div>
               <span class="pm-engine-label">Native engines</span>
-              <span class="pm-engine-value">Chromium only</span>
+              <span class="pm-engine-value">Chrome, Brave, Stealthfox</span>
             </div>
             <div>
               <span class="pm-engine-label">Browser identities</span>
-              <span class="pm-engine-value">Chrome, Brave, Edge (all Chromium)</span>
+              <span class="pm-engine-value">Chrome, Brave, Edge identities plus real Chrome/Brave engines</span>
             </div>
             <div>
               <span class="pm-engine-label">C++ / AI fingerprint service</span>
@@ -639,13 +642,13 @@
             </select>
           </div>
           <div class="pm-row">
-            <label class="pm-label">TLS fingerprint spoof</label>
+            <label class="pm-label">TLS / HTTP2 transport</label>
             <select id="fp-tlsSpoof" class="pm-sel">
-              <option value="false">Off (recommended — works with all proxies)</option>
-              <option value="true">On (experimental — may break authenticated proxies)</option>
+              <option value="false">Native Chromium (works everywhere)</option>
+              <option value="true">Experimental JA3 bridge (HTTP/HTTPS proxy only)</option>
             </select>
           </div>
-          <div class="pm-hint" style="margin-top:4px;">Off: Chromium's native TLS handshake (works through any proxy). On: per-profile JA3 via local MITM bridge — gives a unique TLS fingerprint per profile, but cycletls's HTTPS-through-authenticated-proxy support is unreliable and may render pages as empty <code>""</code>. Only enable for profiles using direct/VPN or unauthenticated proxies.</div>
+          <div class="pm-hint" style="margin-top:4px;">Native: Electron/Chromium sends the TLS and HTTP/2 transport fingerprint before page JavaScript runs, so profiles can share that network signature. JA3 bridge: routes normal HTTPS through a per-profile local MITM bridge when the profile uses an enabled HTTP/HTTPS proxy. Direct, VPN, and SOCKS modes fall back to native transport; HTTP/2 framing and WebSocket upgrades are not fully spoofed.</div>
         </div>
 
         <div class="pm-section">

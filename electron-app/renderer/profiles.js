@@ -45,6 +45,22 @@ function browserLabel(browser) {
   return map[browser] || map.chrome;
 }
 
+function normalizeEngineValue(engine) {
+  const value = String(engine || "").toLowerCase();
+  return ["chromium", "stealthfox", "real-chrome", "real-brave", "patched-chromium"].includes(value) ? value : "chromium";
+}
+
+function engineLabel(engine) {
+  const map = {
+    chromium: "Chromium",
+    stealthfox: "Stealthfox",
+    "real-chrome": "Real Chrome",
+    "real-brave": "Real Brave",
+    "patched-chromium": "Patched Chromium"
+  };
+  return map[normalizeEngineValue(engine)] || map.chromium;
+}
+
 function statusChip(s) {
   return `<span class="chip status-${s || "new"}">${(s || "new").charAt(0).toUpperCase() + (s || "new").slice(1)}</span>`;
 }
@@ -142,6 +158,10 @@ async function init() {
         if (selectedId) updateSessionTab();
         const name = payload.profileName || "Profile";
         alert(`⚠️ ${name} was closed\n\n${payload.reason || "The VPN connection dropped."}`);
+      } else if (payload.type === "PATCHED_ENGINE_PROGRESS") {
+        // Live progress for the one-time Patched Chromium engine download.
+        const btn = $("btnOpenWindow");
+        if (btn && !payload.done && typeof payload.pct === "number") btn.textContent = `Downloading engine… ${payload.pct}%`;
       }
     });
   }
@@ -355,16 +375,69 @@ async function assignToTab(profileId) {
 // config — no browser needed. Reflects the two real risks: DETECTABILITY (does
 // it look spoofed/bot) and LINKABILITY (can two profiles be tied to one machine
 // or IP). The deep, live check remains the red-team page.
+function transportFingerprintInfo(fp = {}, px = {}, engine = "chromium") {
+  const selectedEngine = normalizeEngineValue(engine);
+  if (selectedEngine === "patched-chromium") {
+    return {
+      penalty: 0,
+      message: "Patched Chromium: per-seed device identity at the engine level (canvas/audio/font/tz/GPU), covers workers"
+    };
+  }
+  if (selectedEngine === "real-brave") {
+    return {
+      penalty: 2,
+      message: "Real Brave: extension fingerprint layer + real transport, no CDP tell"
+    };
+  }
+  if (selectedEngine === "real-chrome") {
+    return {
+      penalty: 8,
+      message: "Real Chrome: real transport, but Chrome blocks the fingerprint extension (transport only)"
+    };
+  }
+  const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+  const scheme = String(px.scheme || "").toLowerCase();
+  const hasProxy = mode === "proxy" && Boolean(px.enabled && px.host && px.port);
+  const isHttpProxy = hasProxy && (scheme === "http" || scheme === "https");
+
+  if (!fp.tlsSpoof) {
+    return {
+      penalty: 8,
+      message: "TLS/HTTP2 stays native Chromium before JavaScript runs"
+    };
+  }
+  if (!isHttpProxy) {
+    return {
+      penalty: 12,
+      message: "TLS spoof is on but unsupported here; use an enabled HTTP/HTTPS proxy"
+    };
+  }
+  return {
+    penalty: 3,
+    message: "TLS JA3 bridge is partial; HTTP2/WebSocket transport is not fully covered"
+  };
+}
+
 function computeProfileStrength(p) {
   const fp = p.fingerprint || {};
   const px = p.proxy || {};
+  const engine = normalizeEngineValue(p.engine);
   const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
   const os = p.os || "windows";
   const reasons = [];
   let score = 0;
 
   // ── Detectability (max 55) ──────────────────────────────────────────────
-  score += 10; // automation-marker + toString cloak are always on in the preload
+  if (engine === "patched-chromium") {
+    score += 12; // engine-level per-seed device identity; covers workers/fonts; no CDP tell
+  } else if (engine === "real-brave") {
+    score += 9; // extension fingerprint layer runs canvas/WebGL/audio/tz spoof; no CDP tell
+  } else if (engine === "real-chrome") {
+    score += 4; // real transport only — Chrome blocks the fingerprint extension
+    reasons.push("Real Chrome cannot load the fingerprint extension; use Real Brave for JS spoofing");
+  } else {
+    score += 10; // automation-marker + toString cloak are on in the Electron preload
+  }
 
   const tzMode = fp.timezone || "auto";
   if (tzMode === "auto") score += 15;
@@ -396,6 +469,12 @@ function computeProfileStrength(p) {
   const stealth = fp.spoofingLevel === "stealth" || (Array.isArray(fp.spoofSkipHosts) && fp.spoofSkipHosts.length > 0);
   if (!stealth) score += 10;
   else { score += 3; reasons.push("Stealth/allowlist shares your real hardware across profiles"); }
+
+  const transport = transportFingerprintInfo(fp, px, engine);
+  if (transport.penalty) {
+    score -= transport.penalty;
+    reasons.push(transport.message);
+  }
 
   score = Math.max(0, Math.min(100, Math.round(score)));
   let grade, cls;
@@ -445,6 +524,7 @@ function renderList() {
     const isStealthLive = stealthRunning.has(p.id);
     const proxyBadge   = p.proxy?.enabled ? `<span class="chip proxy-on">Proxy</span>` : "";
     const assignedBadge = isAssigned ? `<span class="chip status-active">On Tab</span>` : "";
+    const launchEngineLabel = engineLabel(p.engine);
     const runningBadge  = isRunning ? `<span class="chip status-active">${isStealthLive ? "🦊 Live" : "Live"}</span>` : "";
     const tags = (p.tags || []).slice(0, 3).map((t) => `<span class="chip status-new">${escHtml(t)}</span>`).join("");
     const browserIcons = { privacy: "PS", chrome: "&#9689;", brave: "&#129321;", edge: "&#127919;", firefox: "FF", safari: "SF" };
@@ -492,7 +572,7 @@ function renderList() {
       <div class="pm-card-actions">
         ${isRunning
           ? `<button class="pm-btn-xs danger" data-action="stop" data-id="${p.id}" title="Stop and save the session">Stop</button>`
-          : `<button class="pm-btn-xs success" data-action="start" data-id="${p.id}" title="Start with this profile's chosen engine (${(p.engine === "stealthfox") ? "🦊 Stealthfox" : "Chromium"})">Start${(p.engine === "stealthfox") ? " 🦊" : ""}</button>`}
+          : `<button class="pm-btn-xs success" data-action="start" data-id="${p.id}" title="Start with this profile's chosen engine (${escHtml(launchEngineLabel)})">Start${(p.engine === "stealthfox") ? " 🦊" : ""}</button>`}
         <button class="pm-btn-xs" data-action="dup" data-id="${p.id}" title="Duplicate">Dup</button>
         <button class="pm-btn-xs danger" data-action="del" data-id="${p.id}" title="Delete">Del</button>
       </div>
@@ -592,7 +672,7 @@ function populateForm(p) {
   applyMobileUIMode(p.os || "windows");
   setVal("fp-browserApp",  p.browserApp  || "chrome");
   setVal("fp-windowMode",  p.windowMode  || "normal");
-  setVal("fp-engine",      p.engine === "stealthfox" ? "stealthfox" : "chromium");
+  setVal("fp-engine",      normalizeEngineValue(p.engine));
   updateEngineHint();
   $("fp-tags").value = (p.tags || []).join(", ");
   $("fp-notes").value = p.notes || "";
@@ -741,12 +821,25 @@ function setVal(id, val) {
 // Show the "Stealthfox runs Firefox" note + grey the Chromium-only Browser rows
 // when the Stealthfox engine is selected, so it's clear Start won't open Chrome.
 function updateEngineHint() {
-  const isStealth = $("fp-engine")?.value === "stealthfox";
+  const engine = normalizeEngineValue($("fp-engine")?.value);
+  const isStealth = engine === "stealthfox";
+  const isReal = engine === "real-chrome" || engine === "real-brave" || engine === "patched-chromium";
   const note = $("stealthEngineNote");
-  if (note) note.hidden = !isStealth;
+  if (note) {
+    note.hidden = !isStealth && !isReal;
+    if (isStealth) {
+      note.innerHTML = "🦊 This profile's engine is <b>Stealthfox (Firefox)</b> - clicking Start opens patched Firefox, <b>not</b> Chrome/Brave/Edge. The Browser and Version options below apply only to the Chromium engine and are ignored by Stealthfox. Proxy, screen, timezone, language, and geolocation still apply.";
+    } else if (engine === "patched-chromium") {
+      note.innerHTML = "This profile's engine is <b>Patched Chromium</b> - a bundled, patched browser (not your installed Chrome/Brave). Each profile gets a distinct hardware identity randomized at the engine level from a per-profile seed: canvas, WebGL/GPU, audio, fonts, timezone, CPU cores and RAM all differ between profiles and stay stable per profile. Two profiles look like two different physical PCs. First use downloads the engine (~190MB).";
+    } else if (engine === "real-brave") {
+      note.innerHTML = "This profile's engine is <b>Real Brave</b> - clicking Start opens installed Brave with a separate data folder for this profile. A per-profile extension applies canvas/WebGL/audio/screen/timezone/geolocation spoofing inside the real browser (no CDP), and proxy + user-agent are set at launch. This is the strongest real-browser mode.";
+    } else if (engine === "real-chrome") {
+      note.innerHTML = "This profile's engine is <b>Real Chrome</b> - clicking Start opens installed Chrome with a separate data folder. Real transport, proxy, user-agent, timezone and WebRTC/DNS controls apply, but current Chrome blocks command-line extensions, so the canvas/WebGL/audio JS spoof does <b>not</b> run. For full fingerprint spoofing in a real browser, use <b>Real Brave</b>.";
+    }
+  }
   const browserRow = $("fp-browser")?.closest(".pm-row");
   const verRow = $("browserVersionRow");
-  [browserRow, verRow].forEach((r) => { if (r) r.style.opacity = isStealth ? "0.45" : "1"; });
+  [browserRow, verRow].forEach((r) => { if (r) r.style.opacity = (isStealth || isReal) ? "0.45" : "1"; });
 }
 
 // Locked "view" vs "edit" mode. Once a profile is saved it stays LOCKED — every
@@ -778,7 +871,7 @@ function collectForm() {
     os: $("fp-os").value,
     browserApp: $("fp-browserApp")?.value || "chrome",
     windowMode: $("fp-windowMode")?.value || "normal",
-    engine: $("fp-engine")?.value === "stealthfox" ? "stealthfox" : "chromium",
+    engine: normalizeEngineValue($("fp-engine")?.value),
     tags: $("fp-tags").value.split(",").map((t) => t.trim()).filter(Boolean),
     notes: $("fp-notes").value,
     fingerprint: {
@@ -929,6 +1022,7 @@ function renderProfileAudit(audit) {
     rows.push(`<span class="pm-audit-line pass">Screen: ${escHtml(audit.summary.screen || "missing")}.</span>`);
     rows.push(`<span class="pm-audit-line pass">Fonts: ${escHtml(audit.summary.fonts || "missing")}.</span>`);
     rows.push(`<span class="pm-audit-line pass">GPU: ${escHtml(audit.summary.gpu || "missing")}.</span>`);
+    if (audit.summary.transport) rows.push(`<span class="pm-audit-line pass">Transport: ${escHtml(audit.summary.transport)}.</span>`);
   }
   for (const item of [...(audit.issues || []), ...(audit.warnings || []), ...(audit.passes || []).slice(0, 6)]) {
     rows.push(`<span class="pm-audit-line ${item.level}">${escHtml(item.message)}</span>`);
@@ -2113,10 +2207,39 @@ async function openProfileWindow(profileId) {
     }
   }
 
+  // Patched Chromium engine not downloaded yet — offer the one-time ~190MB fetch,
+  // then retry the launch automatically.
+  if (!r.ok && r.reason === "needs-engine-download") {
+    const go = confirm(
+      "Patched Chromium engine\n\n" +
+      "This profile uses the bundled Patched Chromium engine (each profile = a different physical PC). " +
+      "It needs a one-time download of about 190 MB.\n\nDownload it now?"
+    );
+    if (!go) {
+      setLaunchError("Patched Chromium engine not downloaded. Click Start to download it, or pick another engine.");
+      if (btn) { btn.textContent = "Start"; btn.disabled = false; }
+      return;
+    }
+    setLaunchError(null);
+    if (btn) { btn.textContent = "Downloading engine… 0%"; btn.disabled = true; }
+    // Live progress arrives via MAIN_EVENT "PATCHED_ENGINE_PROGRESS" (see dispatcher).
+    const dl = await msg("PATCHED_ENGINE_FETCH", {});
+    if (!dl || !dl.ok) {
+      setLaunchError("Engine download failed: " + ((dl && dl.error) || "unknown error") + ". Check your connection and try again.");
+      if (btn) { btn.textContent = "Start"; btn.disabled = false; }
+      return;
+    }
+    toast("Engine ready — launching");
+    if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
+    r = await msg("PROFILE_OPEN_WINDOW", { profileId });
+  }
+
   if (!r.ok) {
-    const errText = r.error || "unknown error";
+    const errText = r.error || r.detail || "unknown error";
     setLaunchError(errText);
     toast("Failed to start — see error above");
+  } else if (r.external) {
+    toast(r.existing ? "Real browser already running" : "Real browser launched");
   } else if (r.preview) {
     toast("Preview window opened. Run the desktop app for real isolated browsing.");
   } else if (r.existing) {
@@ -2144,7 +2267,7 @@ async function stopProfile(profileId) {
   }
   const r = await msg("PROFILE_CLOSE_WINDOW", { profileId });
   if (!r.ok) { toast("Stop failed: " + (r.error || "no open window")); return; }
-  toast("Stopped — session saved");
+  toast(r.external ? "Real browser stopped" : "Stopped — session saved");
   await refreshOpenWindows();
   renderList();
   updateSessionTab();
@@ -2154,7 +2277,7 @@ async function saveSession(profileId) {
   const r = await msg("PROFILE_SAVE_SESSION", { profileId });
   if (!r.ok) { toast("Save failed: " + (r.error || "no open window")); return; }
   await loadProfiles();
-  toast(`Session saved — ${r.count} tab(s)`);
+  toast(r.external ? "Real browser keeps its own session folder" : `Session saved — ${r.count} tab(s)`);
   updateSessionTab();
 }
 
@@ -2166,7 +2289,7 @@ async function closeProfileWindow(profileId) {
   await loadProfiles();
   renderList();
   updateSessionTab();
-  toast("Window closed and session saved");
+  toast(r.external ? "Real browser closed" : "Window closed and session saved");
 }
 
 async function clearSession(profileId) {
