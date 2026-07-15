@@ -483,8 +483,20 @@ async function launchProfile(profile, customUrl = "", options = {}) {
   // extension only layers the WebGL renderer STRING + geolocation (gpuGeoOnly).
   // Failure is non-fatal: the browser still launches without the JS layer.
   const extraExtDirs = [];
-  if (cfg && cfg.enabled !== false && engineSupportsExtensionSpoof(engine)) {
-    const fpDir = fpExtension.writeExtension(profile.id, cfg, fingerprintExtDir(profile.id, engine), { gpuGeoOnly: patched });
+  // The per-profile fingerprint extension (a MAIN-world, all_frames content script
+  // loaded via --load-extension) makes Google sign-in reject the browser as "This
+  // browser or app may not be secure". PROVEN by controlled A/B on the SAME clean
+  // mobile IP: WITH the extension → rejected at Google's account-lookup step,
+  // WITHOUT it → reached the password page. Google's browserinfo/integrity checks
+  // run on mail.google.com + about:blank frames (where the auth-host exemption
+  // can't match) and detect the injected overrides. For patched-chromium the C++
+  // engine already noises canvas/audio/webgl-pixels/navigator/timezone/platform per
+  // seed, so the extension only layered the WebGL renderer STRING + geolocation
+  // (geolocation is blocked by prefs anyway) — not worth losing Google/Gmail over.
+  // So the patched engine no longer loads it. real-brave, whose JS spoof depends on
+  // the extension, still gets it (use patched-chromium for Google accounts).
+  if (cfg && cfg.enabled !== false && engineSupportsExtensionSpoof(engine) && !patched) {
+    const fpDir = fpExtension.writeExtension(profile.id, cfg, fingerprintExtDir(profile.id, engine), { gpuGeoOnly: patched, realBrowser: !patched });
     if (fpDir) extraExtDirs.push(fpDir);
   }
 
@@ -519,8 +531,18 @@ async function launchProfile(profile, customUrl = "", options = {}) {
     args.push(...fpArgs.args);
     if (lang) { args.push(`--lang=${lang}`); args.push(`--accept-lang=${acceptLanguagesFromLang(lang)}`); }
   } else {
-    // User-agent via flag (not JS): also fixes worker/header UA, which JS cannot.
-    if (cfg && cfg.spoofUA !== false && cfg.userAgent) args.push(`--user-agent=${cfg.userAgent}`);
+    // real-chrome / real-brave are GENUINE browsers: they derive User-Agent Client
+    // Hints (Sec-CH-UA, Sec-CH-UA-Platform, full version list) and navigator.
+    // userAgentData from the REAL OS + REAL browser version. A --user-agent flag
+    // rewrites ONLY the UA string, so the Client Hints keep leaking the true OS and
+    // version — e.g. UA says "Macintosh / Chrome 148" while Sec-CH-UA-Platform stays
+    // "Windows" and Sec-CH-UA reports v150. Google's sign-in cross-checks the two
+    // and rejects the contradiction as "this browser may not be secure"
+    // (accounts.google.com/v3/signin/rejected). So we keep the browser's native,
+    // fully-coherent UA/CH here and vary only the safely-spoofable signals
+    // (canvas/WebGL/audio/timezone/geo/screen). Cross-OS or pinned-version identities
+    // MUST use the patched-chromium engine, which sets platform + brand + version
+    // coherently at the C++ level so UA, Client Hints, and navigator all agree.
     if (lang) { args.push(`--lang=${lang}`); args.push(`--accept-lang=${acceptLanguagesFromLang(lang)}`); }
   }
   args.push(...startUrls(profile, customUrl));

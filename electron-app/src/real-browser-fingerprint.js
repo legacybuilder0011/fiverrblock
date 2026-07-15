@@ -53,6 +53,37 @@ const SPOOF_BODY = String.raw`"use strict";
       if (host === d || (host.length > d.length && host.slice(-(d.length + 1)) === "." + d)) return;
     }
     if (((/(^|\.)google\.com$/.test(host)) || (/(^|\.)gstatic\.com$/.test(host))) && pathName.indexOf("/recaptcha") !== -1) return;
+    // ── Auth / sign-in origin exemption ─────────────────────────────────────
+    // Google (and other) account sign-in / sign-up pages run the same bot-
+    // integrity checks captcha vendors do: if they see navigator/toString/canvas
+    // patched in their own frame they reject the login as "this browser may not
+    // be secure" (accounts.google.com/v3/signin/rejected). These are first-party
+    // subdomains, so match them specifically — do NOT exempt google.com broadly
+    // (search etc. should still get the profile fingerprint).
+    var AUTH = ["accounts.google.com","accounts.youtube.com","myaccount.google.com",
+      "accounts.gstatic.com","signin.google.com","gds.google.com","mail.google.com",
+      "login.live.com","login.microsoftonline.com","login.microsoft.com",
+      "appleid.apple.com","idmsa.apple.com"];
+    for (var ai = 0; ai < AUTH.length; ai++) {
+      var a = AUTH[ai];
+      if (host === a || (host.length > a.length && host.slice(-(a.length + 1)) === "." + a)) return;
+    }
+    // Google's "is this browser secure" integrity check also runs INSIDE the
+    // about:blank / srcdoc SUBFRAMES it spawns during sign-in. Those frames have an
+    // EMPTY hostname, so the host checks above can't match them and our overrides
+    // would run there = detected ("This browser or app may not be secure"). Exempt
+    // any subframe whose TOP document is a Google account/mail/YouTube context, and
+    // any opaque (about:blank/srcdoc) subframe under a cross-origin top we can't read.
+    try {
+      if (window.top !== window.self) {
+        var GOOG = /(^|\.)(google\.com|youtube\.com|googleusercontent\.com)$/;
+        var topHost = null;
+        try { topHost = (window.top.location.hostname || "").toLowerCase(); } catch (e) { topHost = null; }
+        var opaque = !host || location.protocol === "about:" || location.protocol === "blob:" || location.protocol === "data:";
+        if (topHost !== null && GOOG.test(topHost)) return;   // Google-owned top → exempt this frame
+        if (opaque && topHost === null) return;               // opaque frame under a cross-origin top → play safe
+      }
+    } catch (_) {}
     // Per-profile skip-host allowlist (visit these with a native signature).
     var skip = CFG.spoofSkipHosts || [];
     for (var si = 0; si < skip.length; si++) {
@@ -373,7 +404,11 @@ function extensionConfig(cfg, opts = {}) {
     spoofSkipHosts: Array.isArray(cfg._spoofSkipHosts) ? cfg._spoofSkipHosts : [],
     hardwareConcurrency: typeof cfg.hardwareConcurrency === "number" ? cfg.hardwareConcurrency : undefined,
     deviceMemory: typeof cfg.deviceMemory === "number" ? cfg.deviceMemory : undefined,
-    platform: cfg.platform || "",
+    // real-brave: navigator.platform MUST stay native so it agrees with the genuine
+    // browser's userAgentData / Sec-CH-UA-Platform (both = the real host OS). A Mac
+    // platform override on a Windows Brave would be an instant UA-vs-CH contradiction.
+    // Only the patched-chromium engine can move platform coherently (C++ level).
+    platform: opts.realBrowser ? "" : (cfg.platform || ""),
     _maxTouchPoints: typeof cfg._maxTouchPoints === "number" ? cfg._maxTouchPoints : 0,
     language: cfg.language || "",
     languages: Array.isArray(cfg.languages) ? cfg.languages : [],
