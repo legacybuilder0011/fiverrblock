@@ -620,6 +620,99 @@ async function selectProfile(id) {
   setEditMode(false); // a saved profile opens LOCKED — click Edit to change it
   renderList();
   updateSessionTab();
+  renderExtensions();
+}
+
+// ── Per-profile extensions ───────────────────────────────────────────────────
+// Store extensions are downloaded and unpacked by the main process (the patched
+// Chromium and Brave engines can't use the store's own "Add to Chrome" button),
+// then attached at browser launch. MV2 is flagged because Chromium 148 — the
+// version the patched engine is built on — refuses to load it at all.
+function extInstallStatus(text, tone) {
+  const el = $("extInstallStatus");
+  if (!el) return;
+  el.innerHTML = text || "";
+  el.style.color = tone === "error" ? "#f08a8a" : tone === "ok" ? "#7ee0a6" : "";
+}
+
+async function renderExtensions() {
+  const list = $("extList");
+  if (!list) return;
+  if (!selectedId) {
+    list.innerHTML = '<div class="pm-list-empty">Select a profile first.</div>';
+    return;
+  }
+  const res = await msg("PROFILE_EXT_LIST", { profileId: selectedId });
+  const items = (res && res.ok && res.extensions) || [];
+  // Chrome 137+ ignores --load-extension, so the Real Chrome engine cannot run
+  // any extension we install — say so instead of silently doing nothing.
+  const engineNote = (res && res.engine) === "real-chrome"
+    ? '<div class="pm-cookie-item" style="color:#f0c674">This profile uses the <b>Real Chrome</b> engine, which ignores command-line extensions — nothing installed here will load. Switch the engine to Patched Chromium or Real Brave.</div>'
+    : "";
+  if (!items.length) {
+    list.innerHTML = engineNote || '<div class="pm-list-empty">No extensions installed in this profile.</div>';
+    return;
+  }
+  list.innerHTML = engineNote + items.map((ext) => {
+    const warn = ext.missing
+      ? '<span style="color:#f08a8a">files missing — reinstall</span>'
+      : ext.manifestVersion === 2
+        ? '<span style="color:#f0c674">Manifest V2 — will not load in Patched Chromium (needs the MV3 version)</span>'
+        : '';
+    return '<div class="pm-cookie-item" style="align-items:flex-start;gap:10px">'
+      + '<div style="flex:1;min-width:0">'
+      + '<div style="font-weight:600">' + escapeHtml(ext.name || ext.id || "Extension") + (ext.version ? ' <span style="font-weight:400;color:var(--muted)">v' + escapeHtml(ext.version) + '</span>' : '') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);word-break:break-all">' + escapeHtml(ext.id || ext.path) + (ext.source === "webstore" ? " · Web Store" : " · unpacked") + '</div>'
+      + (warn ? '<div style="font-size:11px;margin-top:2px">' + warn + '</div>' : '')
+      + '</div>'
+      + '<button type="button" class="pm-btn-sm danger" data-ext-remove="' + escapeHtml(ext.path) + '" data-always-enabled="1">Remove</button>'
+      + '</div>';
+  }).join("");
+  list.querySelectorAll("[data-ext-remove]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const r = await msg("PROFILE_EXT_REMOVE", { profileId: selectedId, path: btn.dataset.extRemove });
+      if (!r || !r.ok) return toast("Remove failed: " + ((r && r.error) || "unknown"));
+      toast(r.restartNeeded ? "Removed — restart this profile's browser" : "Extension removed");
+      renderExtensions();
+    });
+  });
+}
+
+async function installStoreExtension() {
+  if (!selectedId) return toast("Select a profile first");
+  const input = $("extStoreInput");
+  const ref = (input?.value || "").trim();
+  if (!ref) return extInstallStatus("Paste a Chrome Web Store link or an extension ID first.", "error");
+  const btn = $("btnExtInstall");
+  if (btn) { btn.disabled = true; btn.textContent = "Installing…"; }
+  extInstallStatus("Downloading from the Chrome Web Store…");
+  try {
+    const r = await msg("PROFILE_EXT_INSTALL_WEBSTORE", { profileId: selectedId, ref });
+    if (!r || !r.ok) {
+      extInstallStatus("Install failed: " + escapeHtml((r && r.error) || "unknown error"), "error");
+      return;
+    }
+    if (input) input.value = "";
+    const mv2 = r.manifestVersion === 2
+      ? " <b>Note:</b> this is a Manifest V2 extension and Chromium 148 (the Patched Chromium engine) will not load it — look for the extension's MV3 version."
+      : "";
+    extInstallStatus("Installed <b>" + escapeHtml(r.name) + "</b> v" + escapeHtml(r.version)
+      + (r.restartNeeded ? " — restart this profile's browser to activate it." : " — it loads next time you Start this profile.") + mv2,
+      mv2 ? "" : "ok");
+    renderExtensions();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Install"; }
+  }
+}
+
+async function addUnpackedExtension() {
+  if (!selectedId) return toast("Select a profile first");
+  const r = await msg("PROFILE_EXT_ADD_FOLDER", { profileId: selectedId });
+  if (!r || r.canceled) return;
+  if (!r.ok) return extInstallStatus("Could not load that folder: " + escapeHtml(r.error || "unknown error"), "error");
+  extInstallStatus("Loaded <b>" + escapeHtml(r.name) + "</b>"
+    + (r.restartNeeded ? " — restart this profile's browser to activate it." : " — it loads next time you Start this profile."), "ok");
+  renderExtensions();
 }
 
 // "Generate coherent identity" — asks the main process for a fully consistent
@@ -851,9 +944,10 @@ function setEditMode(on) {
   editMode = on;
   const wrap = $("formWrap");
   if (wrap) {
-    wrap.querySelectorAll("input, select, textarea").forEach((el) => { el.disabled = !on; });
+    wrap.querySelectorAll("input, select, textarea").forEach((el) => { el.disabled = !on && !el.dataset.alwaysEnabled; });
     wrap.querySelectorAll("button").forEach((b) => {
       if (b.classList.contains("pm-tab")) return;                                    // tab switching stays live
+      if (b.dataset.alwaysEnabled) return;                                           // extension install isn't a fingerprint edit
       if (["btnEdit", "btnSave", "btnDuplicate", "btnDelete", "btnAssignTab"].includes(b.id)) return;
       b.disabled = !on;
     });
@@ -1803,6 +1897,11 @@ function bindFormEvents() {
     e.target.value = "";
   });
 
+  // Extension buttons
+  $("btnExtInstall")?.addEventListener("click", installStoreExtension);
+  $("btnExtAddFolder")?.addEventListener("click", addUnpackedExtension);
+  $("extStoreInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); installStoreExtension(); } });
+
   // Conditional row toggles
   const condTriggers = ["fp-userAgent", "fp-webglInfo", "fp-timezone", "fp-language", "fp-geolocation", "fp-deviceName", "fp-ports", "fp-webrtc", "fp-mediaDevices", "fp-screen", "fp-os", "fp-browserVersion", "fp-browser", "px-enabled", "px-networkMode"];
   for (const id of condTriggers) {
@@ -1885,6 +1984,7 @@ function bindFormEvents() {
       tab.classList.add("active");
       const panel = $("tab-" + tab.dataset.tab);
       if (panel) panel.classList.add("active");
+      if (tab.dataset.tab === "extensions") { extInstallStatus(""); renderExtensions(); }
     });
   });
 }

@@ -10,6 +10,7 @@ const authStore = require("./auth-store");
 const vpsProxy = require("./vps-proxy-manager");
 const proxyBridge = require("./local-proxy-bridge");
 const extensionManager = require("./extension-manager");
+const webstore = require("./webstore-install");
 
 // Write to BOTH OneDrive Desktop and userData. OneDrive Files-On-Demand
 // can silently swallow appendFileSync writes, so userData is the reliable
@@ -75,6 +76,39 @@ async function loadExtensionIntoProfile(profileId, selectedPath, options = {}) {
     name: loaded.name || prepared.manifest?.name || path.basename(extensionPath),
     path: extensionPath
   };
+}
+
+// Add/replace an entry in profile.extensions. Keyed by path, and by extension id
+// when we know it, so re-installing a Web Store extension updates in place
+// instead of stacking duplicates.
+function saveProfileExtension(profile, entry) {
+  const existing = Array.isArray(profile.extensions) ? profile.extensions : [];
+  const samePath = (e) => path.resolve(String(e.path || "")) === path.resolve(String(entry.path || ""));
+  const sameId = (e) => Boolean(entry.id) && e.id === entry.id;
+  const next = existing.filter((e) => !samePath(e) && !sameId(e));
+  next.push({
+    id: entry.id || "",
+    name: entry.name || "",
+    version: entry.version || "",
+    manifestVersion: entry.manifestVersion || 0,
+    path: entry.path,
+    source: entry.source || "local",
+    loadedAt: Date.now()
+  });
+  store.updateProfile(profile.id, { extensions: next });
+  return next;
+}
+
+// Extensions are applied at browser launch (--load-extension / session load), so
+// a running browser needs a restart before an install or removal takes effect.
+function profileBrowserRunning(profileId) {
+  try {
+    if (realBrowser.runningIds().includes(profileId)) return true;
+  } catch (_) {}
+  for (const state of windowTabState.values()) {
+    if (state && state.profileId === profileId) return true;
+  }
+  return false;
 }
 
 // Preload scripts are loaded by Electron via Node.js fs (ASAR-aware) — __dirname works fine.
@@ -459,6 +493,84 @@ function registerIpcHandlers() {
       notifyManagerWindows("PATCHED_ENGINE_PROGRESS", { pct: res && res.ok ? 100 : lastPct, done: true, ok: Boolean(res && res.ok) });
       return res;
     } catch (err) { return { ok: false, error: String(err && (err.message || err)) }; }
+  });
+
+  // ── Per-profile extensions ────────────────────────────────────────────────
+  // The patched-chromium engine is an ungoogled-chromium build with the Web Store
+  // install path removed ("Switch to Chrome to install extensions"), so we fetch
+  // the CRX from Google's update endpoint ourselves, unpack it, and add it to
+  // profile.extensions. Every engine already consumes that list: the built-in
+  // Electron engine via session-manager.loadProfileExtensions, and the native
+  // engines via --load-extension in real-browser-manager.
+  ipcMain.handle("PROFILE_EXT_LIST", async (_ev, { profileId } = {}) => {
+    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    if (!profile) return { ok: false, error: "Profile not found" };
+    const saved = Array.isArray(profile.extensions) ? profile.extensions : [];
+    const extensions = saved.map((entry) => {
+      const dir = String((entry && entry.path) || "");
+      const info = { id: entry.id || "", name: entry.name || "", version: entry.version || "", path: dir, source: entry.source || "local", missing: false, manifestVersion: entry.manifestVersion || 0 };
+      try {
+        const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+        info.version = String(manifest.version || info.version);
+        info.manifestVersion = Number(manifest.manifest_version || info.manifestVersion);
+      } catch (_) { info.missing = true; }
+      return info;
+    });
+    return { ok: true, extensions, engine: profile.engine || "chromium" };
+  });
+
+  ipcMain.handle("PROFILE_EXT_INSTALL_WEBSTORE", async (_ev, { profileId, ref } = {}) => {
+    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    if (!profile) return { ok: false, error: "Profile not found" };
+    let installed;
+    try {
+      installed = await webstore.installFromWebstore(ref, extensionManager.getProfileExtensionRoot(profileId));
+    } catch (err) {
+      logError(`Web Store install failed: ${err?.stack || err}`);
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+    if (!installed.ok) return installed;
+    saveProfileExtension(profile, installed);
+    logInfo(`webstore extension installed profile=${profileId} id=${installed.id} v=${installed.version}`);
+    return { ...installed, restartNeeded: profileBrowserRunning(profileId) };
+  });
+
+  ipcMain.handle("PROFILE_EXT_ADD_FOLDER", async (ev, { profileId } = {}) => {
+    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    if (!profile) return { ok: false, error: "Profile not found" };
+    const win = BrowserWindow.fromWebContents(ev.sender);
+    const picked = await dialog.showOpenDialog(win || undefined, {
+      title: "Choose unpacked extension folder",
+      properties: ["openDirectory"]
+    });
+    if (picked.canceled || !picked.filePaths?.[0]) return { ok: false, canceled: true };
+    try {
+      const resolved = extensionManager.resolveExtensionDirectory(picked.filePaths[0]);
+      const entry = {
+        ok: true,
+        id: "",
+        name: String(resolved.manifest.name || path.basename(resolved.directory)),
+        version: String(resolved.manifest.version || ""),
+        manifestVersion: Number(resolved.manifest.manifest_version || 0),
+        path: resolved.directory,
+        source: "local"
+      };
+      saveProfileExtension(profile, entry);
+      return { ...entry, restartNeeded: profileBrowserRunning(profileId) };
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+  });
+
+  ipcMain.handle("PROFILE_EXT_REMOVE", async (_ev, { profileId, path: extPath } = {}) => {
+    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    if (!profile) return { ok: false, error: "Profile not found" };
+    const target = path.resolve(String(extPath || ""));
+    const saved = Array.isArray(profile.extensions) ? profile.extensions : [];
+    store.updateProfile(profileId, { extensions: saved.filter((e) => path.resolve(String(e.path || "")) !== target) });
+    // Only delete files we installed ourselves — never a folder the user picked.
+    try { extensionManager.removeWithinRoot(target, extensionManager.getProfileExtensionRoot(profileId)); } catch (_) {}
+    return { ok: true, restartNeeded: profileBrowserRunning(profileId) };
   });
 
   // Tab assignment — no-op in Electron (each window IS the profile)

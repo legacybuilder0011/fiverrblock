@@ -182,6 +182,7 @@
         <button class="pm-tab" data-tab="proxy">Proxy</button>
         <button class="pm-tab" data-tab="cookies">Cookies &amp; Storage</button>
         <button class="pm-tab" data-tab="session">Session</button>
+        <button class="pm-tab" data-tab="extensions">Extensions</button>
         <button class="pm-tab" data-tab="cloudphones">Cloud Phones</button>
       </div>
 
@@ -1093,6 +1094,39 @@
         </div>
 
       </div><!-- /tab-session -->
+
+      <!-- ========= EXTENSIONS TAB ========= -->
+      <div class="pm-tab-panel" id="tab-extensions">
+
+        <div class="pm-section">
+          <div class="pm-section-title">Install from the Chrome Web Store</div>
+          <p class="pm-hint">
+            Paste a Chrome Web Store link (or the extension ID) and Privacy Shield downloads the extension itself and
+            installs it into <b>this profile only</b>. This is how you add store extensions to the Patched Chromium and
+            Real Brave engines — those browsers show &ldquo;Switch to Chrome to install extensions&rdquo; because the
+            store refuses non-Chrome browsers, so the in-page <b>Add to Chrome</b> button never works there.
+          </p>
+          <div class="pm-btn-row">
+            <input type="text" id="extStoreInput" class="pm-inp" style="flex:1;min-width:260px"
+                   placeholder="https://chromewebstore.google.com/detail/name/abcdefghijklmnopabcdefghijklmnop" data-always-enabled="1" />
+            <button type="button" class="pm-btn-sm primary" id="btnExtInstall" data-always-enabled="1">Install</button>
+            <button type="button" class="pm-btn-sm" id="btnExtAddFolder" data-always-enabled="1">Load unpacked folder…</button>
+          </div>
+          <div id="extInstallStatus" class="pm-hint" style="margin-top:8px"></div>
+        </div>
+
+        <div class="pm-section">
+          <div class="pm-section-title">Installed in this profile</div>
+          <p class="pm-hint">
+            Extensions are attached when the browser starts, so restart this profile's browser after adding or removing
+            one. Each extension keeps its real Web Store ID and runs only inside this profile.
+          </p>
+          <div id="extList" class="pm-cookie-list">
+            <div class="pm-list-empty">No extensions installed in this profile.</div>
+          </div>
+        </div>
+
+      </div><!-- /tab-extensions -->
 
       <!-- ========= CLOUD PHONES TAB ========= -->
       <div class="pm-tab-panel" id="tab-cloudphones">

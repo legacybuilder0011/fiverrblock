@@ -119,5 +119,7 @@ async function installZip(zipPath, profileId) {
 module.exports = {
   installZip,
   readManifest,
-  resolveExtensionDirectory
+  resolveExtensionDirectory,
+  getProfileExtensionRoot,
+  removeWithinRoot
 };
