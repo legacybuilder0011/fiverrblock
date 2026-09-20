@@ -289,9 +289,13 @@ function writePrivacyPreferences(profile, dataDir) {
     browser: {
       check_default_browser: false
     },
-    credentials_enable_service: false,
+    // Chrome's own password manager IS the login vault. Hard-disabling these meant
+    // the "Save password?" bubble never appeared in any profile, so logins were
+    // never stored and accounts were lost. Forced on (not merge-preserved) so the
+    // profiles created while it was off get fixed on their next launch.
+    credentials_enable_service: true,
     profile: {
-      password_manager_enabled: false,
+      password_manager_enabled: true,
       default_content_setting_values: {
         geolocation: 2
       }
@@ -715,6 +719,7 @@ function fetchPatchedChromium(onProgress) {
 
 module.exports = {
   isRealBrowserEngine,
+  writePrivacyPreferences,
   isPatchedChromium,
   engineSupportsExtensionSpoof,
   browserNameForEngine,
