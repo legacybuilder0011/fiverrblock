@@ -115,6 +115,38 @@ async function cloudApi(s, route, body) {
     return { ok: false, error: "Can't reach the cloud server: " + (err.message || err) };
   }
 }
+// Copy this profile's local logins (cookies) into its cloud copy, once. Native
+// engines are read via their own browser (exportProfileCookies); the built-in
+// engine straight from its Electron session. Never fatal: the cloud profile
+// still runs, the caller shows the warning.
+const ELECTRON_SAMESITE = { no_restriction: "None", lax: "Lax", strict: "Strict" };
+async function moveLoginsToCloud(s, profile) {
+  try {
+    let cookies;
+    if (realBrowser.isRealBrowserEngine(profile.engine)) {
+      cookies = await realBrowser.exportProfileCookies(profile);
+    } else if (!profile.engine || profile.engine === "chromium") {
+      const raw = await sessionMgr.getSessionForProfile(profile.id).cookies.get({});
+      cookies = raw.map((c) => ({
+        name: c.name, value: c.value, domain: c.domain, path: c.path || "/",
+        secure: !!c.secure, httpOnly: !!c.httpOnly, sameSite: ELECTRON_SAMESITE[c.sameSite],
+        session: !!c.session, expires: c.expirationDate || -1
+      }));
+    } else {
+      return { ok: false, error: "Logins can't be moved from the Stealthfox engine — log in again in the cloud window." };
+    }
+    if (cookies.length) {
+      const r = await cloudApi(s, "/api/cookies", { profileId: profile.id, cookies });
+      if (!r.ok) return { ok: false, error: "Couldn't move logins to the cloud: " + (r.error || "unknown error") };
+    }
+    store.updateProfile(profile.id, { cloudLoginsMovedAt: Date.now() });
+    logInfo(`cloud logins moved profile=${profile.id} cookies=${cookies.length}`);
+    return { ok: true, imported: cookies.length };
+  } catch (err) {
+    return { ok: false, error: "Couldn't move logins to the cloud: " + (err.message || err) };
+  }
+}
+
 const cloudViewers = new Map();
 function openCloudViewer(s, profile) {
   const existing = cloudViewers.get(profile.id);
@@ -480,7 +512,11 @@ function registerIpcHandlers() {
     const s = readCloudSettings();
     if (!s.url || !s.token) return { ok: false, needsSettings: true, error: "Set the cloud server address and team token first." };
     // Already running in the cloud → just show it (it may be paused by the VPN lock).
-    if (profile.cloudRunning) { openCloudViewer(s, profile); return { ok: true, already: true }; }
+    if (profile.cloudRunning) {
+      const moved = profile.cloudLoginsMovedAt ? { ok: true } : await moveLoginsToCloud(s, profile);
+      openCloudViewer(s, profile);
+      return { ok: true, already: true, loginsWarning: moved.ok ? "" : moved.error, loginsMoved: moved.imported || 0 };
+    }
     const px = profile.proxy || {};
     const mode = networkModeOf(profile);
     let body;
@@ -516,8 +552,9 @@ function registerIpcHandlers() {
     if (!r.ok) return r;
     profile = store.updateProfile(profile.id, { cloudRunning: body.mode, cloudStartedAt: Date.now(), cloudDevice: thisDeviceId() }) || profile;
     if (body.mode === "pc") await runCloudGateTick();
+    const moved = await moveLoginsToCloud(s, profile);
     openCloudViewer(s, profile);
-    return { ok: true, mode: body.mode };
+    return { ok: true, mode: body.mode, loginsWarning: moved.ok ? "" : moved.error, loginsMoved: moved.imported || 0 };
   });
   ipcMain.handle("PROFILE_STOP_CLOUD", async (_ev, { profileId } = {}) => {
     const s = readCloudSettings();

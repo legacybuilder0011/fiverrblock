@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY chromium /opt/chromium
 COPY winfonts /usr/share/fonts/windows
 COPY image/vendor/chromium-web-store /opt/cws
-COPY image/local-proxy-bridge.js image/start-bridge.js image/entrypoint.sh image/openbox-rc.xml /opt/ps/
+COPY image/local-proxy-bridge.js image/start-bridge.js image/entrypoint.sh image/openbox-rc.xml image/import-cookies.js /opt/ps/
 # Windows-like font resolution: drop Linux alias rules (Liberation/DejaVu
 # substitution answers "installed" for fonts Windows would not have).
 COPY image/fonts.conf /etc/fonts/fonts.conf

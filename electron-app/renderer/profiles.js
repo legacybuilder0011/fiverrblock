@@ -2181,7 +2181,9 @@ async function startInCloud(profileId) {
     r = await msg("PROFILE_START_CLOUD", { profileId });
   }
   if (!r.ok) { alert("Cloud start failed\n\n" + (r.error || "unknown error")); return; }
-  toast(r.mode === "pc"
+  if (r.loginsWarning) alert("The cloud profile is running, but:\n\n" + r.loginsWarning);
+  if (r.loginsMoved) toast(`Moved ${r.loginsMoved} saved logins/cookies to the cloud profile — don't use this account locally at the same time`);
+  else if (!r.already) toast(r.mode === "pc"
     ? "Running in the cloud through your VPN — pauses when this PC or the VPN is off"
     : "Running in the cloud — keeps going when you close the window");
   await loadProfiles(); renderList();

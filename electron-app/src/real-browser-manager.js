@@ -729,6 +729,51 @@ function fetchPatchedChromium(onProgress) {
   return patchedFetchPromise;
 }
 
+// Read every cookie (logins) out of this profile's LOCAL native-browser data so
+// they can be moved into its cloud copy. The engine itself is started headless on
+// the profile's data dir and asked over DevTools — it decrypts its own cookie
+// store, so this works for Brave/Chrome/Patched Chromium alike. The profile must
+// not be open locally (Chromium locks its data dir).
+async function exportProfileCookies(profile) {
+  if (isProfileRunning(profile.id)) throw new Error("Close this profile's local browser first, then try again.");
+  const engine = profile.engine;
+  let exe = findExecutable(engine, (profile.fingerprint && profile.fingerprint.browserChannel) || "stable");
+  if (!exe.ok) exe = findExecutable(engine, "stable");
+  if (!exe.ok) throw new Error("The local browser for this profile isn't installed, so its logins can't be read.");
+  const dir = profileDataDir(profile.id, engine);
+  const portFile = path.join(dir, "DevToolsActivePort");
+  try { fs.rmSync(portFile, { force: true }); } catch (_) {}
+  const child = spawn(exe.path, [
+    `--user-data-dir=${dir}`, "--profile-directory=Default", "--headless=new",
+    "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
+    "--no-first-run", "--no-default-browser-check", "--disable-extensions", "about:blank"
+  ], { windowsHide: true, stdio: "ignore" });
+  try {
+    let port = 0;
+    for (let i = 0; i < 100 && !port; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      try { port = Number(fs.readFileSync(portFile, "utf8").split("\n")[0]) || 0; } catch (_) {}
+    }
+    if (!port) throw new Error("The local browser didn't start to read logins.");
+    const ver = await fetch(`http://127.0.0.1:${port}/json/version`).then((r) => r.json());
+    const cookies = await new Promise((resolve, reject) => {
+      const ws = new WebSocket(ver.webSocketDebuggerUrl);
+      const t = setTimeout(() => { try { ws.close(); } catch (_) {} reject(new Error("Reading cookies timed out.")); }, 20000);
+      ws.onopen = () => ws.send(JSON.stringify({ id: 1, method: "Storage.getCookies" }));
+      ws.onmessage = (ev) => {
+        const m = JSON.parse(ev.data);
+        if (m.id !== 1) return;
+        clearTimeout(t); try { ws.close(); } catch (_) {}
+        m.error ? reject(new Error(m.error.message)) : resolve(m.result.cookies || []);
+      };
+      ws.onerror = () => { clearTimeout(t); reject(new Error("Couldn't talk to the local browser.")); };
+    });
+    return cookies;
+  } finally {
+    try { child.kill(); } catch (_) {}
+  }
+}
+
 // What the cloud runner needs to launch this profile exactly like the local
 // Patched Chromium: the same seeded fingerprint + locale flags and screen size.
 // Storage, proxy, extensions and sandboxing are fixed by the cloud box itself.
@@ -746,6 +791,7 @@ function cloudLaunchSpec(profile, cfg) {
 
 module.exports = {
   cloudLaunchSpec,
+  exportProfileCookies,
   isRealBrowserEngine,
   writePrivacyPreferences,
   isPatchedChromium,

@@ -41,10 +41,10 @@ function send(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
-function readJson(req) {
+function readJson(req, limit = 65536) {
   return new Promise((resolve) => {
     let d = "";
-    req.on("data", (c) => { d += c; if (d.length > 65536) req.destroy(); });
+    req.on("data", (c) => { d += c; if (d.length > limit) req.destroy(); });
     req.on("end", () => { try { resolve(JSON.parse(d || "{}")); } catch (_) { resolve(null); } });
   });
 }
@@ -124,6 +124,29 @@ async function stop(body) {
   await docker(["rm", "-f", boxName(id)]);
   await docker(["network", "rm", `psnet-${id}`]);
   return { code: 200, body: { ok: true } };
+}
+
+// Logins moved from the PC: drop them in the box's data folder and restart the
+// box; its entrypoint loads them before the normal browser start.
+async function importCookies(body) {
+  const id = safeId(body.profileId);
+  if (!id) return { code: 400, body: { ok: false, error: "Invalid profileId" } };
+  if (!Array.isArray(body.cookies) || body.cookies.length > 20000) return { code: 400, body: { ok: false, error: "cookies must be an array" } };
+  const running = await docker(["inspect", "-f", "{{.State.Status}}", boxName(id)]);
+  if (!running.ok) return { code: 404, body: { ok: false, error: "profile is not running in the cloud" } };
+  const file = path.join(PROFILES_DIR, id, "ps-import-cookies.json");
+  fs.writeFileSync(file, JSON.stringify(body.cookies), { mode: 0o600 });
+  fs.chownSync(file, 1500, 1500);
+  const wasPaused = running.out === "paused";
+  if (wasPaused) await docker(["unpause", boxName(id)]);
+  // Boxes created from an older image lack the import step — refresh the startup
+  // scripts inside the box (its filesystem survives a restart).
+  // ponytail: script-level upgrade only; image-level changes still need stop+start.
+  for (const f of ["entrypoint.sh", "import-cookies.js"]) await docker(["cp", path.join(ROOT, "image", f), `${boxName(id)}:/opt/ps/${f}`]);
+  await docker(["restart", "-t", "5", boxName(id)]);
+  const relay = relays.get(id);
+  if (relay) relay.paused = false; // the pause loop re-freezes it if the PC tunnel is still down
+  return { code: 200, body: { ok: true, imported: body.cookies.length } };
 }
 
 async function list() {
@@ -270,6 +293,11 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       if (!body) return send(res, 400, { ok: false, error: "bad json" });
       const r = await stop(body); return send(res, r.code, r.body);
+    }
+    if (req.method === "POST" && url === "/api/cookies") {
+      const body = await readJson(req, 25 * 1024 * 1024);
+      if (!body) return send(res, 400, { ok: false, error: "bad json" });
+      const r = await importCookies(body); return send(res, r.code, r.body);
     }
     if (req.method === "GET" && url === "/api/list") { const r = await list(); return send(res, r.code, r.body); }
 

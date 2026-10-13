@@ -8,6 +8,12 @@ set -u
 W="${PS_W:-1920}"; H="${PS_H:-1080}"
 export DISPLAY=:1
 
+# A restarted box keeps its old /tmp and profile locks: a stale X lock stops Xvfb
+# ("display already active"), a stale SingletonLock makes Chrome think the profile
+# is open elsewhere (PIDs repeat in a fresh container), and a stale bridge.port
+# would point Chrome at a dead proxy port. Nothing else runs here, so clear them.
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/bridge.port /data/SingletonLock /data/SingletonSocket /data/SingletonCookie /data/DevToolsActivePort
+
 proxy_args=()
 scheme=$(node -e 'const p=JSON.parse(process.env.PS_PROXY||"{}");process.stdout.write(String(p.scheme||"").toLowerCase())')
 phost=$(node -e 'const p=JSON.parse(process.env.PS_PROXY||"{}");process.stdout.write(String(p.host||""))')
@@ -37,8 +43,23 @@ websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 
 mapfile -t fp_args < <(printf '%s\n' "${PS_ARGS:-}" | sed '/^$/d')
 
+# Logins moved from the PC: load them once with a box-loopback-only DevTools port,
+# then delete the file. The normal browser below never has a debug port.
+if [ -s /data/ps-import-cookies.json ]; then
+  rm -f /data/DevToolsActivePort
+  /opt/chromium/chrome --user-data-dir=/data --no-first-run --no-sandbox --headless=new \
+    --remote-debugging-port=0 --remote-debugging-address=127.0.0.1 "${proxy_args[@]}" "${fp_args[@]}" about:blank >/dev/null 2>&1 &
+  cpid=$!
+  timeout 60 node /opt/ps/import-cookies.js
+  kill "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null
+  rm -f /data/ps-import-cookies.json /data/DevToolsActivePort
+fi
+
 # Keep the browser up 24/7: relaunch if it exits or crashes.
 while true; do
+  # A box restart kills Chrome hard; mark the last exit clean so it doesn't nag
+  # with "Restore pages?" (tabs still come back via session restore).
+  sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' /data/Default/Preferences 2>/dev/null
   /opt/chromium/chrome \
     --user-data-dir=/data --no-first-run --no-default-browser-check --no-sandbox \
     --window-position=0,0 "--window-size=$W,$H" --start-maximized \
