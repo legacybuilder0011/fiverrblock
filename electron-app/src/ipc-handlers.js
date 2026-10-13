@@ -177,6 +177,11 @@ function openCloudViewer(s, profile) {
       });
     } catch (_) {}
   }
+  // neko syncs copy/paste with this PC through the Clipboard API — allow only that,
+  // only for the cloud-viewer partition.
+  const allowClip = (perm) => perm === "clipboard-read" || perm === "clipboard-sanitized-write";
+  win.webContents.session.setPermissionRequestHandler((_wc, perm, cb) => cb(allowClip(perm)));
+  win.webContents.session.setPermissionCheckHandler((_wc, perm) => allowClip(perm));
   cloudViewers.set(profile.id, win);
   win.once("ready-to-show", () => bringToFront(win));
   win.on("page-title-updated", (e) => e.preventDefault()); // keep the profile name as the title
@@ -209,7 +214,8 @@ function openCloudViewer(s, profile) {
     }).catch(() => {});
   }, 1000);
   win.on("closed", () => { clearInterval(copyPoll); cloudViewers.delete(profile.id); });
-  win.loadURL(`${s.url}/view/${id}/vnc.html?autoconnect=1&reconnect=1&resize=scale&quality=4&compression=6&path=${encodeURIComponent(`view/${id}/websockify`)}&t=${encodeURIComponent(s.token)}`);
+  // The runner sends /view/<id>/ to the right viewer (WebRTC neko or legacy VNC), logged in.
+  win.loadURL(`${s.url}/view/${id}/?t=${encodeURIComponent(s.token)}`);
 }
 
 function saveProfileExtension(profile, entry) {

@@ -12,7 +12,10 @@ const { execFile } = require("child_process");
 
 const ROOT = "/opt/ps-cloud";
 const PORT = 8320;
-const IMAGE = "ps-runner";
+const IMAGE = "ps-runner";          // VNC box (still frames) — legacy
+const RTC_IMAGE = "ps-runner-rtc";  // neko WebRTC box (real video + sound) — default
+const PUBLIC_IP = process.env.PS_PUBLIC_IP || ""; // WebRTC media goes straight to this IP
+const RTC_PORT_MIN = 52100, RTC_PORT_MAX = 52999;  // one UDP+TCP mux port per box
 const TOKEN = fs.readFileSync(path.join(ROOT, "runner", "token"), "utf8").trim();
 const PROFILES_DIR = path.join(ROOT, "profiles");
 
@@ -85,9 +88,13 @@ async function start(body) {
 
   // Own folder + own network per profile: boxes can't see each other's files or
   // reach each other over the network.
+  const stream = body.stream === "vnc" || !PUBLIC_IP ? "vnc" : "rtc";
   const dataDir = path.join(PROFILES_DIR, id);
   fs.mkdirSync(dataDir, { recursive: true });
-  fs.chownSync(dataDir, 1500, 1500);
+  // The VNC box runs Chrome as uid 1500, the neko box as uid 1000 — hand the
+  // profile's data to whichever this box uses (an existing profile may switch).
+  const uid = stream === "rtc" ? "1000" : "1500";
+  await new Promise((r) => execFile("chown", ["-R", `${uid}:${uid}`, dataDir], () => r()));
   await docker(["network", "create", "--driver", "bridge", `psnet-${id}`]);
 
   let proxyJson, labels = [];
@@ -101,16 +108,38 @@ async function start(body) {
     const p = body.proxy;
     proxyJson = JSON.stringify({ scheme: p.scheme, host: p.host, port: Number(p.port), username: p.username || "", password: p.password || "" });
   }
+  let streamArgs;
+  if (stream === "rtc") {
+    const rtcPort = await freeRtcPort();
+    if (!rtcPort) return { code: 503, body: { ok: false, error: "No free video ports on this server" } };
+    const pw = crypto.randomBytes(12).toString("hex");
+    // ponytail: neko's Xorg only has fixed modes — snap to the nearest common one.
+    const screen = w >= 1900 ? "1920x1080" : w >= 1500 ? "1600x900" : "1280x720";
+    streamArgs = [
+      "-p", "127.0.0.1::8080", "-p", `${rtcPort}:${rtcPort}/udp`, "-p", `${rtcPort}:${rtcPort}/tcp`,
+      "--shm-size", "1g",
+      "--label", "ps.stream=rtc", "--label", `ps.rtcport=${rtcPort}`, "--label", `ps.nekopw=${pw}`,
+      "-e", `NEKO_DESKTOP_SCREEN=${screen}@30`,
+      "-e", "NEKO_MEMBER_PROVIDER=multiuser",
+      "-e", `NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD=${pw}`,
+      "-e", `NEKO_MEMBER_MULTIUSER_USER_PASSWORD=${crypto.randomBytes(12).toString("hex")}`,
+      "-e", "NEKO_SESSION_IMPLICIT_HOSTING=true",
+      "-e", `NEKO_WEBRTC_UDPMUX=${rtcPort}`, "-e", `NEKO_WEBRTC_TCPMUX=${rtcPort}`,
+      "-e", "NEKO_WEBRTC_ICELITE=true", "-e", `NEKO_WEBRTC_NAT1TO1=${PUBLIC_IP}`,
+      RTC_IMAGE
+    ];
+  } else {
+    streamArgs = ["-p", "127.0.0.1::6080", "--shm-size", "512m", "--label", "ps.stream=vnc", IMAGE];
+  }
   const run = await docker([
     "run", "-d", "--name", boxName(id), "--network", `psnet-${id}`,
-    "-p", "127.0.0.1::6080",
     "-v", `${dataDir}:/data`,
-    "--memory", "2560m", "--cpus", "3", "--shm-size", "512m",
+    "--memory", "2560m", "--cpus", "3",
     "--restart", "unless-stopped",
     "--label", "ps.profile=" + id, ...labels,
     "-e", `PS_W=${w}`, "-e", `PS_H=${h}`, "-e", `PS_URL=${url}`,
     "-e", `PS_ARGS=${args.join("\n")}`, "-e", `PS_PROXY=${proxyJson}`,
-    IMAGE
+    ...streamArgs
   ]);
   if (!run.ok) { closeRelay(id); return { code: 500, body: { ok: false, error: "Box failed to start: " + run.err.slice(0, 300) } }; }
   if (mode === "pc") await setPaused(id, true); // frozen until the PC tunnel connects
@@ -268,7 +297,7 @@ async function readyViewerPort(id) {
     // Must be an HTTP answer from noVNC itself: Docker's port forwarder accepts
     // TCP even while the box's websockify isn't listening yet.
     if (port && await new Promise((ok) => {
-      const r = http.get({ host: "127.0.0.1", port, path: "/vnc.html", timeout: 2000 }, (res) => { res.resume(); ok(res.statusCode < 500); });
+      const r = http.get({ host: "127.0.0.1", port, path: "/", timeout: 2000 }, (res) => { res.resume(); ok(res.statusCode < 500); });
       r.on("error", () => ok(false));
       r.on("timeout", () => { r.destroy(); ok(false); });
     })) return port;
@@ -277,8 +306,23 @@ async function readyViewerPort(id) {
   return 0;
 }
 
+async function freeRtcPort() {
+  const r = await docker(["ps", "-a", "--filter", "label=ps.rtcport", "--format", "{{.Label \"ps.rtcport\"}}"]);
+  const used = new Set((r.out ? r.out.split("\n") : []).map(Number));
+  for (let p = RTC_PORT_MIN; p <= RTC_PORT_MAX; p++) if (!used.has(p)) return p;
+  return 0;
+}
+
+// Which viewer a box has: neko (rtc, port 8080, auto-login password) or noVNC.
+async function boxStream(id) {
+  const r = await docker(["inspect", "-f", "{{index .Config.Labels \"ps.stream\"}}|{{index .Config.Labels \"ps.nekopw\"}}", boxName(id)]);
+  const [stream, pw] = (r.out || "").split("|");
+  return { stream: stream === "rtc" ? "rtc" : "vnc", pw: pw || "" };
+}
+
 async function viewerPort(id) {
-  const r = await docker(["port", boxName(id), "6080/tcp"]);
+  const { stream } = await boxStream(id);
+  const r = await docker(["port", boxName(id), stream === "rtc" ? "8080/tcp" : "6080/tcp"]);
   const m = /127\.0\.0\.1:(\d+)/.exec(r.out);
   return m ? Number(m[1]) : 0;
 }
@@ -326,6 +370,23 @@ const server = http.createServer(async (req, res) => {
 
     const t = viewTarget(url);
     if (t) {
+      // The app always opens /view/<id>/ — send it to the right viewer, logged in.
+      // Older apps open the noVNC page directly; a WebRTC box has none.
+      if (req.method === "GET" && /^\/vnc\.html/.test(t.rest) && (await boxStream(t.id)).stream === "rtc") {
+        res.writeHead(302, { Location: `/view/${t.id}/` });
+        return res.end();
+      }
+      if (req.method === "GET" && /^\/(\?.*)?$/.test(t.rest)) {
+        const { stream, pw } = await boxStream(t.id);
+        if (stream === "rtc" && !/[?&]usr=/.test(t.rest)) {
+          res.writeHead(302, { Location: `/view/${t.id}/?usr=Team&pwd=${encodeURIComponent(pw)}&embed=1` });
+          return res.end();
+        }
+        if (stream === "vnc" && t.rest === "/") {
+          res.writeHead(302, { Location: `/view/${t.id}/vnc.html?autoconnect=1&reconnect=1&resize=scale&quality=4&compression=6&path=${encodeURIComponent(`view/${t.id}/websockify`)}` });
+          return res.end();
+        }
+      }
       const port = await readyViewerPort(t.id);
       if (!port) return send(res, 404, { ok: false, error: "profile not running (or still starting) — try again in a moment" });
       const up = http.request({ host: "127.0.0.1", port, path: t.rest, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${port}` } }, (ur) => {
