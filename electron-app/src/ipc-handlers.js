@@ -169,6 +169,7 @@ const RENDERER_PRELOAD    = path.join(__dirname, "renderer-preload.js");
 const cdpStealth = require("./cdp-stealth");
 const camoufox = require("./camoufox-manager");
 const realBrowser = require("./real-browser-manager");
+const cloudTunnel = require("./cloud-tunnel");
 realBrowser.setChangeHandler(() => notifyManagerWindows("WINDOWS_CHANGED"));
 
 // HTML files load via the psapp:// custom protocol (registered in main.js).
@@ -474,32 +475,61 @@ function registerIpcHandlers() {
     return { ok: true };
   });
   ipcMain.handle("PROFILE_START_CLOUD", async (_ev, { profileId } = {}) => {
-    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    let profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
     if (!profile) return { ok: false, error: "Profile not found" };
-    const px = profile.proxy || {};
-    if ((px.networkMode || (px.enabled ? "proxy" : "direct")) !== "proxy") {
-      return { ok: false, error: "Only Proxy-mode profiles can run in the cloud — the server's own IP is shared and datacenter. Give this profile its own proxy first." };
-    }
-    const proxyErr = sessionMgr.proxyLaunchError(px);
-    if (proxyErr) return { ok: false, error: proxyErr };
     const s = readCloudSettings();
     if (!s.url || !s.token) return { ok: false, needsSettings: true, error: "Set the cloud server address and team token first." };
-    // Same as local Start: "Auto" timezone/language/geo must follow the proxy's
-    // current exit, not whatever was saved the last time it ran locally.
-    const fresh = await refreshProxyGeo(profile);
-    const spec = realBrowser.cloudLaunchSpec(fresh, store.buildConfigFromProfile(fresh));
-    const r = await cloudApi(s, "/api/start", {
-      profileId: profile.id, args: spec.args, width: spec.width, height: spec.height,
-      proxy: { scheme: px.scheme || "http", host: px.host, port: px.port, username: sessionMgr.expandProxyPlaceholders(px.username || "", profile), password: px.password || "" }
-    });
+    // Already running in the cloud → just show it (it may be paused by the VPN lock).
+    if (profile.cloudRunning) { openCloudViewer(s, profile); return { ok: true, already: true }; }
+    const px = profile.proxy || {};
+    const mode = networkModeOf(profile);
+    let body;
+
+    if (mode === "proxy") {
+      const proxyErr = sessionMgr.proxyLaunchError(px);
+      if (proxyErr) return { ok: false, error: proxyErr };
+      // Same as local Start: "Auto" timezone/language/geo follow the proxy's exit.
+      profile = await refreshProxyGeo(profile);
+      body = { mode: "proxy", proxy: { scheme: px.scheme || "http", host: px.host, port: px.port, username: sessionMgr.expandProxyPlaceholders(px.username || "", profile), password: px.password || "" } };
+    } else {
+      // VPN mode: the box browses through THIS PC's VPN. Same lock as a local VPN
+      // profile, plus one profile per VPN IP.
+      let current;
+      try { current = await captureCurrentNetwork(); } catch (err) {
+        return { ok: false, error: "Couldn't verify your VPN location — no IP service was reachable. Connect your VPN, then try again." };
+      }
+      const g = vpnGate(profile, current);
+      if (!g.ok) return { ok: false, error: `${g.reason}.\n\nSwitch your VPN to this profile's location, then click ☁ Cloud again.` };
+      const holder = vpnIpHolder(profile.id);
+      if (holder) return { ok: false, error: `Your VPN IP is already used by “${holder.name}” (${holder.where}). One profile per VPN IP — change your VPN location or stop that profile first.` };
+      // Anchor a brand-new profile to this location and refresh "Auto" geo from it.
+      const type = classifyConnection(current);
+      profile = store.updateProfile(profile.id, {
+        lastVpnNetwork: { ip: current.ip, country: current.country, countryCode: current.countryCode, city: current.city, state: current.state, connectionType: type, isVpn: type === "datacenter", capturedAt: Date.now() },
+        proxy: { detectedCountryCode: current.countryCode, detectedCountry: current.country, detectedCity: current.city, detectedState: current.state, detectedTimezone: current.timezone, detectedLatitude: current.latitude, detectedLongitude: current.longitude, detectedIp: current.ip, proxyType: type === "datacenter" ? "vpn" : type, detectedAt: Date.now() }
+      }) || profile;
+      body = { mode: "pc" };
+    }
+
+    const spec = realBrowser.cloudLaunchSpec(profile, store.buildConfigFromProfile(profile));
+    const r = await cloudApi(s, "/api/start", { profileId: profile.id, args: spec.args, width: spec.width, height: spec.height, ...body });
     if (!r.ok) return r;
+    profile = store.updateProfile(profile.id, { cloudRunning: body.mode, cloudStartedAt: Date.now(), cloudDevice: thisDeviceId() }) || profile;
+    if (body.mode === "pc") await runCloudGateTick();
     openCloudViewer(s, profile);
-    return { ok: true };
+    return { ok: true, mode: body.mode };
   });
   ipcMain.handle("PROFILE_STOP_CLOUD", async (_ev, { profileId } = {}) => {
     const s = readCloudSettings();
     if (!s.url || !s.token) return { ok: false, error: "No cloud server set." };
-    return cloudApi(s, "/api/stop", { profileId });
+    const r = await cloudApi(s, "/api/stop", { profileId });
+    if (r.ok) {
+      store.updateProfile(profileId, { cloudRunning: null, cloudStartedAt: null, cloudDevice: null });
+      const v = cloudViewers.get(profileId);
+      if (v && !v.isDestroyed()) v.close();
+      await runCloudGateTick();
+    }
+    return r;
   });
   ipcMain.handle("CLOUD_LIST", async () => {
     const s = readCloudSettings();
@@ -3084,6 +3114,106 @@ function classifyConnection(n) {
   if (n.isMobile) return "mobile";
   return detectProxyType(n.ispName, n.ispAsn, n.organization);
 }
+
+// ── VPN-mode cloud profiles: this PC is their internet exit ─────────────────
+// A cloud profile in vpn/direct mode browses through a tunnel to THIS PC, i.e.
+// through whatever VPN the PC is on. Every 20s and on any network change we
+// re-run the same lock as local VPN profiles; a profile only gets a tunnel while
+// the VPN matches its anchored location and nobody else holds that VPN IP.
+// Otherwise its tunnel closes → no internet → the server freezes the box.
+const cloudGateStatus = new Map(); // profileId -> { active, reason }
+let cloudGateBusy = false;
+let cloudGateSig = null;
+
+// This PC's id. A VPN-mode cloud profile is served ONLY by the PC that started it
+// (profiles sync to teammates via Supabase; two PCs serving one profile would
+// split its traffic across two VPN IPs).
+let _deviceId = null;
+function thisDeviceId() {
+  if (_deviceId) return _deviceId;
+  const file = path.join(require("electron").app.getPath("userData"), "device-id");
+  try { _deviceId = fs.readFileSync(file, "utf8").trim(); } catch (_) {}
+  if (!/^[a-f0-9]{32}$/.test(_deviceId || "")) { _deviceId = require("crypto").randomBytes(16).toString("hex"); fs.writeFileSync(file, _deviceId); }
+  return _deviceId;
+}
+
+const networkModeOf = (p) => { const x = (p && p.proxy) || {}; return x.networkMode || (x.enabled ? "proxy" : "direct"); };
+const placeText = (n) => [n && n.city, n && n.state, n && (n.country || n.countryCode)].filter(Boolean).join(", ") || "unknown location";
+
+function vpnGate(profile, current) {
+  const type = classifyConnection(current);
+  const anchor = profileAnchor(profile);
+  const requiresVpn = networkModeOf(profile) === "vpn" || (anchor && anchor.isVpn === true);
+  if (requiresVpn && type !== "datacenter" && (type === "residential" || type === "mobile")) {
+    return { ok: false, reason: "No VPN connected — this PC is on its normal internet" };
+  }
+  if (anchor && !locationsMatch(anchor, current)) {
+    return { ok: false, reason: `VPN is in ${placeText(current)}; this profile is locked to ${placeText(anchor)}` };
+  }
+  return { ok: true };
+}
+
+// Who already uses this PC's current VPN IP: a local vpn/direct window, or an
+// active VPN-mode cloud profile. Only one profile per VPN IP.
+function vpnIpHolder(exceptId) {
+  const profiles = store.getProfiles();
+  for (const id of profileWindows.keys()) {
+    const p = profiles.find((x) => x.id === id);
+    if (p && id !== exceptId && ["vpn", "direct"].includes(networkModeOf(p))) return { name: p.name || "a profile", where: "open on this PC" };
+  }
+  for (const [id, st] of cloudGateStatus) {
+    const p = profiles.find((x) => x.id === id);
+    if (st.active && id !== exceptId && p && p.cloudRunning === "pc") return { name: p.name || "a profile", where: "running in the cloud" };
+  }
+  return null;
+}
+
+async function runCloudGateTick() {
+  if (cloudGateBusy) return;
+  cloudGateBusy = true;
+  try {
+    const s = readCloudSettings();
+    const list = store.getProfiles()
+      .filter((p) => !p.deletedAt && p.cloudRunning === "pc" && p.cloudDevice === thisDeviceId())
+      .sort((a, b) => (a.cloudStartedAt || 0) - (b.cloudStartedAt || 0));
+    for (const id of [...cloudGateStatus.keys()]) if (!list.some((p) => p.id === id)) cloudGateStatus.delete(id);
+    if (!list.length || !s.url || !s.token) { cloudTunnel.setAllowed(s, []); return; }
+    let current = null;
+    try { current = await captureCurrentNetwork(); } catch (_) {}
+    const allowed = [];
+    const localHolder = vpnIpHolder(null);
+    let cloudHolder = null;
+    for (const p of list) {
+      let g = current ? vpnGate(p, current) : { ok: false, reason: "No internet / VPN down on this PC" };
+      if (g.ok && localHolder && localHolder.where === "open on this PC") g = { ok: false, reason: `This VPN IP is in use by “${localHolder.name}” open on this PC` };
+      if (g.ok && cloudHolder) g = { ok: false, reason: `This VPN IP is already used by cloud profile “${cloudHolder.name}” — one profile per VPN IP` };
+      if (g.ok) { cloudHolder = p; allowed.push(p.id); }
+      const prev = cloudGateStatus.get(p.id);
+      if (!prev || prev.active !== g.ok || prev.reason !== (g.reason || "")) {
+        notifyManagerWindows("CLOUD_GATE", { profileId: p.id, profileName: p.name || "Profile", active: g.ok, reason: g.reason || "" });
+      }
+      cloudGateStatus.set(p.id, { active: g.ok, reason: g.reason || "" });
+    }
+    cloudTunnel.setAllowed(s, allowed);
+  } finally {
+    cloudGateBusy = false;
+  }
+}
+
+// Always-on (cheap when no VPN-mode cloud profile exists): full re-check every
+// 20s, and on any network-interface change cut ALL tunnels first (VPN switching
+// or dropping), then re-check — fail-closed during the switch.
+setInterval(runCloudGateTick, 20000).unref();
+setInterval(() => {
+  if (!cloudTunnel.activeIds().length && cloudGateSig !== null) { cloudGateSig = ifaceSignature(); return; }
+  const sig = ifaceSignature();
+  if (cloudGateSig !== null && sig !== cloudGateSig) {
+    cloudTunnel.setAllowed(readCloudSettings(), []);
+    for (const st of cloudGateStatus.values()) st.active = false;
+    setTimeout(runCloudGateTick, 3000);
+  }
+  cloudGateSig = sig;
+}, 2500).unref();
 
 // ── VPN kill-switch watcher ───────────────────────────────────────────────────
 // While any vpn/direct profile window is open we watch the system network. If

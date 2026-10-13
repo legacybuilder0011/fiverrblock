@@ -63,7 +63,10 @@ function validateProxy(p) {
 async function start(body) {
   const id = safeId(body.profileId);
   if (!id) return { code: 400, body: { ok: false, error: "Invalid profileId" } };
-  const proxyErr = validateProxy(body.proxy);
+  // mode "pc": the box's only internet exit is a tunnel to the owner's PC (its
+  // VPN). No tunnel → no internet, box paused. Never the server's own IP.
+  const mode = body.mode === "pc" ? "pc" : "proxy";
+  const proxyErr = mode === "pc" ? "" : validateProxy(body.proxy);
   if (proxyErr) return { code: 400, body: { ok: false, error: proxyErr } };
   const args = Array.isArray(body.args) ? body.args.map(String) : [];
   const bad = args.find((a) => !ALLOWED_ARG.test(a));
@@ -73,7 +76,11 @@ async function start(body) {
   const url = /^https?:\/\/[^\s]{1,2000}$/.test(String(body.url || "")) ? String(body.url) : "";
 
   const running = await docker(["inspect", "-f", "{{.State.Running}}", boxName(id)]);
-  if (running.ok && running.out === "true") return { code: 200, body: { ok: true, profileId: id, already: true } };
+  if (running.ok && running.out === "true") {
+    await restoreRelay(id);
+    return { code: 200, body: { ok: true, profileId: id, already: true } };
+  }
+  closeRelay(id);
   await docker(["rm", "-f", boxName(id)]);
 
   // Own folder + own network per profile: boxes can't see each other's files or
@@ -83,36 +90,146 @@ async function start(body) {
   fs.chownSync(dataDir, 1500, 1500);
   await docker(["network", "create", "--driver", "bridge", `psnet-${id}`]);
 
-  const p = body.proxy;
-  const proxyJson = JSON.stringify({ scheme: p.scheme, host: p.host, port: Number(p.port), username: p.username || "", password: p.password || "" });
+  let proxyJson, labels = [];
+  if (mode === "pc") {
+    const gw = await networkGateway(id);
+    if (!gw) return { code: 500, body: { ok: false, error: "Could not read the box network gateway" } };
+    const relay = await openRelay(id, gw, 0);
+    proxyJson = JSON.stringify({ scheme: "http", host: gw, port: relay.port });
+    labels = ["--label", "ps.mode=pc", "--label", `ps.relay=${gw}:${relay.port}`];
+  } else {
+    const p = body.proxy;
+    proxyJson = JSON.stringify({ scheme: p.scheme, host: p.host, port: Number(p.port), username: p.username || "", password: p.password || "" });
+  }
   const run = await docker([
     "run", "-d", "--name", boxName(id), "--network", `psnet-${id}`,
     "-p", "127.0.0.1::6080",
     "-v", `${dataDir}:/data`,
     "--memory", "1536m", "--cpus", "1.5", "--shm-size", "512m",
     "--restart", "unless-stopped",
-    "--label", "ps.profile=" + id,
+    "--label", "ps.profile=" + id, ...labels,
     "-e", `PS_W=${w}`, "-e", `PS_H=${h}`, "-e", `PS_URL=${url}`,
     "-e", `PS_ARGS=${args.join("\n")}`, "-e", `PS_PROXY=${proxyJson}`,
     IMAGE
   ]);
-  if (!run.ok) return { code: 500, body: { ok: false, error: "Box failed to start: " + run.err.slice(0, 300) } };
-  return { code: 200, body: { ok: true, profileId: id } };
+  if (!run.ok) { closeRelay(id); return { code: 500, body: { ok: false, error: "Box failed to start: " + run.err.slice(0, 300) } }; }
+  if (mode === "pc") await setPaused(id, true); // frozen until the PC tunnel connects
+  return { code: 200, body: { ok: true, profileId: id, mode } };
 }
 
 async function stop(body) {
   const id = safeId(body.profileId);
   if (!id) return { code: 400, body: { ok: false, error: "Invalid profileId" } };
+  closeRelay(id);
   await docker(["rm", "-f", boxName(id)]);
   await docker(["network", "rm", `psnet-${id}`]);
   return { code: 200, body: { ok: true } };
 }
 
 async function list() {
-  const r = await docker(["ps", "--filter", "label=ps.profile", "--format", "{{.Label \"ps.profile\"}}\t{{.Status}}"]);
-  const boxes = r.out ? r.out.split("\n").map((l) => { const [profileId, status] = l.split("\t"); return { profileId, status }; }) : [];
+  const r = await docker(["ps", "--filter", "label=ps.profile", "--format", "{{.Label \"ps.profile\"}}\t{{.Status}}\t{{.Label \"ps.mode\"}}"]);
+  const boxes = r.out ? r.out.split("\n").map((l) => {
+    const [profileId, status, mode] = l.split("\t");
+    const relay = relays.get(profileId);
+    return { profileId, status, mode: mode || "proxy", paused: /Paused/.test(status), tunnels: relay ? relay.pool.length : 0 };
+  }) : [];
   return { code: 200, body: { ok: true, boxes } };
 }
+
+// ── PC tunnel relay (mode "pc") ─────────────────────────────────────────────
+// The box's proxy is a relay on its own network's gateway IP (unreachable from
+// the internet and from other boxes' networks). Each box connection is spliced
+// onto one idle reverse socket the owner's PC opened via /tunnel/<id>; the PC
+// then acts as the HTTP proxy and dials out over its own network (VPN). No idle
+// socket → the box connection is dropped (fail-closed) and, after a grace
+// period, the box is frozen with `docker pause` until the PC is back.
+const relays = new Map(); // id -> { server, gw, port, pool: [], active, paused, lastTunnelAt }
+
+async function networkGateway(id) {
+  const r = await docker(["network", "inspect", "-f", "{{(index .IPAM.Config 0).Gateway}}", `psnet-${id}`]);
+  return /^\d+\.\d+\.\d+\.\d+$/.test(r.out) ? r.out : "";
+}
+
+function openRelay(id, gw, port) {
+  return new Promise((resolve, reject) => {
+    const relay = { gw, port, pool: [], active: 0, paused: false, lastTunnelAt: Date.now() };
+    relay.server = net.createServer((boxSock) => {
+      const take = (tries) => {
+        const up = relay.pool.shift();
+        if (up && !up.destroyed && !up.readableEnded) {
+          up._psActive = true;
+          relay.active++;
+          boxSock.pipe(up); up.pipe(boxSock);
+          const done = () => { boxSock.destroy(); up.destroy(); };
+          boxSock.on("close", done); up.on("close", done);
+          boxSock.on("error", done); up.on("error", done);
+          boxSock.once("close", () => { relay.active = Math.max(0, relay.active - 1); });
+          return;
+        }
+        if (tries <= 0) { boxSock.destroy(); return; } // no tunnel → no internet
+        setTimeout(() => take(tries - 1), 250);
+      };
+      take(20);
+    });
+    relay.server.on("error", reject);
+    relay.server.listen(port, gw, () => { relay.port = relay.server.address().port; relays.set(id, relay); resolve(relay); });
+  });
+}
+
+function closeRelay(id) {
+  const relay = relays.get(id);
+  if (!relay) return;
+  try { relay.server.close(); } catch (_) {}
+  for (const s of relay.pool) s.destroy();
+  relays.delete(id);
+}
+
+async function restoreRelay(id) {
+  if (relays.has(id)) return;
+  const r = await docker(["inspect", "-f", "{{index .Config.Labels \"ps.relay\"}}", boxName(id)]);
+  const m = /^(\d+\.\d+\.\d+\.\d+):(\d+)$/.exec(r.out);
+  if (m) await openRelay(id, m[1], Number(m[2])).catch((e) => console.error("relay restore", id, e.message));
+}
+
+async function setPaused(id, paused) {
+  const relay = relays.get(id);
+  if (relay && relay.paused === paused) return;
+  await docker([paused ? "pause" : "unpause", boxName(id)]);
+  if (relay) relay.paused = paused;
+}
+
+function acceptTunnel(id, socket) {
+  const relay = relays.get(id);
+  if (!relay) { socket.end("HTTP/1.1 404 Not Found\r\n\r\n"); return; }
+  socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: ps-tunnel\r\nConnection: Upgrade\r\n\r\n");
+  socket.setKeepAlive(true, 30000);
+  relay.pool.push(socket);
+  relay.lastTunnelAt = Date.now();
+  // Caddy relays the PC's close as a half-close ("end"), so treat end as gone too.
+  const drop = () => { const i = relay.pool.indexOf(socket); if (i >= 0) relay.pool.splice(i, 1); };
+  socket.on("close", drop); socket.on("error", drop);
+  socket.on("end", () => { drop(); if (!socket.destroyed && relay.pool.indexOf(socket) < 0 && !socket._psActive) socket.destroy(); });
+  if (relay.paused) setPaused(id, false);
+}
+
+// Freeze boxes whose PC tunnel is gone (PC off, app closed, VPN gate failed).
+setInterval(() => {
+  for (const [id, relay] of relays) {
+    if (relay.pool.length) relay.lastTunnelAt = Date.now();
+    else if (!relay.active && !relay.paused && Date.now() - relay.lastTunnelAt > 10000) setPaused(id, true);
+  }
+}, 5000);
+
+// After a runner restart: re-open relays for running PC-mode boxes, frozen until
+// their PC reconnects.
+(async () => {
+  const r = await docker(["ps", "-a", "--filter", "label=ps.mode=pc", "--format", "{{.Label \"ps.profile\"}}"]);
+  for (const id of (r.out ? r.out.split("\n") : [])) {
+    if (!safeId(id)) continue;
+    await restoreRelay(id);
+    await setPaused(id, true);
+  }
+})();
 
 async function viewerPort(id) {
   const r = await docker(["port", boxName(id), "6080/tcp"]);
@@ -175,6 +292,14 @@ const server = http.createServer(async (req, res) => {
 
 // Websocket upgrade for the noVNC stream.
 server.on("upgrade", async (req, socket, head) => {
+  const tun = /^\/tunnel\/([a-zA-Z0-9_-]{1,64})$/.exec(req.url || "");
+  if (tun) {
+    if (!authed(req)) { socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n"); return; }
+    await restoreRelay(tun[1]);
+    if (head && head.length) socket.unshift(head);
+    acceptTunnel(tun[1], socket);
+    return;
+  }
   const t = viewTarget(req.url || "");
   if (!t || !authed(req)) { socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n"); return; }
   const port = await viewerPort(t.id);

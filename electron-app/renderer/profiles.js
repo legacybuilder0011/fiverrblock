@@ -158,6 +158,11 @@ async function init() {
         if (selectedId) updateSessionTab();
         const name = payload.profileName || "Profile";
         alert(`⚠️ ${name} was closed\n\n${payload.reason || "The VPN connection dropped."}`);
+      } else if (payload.type === "CLOUD_GATE") {
+        // VPN-mode cloud profile resumed/paused by the VPN lock on this PC.
+        toast(payload.active
+          ? `☁ ${payload.profileName} is live through your VPN`
+          : `☁ ${payload.profileName} paused — ${payload.reason}`);
       } else if (payload.type === "PATCHED_ENGINE_PROGRESS") {
         // Live progress for the one-time Patched Chromium engine download → the
         // download modal's progress bar (see runPatchedEngineDownload).
@@ -573,7 +578,10 @@ function renderList() {
         ${isRunning
           ? `<button class="pm-btn-xs danger" data-action="stop" data-id="${p.id}" title="Stop and save the session">Stop</button>`
           : `<button class="pm-btn-xs success" data-action="start" data-id="${p.id}" title="Start with this profile's chosen engine (${escHtml(launchEngineLabel)})">Start${(p.engine === "stealthfox") ? " 🦊" : ""}</button>`}
-        <button class="pm-btn-xs" data-action="cloud" data-id="${p.id}" title="Run this profile 24/7 on the cloud server (needs its own proxy)">☁ Cloud</button>
+        ${p.cloudRunning
+          ? `<button class="pm-btn-xs" data-action="cloud" data-id="${p.id}" title="Show this profile running in the cloud">☁ Open</button>
+             <button class="pm-btn-xs danger" data-action="cloudstop" data-id="${p.id}" title="Stop this profile in the cloud">☁ Stop</button>`
+          : `<button class="pm-btn-xs" data-action="cloud" data-id="${p.id}" title="Run this profile on the cloud server: Proxy mode = 24/7 on its own proxy; VPN mode = through this PC's VPN, paused when the PC or VPN is off">☁ Cloud</button>`}
         <button class="pm-btn-xs" data-action="dup" data-id="${p.id}" title="Duplicate">Dup</button>
         <button class="pm-btn-xs danger" data-action="del" data-id="${p.id}" title="Delete">Del</button>
       </div>
@@ -1794,6 +1802,7 @@ function bindSidebarEvents() {
     if (action === "open" || action === "start") { e.stopPropagation(); openProfileWindow(id); return; }
     if (action === "stealth") { e.stopPropagation(); openInStealthEngine(id); return; }
     if (action === "cloud") { e.stopPropagation(); startInCloud(id); return; }
+    if (action === "cloudstop") { e.stopPropagation(); stopInCloud(id); return; }
     if (action === "stop") { e.stopPropagation(); stopProfile(id); return; }
 
     // Checkbox
@@ -2172,7 +2181,18 @@ async function startInCloud(profileId) {
     r = await msg("PROFILE_START_CLOUD", { profileId });
   }
   if (!r.ok) { alert("Cloud start failed\n\n" + (r.error || "unknown error")); return; }
-  toast("Running in the cloud — keeps going when you close the window");
+  toast(r.mode === "pc"
+    ? "Running in the cloud through your VPN — pauses when this PC or the VPN is off"
+    : "Running in the cloud — keeps going when you close the window");
+  await loadProfiles(); renderList();
+}
+
+async function stopInCloud(profileId) {
+  if (!confirm("Stop this profile in the cloud? Its logins and data stay saved on the server.")) return;
+  const r = await msg("PROFILE_STOP_CLOUD", { profileId });
+  if (!r.ok) { alert("Cloud stop failed\n\n" + (r.error || "unknown error")); return; }
+  toast("Stopped in the cloud");
+  await loadProfiles(); renderList();
 }
 
 function showCloudSettings() {
