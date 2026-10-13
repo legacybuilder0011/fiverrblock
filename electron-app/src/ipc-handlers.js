@@ -149,18 +149,55 @@ async function moveLoginsToCloud(s, profile) {
 
 const cloudViewers = new Map();
 function openCloudViewer(s, profile) {
+  const bringToFront = (w) => {
+    // Windows blocks background apps from stealing focus; a brief always-on-top
+    // lifts the window above Privacy Shield instead of leaving it in the taskbar.
+    if (w.isMinimized()) w.restore();
+    w.show(); w.setAlwaysOnTop(true); w.focus(); w.moveTop();
+    setTimeout(() => { if (!w.isDestroyed()) w.setAlwaysOnTop(false); }, 400);
+  };
   const existing = cloudViewers.get(profile.id);
-  if (existing && !existing.isDestroyed()) { existing.focus(); return; }
+  if (existing && !existing.isDestroyed()) { bringToFront(existing); return; }
   const id = encodeURIComponent(profile.id);
   const win = new BrowserWindow({
     width: 1400, height: 860, title: `☁ ${profile.name || "Profile"} — cloud`,
-    autoHideMenuBar: true,
+    autoHideMenuBar: true, show: false,
     // Plain viewer: its own partition (holds only the runner cookie), no fingerprint
     // preload, no Node — the real browsing happens on the server.
     webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
   cloudViewers.set(profile.id, win);
-  win.on("closed", () => cloudViewers.delete(profile.id));
+  win.once("ready-to-show", () => bringToFront(win));
+  win.on("page-title-updated", (e) => e.preventDefault()); // keep the profile name as the title
+
+  // Clipboard bridge. The cloud browser has its own clipboard, so Ctrl+V there
+  // pasted nothing from this PC. On Ctrl+V: push this PC's clipboard into noVNC's
+  // clipboard box (→ server), then replay the keystroke. Copies made inside the
+  // cloud land in that same box; mirror them back to this PC.
+  const { clipboard } = require("electron");
+  let skipUntil = 0, lastFromCloud = "";
+  win.webContents.on("before-input-event", (event, input) => {
+    if (Date.now() < skipUntil || input.type !== "keyDown" || !(input.control || input.meta) || String(input.key).toLowerCase() !== "v") return;
+    event.preventDefault();
+    const text = clipboard.readText();
+    lastFromCloud = text;
+    win.webContents.executeJavaScript(`(() => { const t = document.getElementById("noVNC_clipboard_text"); if (!t) return false;
+      t.value = ${JSON.stringify(text)}; t.dispatchEvent(new Event("change")); return true; })()`).catch(() => {}).finally(() => {
+      setTimeout(() => {
+        if (win.isDestroyed()) return;
+        skipUntil = Date.now() + 500; // our replayed Ctrl+V must not re-trigger this handler
+        win.webContents.sendInputEvent({ type: "keyDown", keyCode: "V", modifiers: ["control"] });
+        win.webContents.sendInputEvent({ type: "keyUp", keyCode: "V", modifiers: ["control"] });
+      }, 120);
+    });
+  });
+  const copyPoll = setInterval(() => {
+    if (win.isDestroyed()) return clearInterval(copyPoll);
+    win.webContents.executeJavaScript(`(document.getElementById("noVNC_clipboard_text") || {}).value || ""`).then((t) => {
+      if (t && t !== lastFromCloud) { lastFromCloud = t; clipboard.writeText(t); }
+    }).catch(() => {});
+  }, 1000);
+  win.on("closed", () => { clearInterval(copyPoll); cloudViewers.delete(profile.id); });
   win.loadURL(`${s.url}/view/${id}/vnc.html?autoconnect=1&reconnect=1&resize=scale&path=${encodeURIComponent(`view/${id}/websockify`)}&t=${encodeURIComponent(s.token)}`);
 }
 
