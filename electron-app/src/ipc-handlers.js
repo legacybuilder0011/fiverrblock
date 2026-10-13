@@ -166,6 +166,17 @@ function openCloudViewer(s, profile) {
     // preload, no Node — the real browsing happens on the server.
     webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
+  // Own taskbar button per cloud profile: Windows groups windows by AppUserModelID,
+  // so without this every cloud window stacked inside the Privacy Shield button.
+  if (process.platform === "win32") {
+    try {
+      win.setAppDetails({
+        appId: `com.privacyshield.cloud.${String(profile.id).replace(/[^a-zA-Z0-9]/g, "")}`,
+        appIconPath: process.execPath, appIconIndex: 0,
+        relaunchDisplayName: `☁ ${profile.name || "Profile"}`
+      });
+    } catch (_) {}
+  }
   cloudViewers.set(profile.id, win);
   win.once("ready-to-show", () => bringToFront(win));
   win.on("page-title-updated", (e) => e.preventDefault()); // keep the profile name as the title
@@ -198,7 +209,7 @@ function openCloudViewer(s, profile) {
     }).catch(() => {});
   }, 1000);
   win.on("closed", () => { clearInterval(copyPoll); cloudViewers.delete(profile.id); });
-  win.loadURL(`${s.url}/view/${id}/vnc.html?autoconnect=1&reconnect=1&resize=scale&path=${encodeURIComponent(`view/${id}/websockify`)}&t=${encodeURIComponent(s.token)}`);
+  win.loadURL(`${s.url}/view/${id}/vnc.html?autoconnect=1&reconnect=1&resize=scale&quality=4&compression=6&path=${encodeURIComponent(`view/${id}/websockify`)}&t=${encodeURIComponent(s.token)}`);
 }
 
 function saveProfileExtension(profile, entry) {
