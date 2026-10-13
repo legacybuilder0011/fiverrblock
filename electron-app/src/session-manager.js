@@ -4,6 +4,7 @@ const { app, BrowserWindow, session: electronSession } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { X509Certificate } = require("crypto");
 const store = require("./profile-store");
 const bridge = require("./local-proxy-bridge");
 const mitmBridge = require("./tls-mitm-bridge");
@@ -82,7 +83,7 @@ function buildClientHints(config) {
   const major = getChromeMajor(config);
   const browser = config?._browserApp || "chrome";
   const platform = getHeaderPlatform(config);
-  const brand = browser === "edge" ? "Microsoft Edge" : browser === "brave" ? "Brave" : browser === "privacy" ? "Privacy Shield Browser" : "Google Chrome";
+  const brand = browser === "edge" ? "Microsoft Edge" : browser === "brave" ? "Brave" : "Google Chrome";
   const full = `${major}.0.0.0`;
   const isMobile = Boolean(config?._mobile);
   const platformVersion = config?._platformVersion
@@ -98,6 +99,18 @@ function buildClientHints(config) {
     "Sec-CH-UA-Platform-Version": `"${platformVersion}"`,
     "Sec-CH-UA-Model": `"${isMobile ? (config?._mobileModel || "") : ""}"`
   };
+}
+
+// Chrome's exact format, built from the same list navigator.languages reports:
+// ["en-US","en"] → "en-US,en;q=0.9". No duplicates (the old "…,en;q=0.9,en;q=0.8"
+// was a non-Chrome pattern every profile shared).
+function acceptLanguageHeader(config) {
+  const lang = config?.language || "en-US";
+  const list = Array.isArray(config?.languages) && config.languages.length
+    ? config.languages
+    : [lang, lang.split("-")[0]];
+  const uniq = [...new Set(list.filter(Boolean))];
+  return uniq.map((l, i) => (i === 0 ? l : `${l};q=${Math.max(1, 10 - i) / 10}`)).join(",");
 }
 
 function cookieUrl(cookie) {
@@ -138,10 +151,8 @@ function installWebRequestHooks(sess, config) {
     for (const name of CLIENT_HINT_HEADER_NAMES) deleteHeader(headers, name);
 
     if (config?.spoofUA && config.userAgent) {
-      const lang = config.language || "en-US";
-      const langRoot = lang.split("-")[0] || "en";
       setHeader(headers, "User-Agent", config.userAgent);
-      setHeader(headers, "Accept-Language", `${lang},${langRoot};q=0.9,en;q=0.8`);
+      setHeader(headers, "Accept-Language", acceptLanguageHeader(config));
       if (config._browserApp !== "firefox" && config._browserApp !== "safari" && config._uaOS !== "iOS") {
         for (const [name, value] of Object.entries(buildClientHints(config))) {
           setHeader(headers, name, value);
@@ -191,7 +202,22 @@ function assertProfileSession(actualSession, profileId) {
   };
 }
 
+// A profile in Proxy mode must never fall back to the real connection. Returns
+// a user-facing reason when the proxy config is unusable, "" when launch is OK.
+function proxyLaunchError(px) {
+  px = px || {};
+  const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+  if (mode !== "proxy") return "";
+  if (!px.enabled) return "This profile is set to Proxy mode but the proxy is turned off. Turn the proxy on, or switch the profile to Direct/VPN. It was not opened, so your real IP was not exposed.";
+  if (!px.host || !px.port) return "Proxy is enabled but host/port are missing. Fill them in the Proxy tab and click Test, then save.";
+  const port = parseInt(px.port, 10);
+  if (!(port >= 1 && port <= 65535)) return "Proxy port is invalid (must be 1-65535). Fix it in the Proxy tab and save.";
+  return "";
+}
+
 async function configureSessionProxy(sess, proxy, profileId, options = {}) {
+  const proxyErr = proxyLaunchError(proxy);
+  if (proxyErr) throw new Error(proxyErr);
   if (proxy?.networkMode === "vpn" || proxy?.networkMode === "direct") {
     await sess.setProxy({ mode: "direct" });
     bridge.stopBridge(profileId);
@@ -205,12 +231,6 @@ async function configureSessionProxy(sess, proxy, profileId, options = {}) {
     return { mode: "direct" };
   }
   const port = parseInt(proxy.port, 10);
-  if (!port || port < 1 || port > 65535) {
-    await sess.setProxy({ mode: "direct" });
-    bridge.stopBridge(profileId);
-    mitmBridge.stopMitmBridge(profileId);
-    return { mode: "direct", reason: "bad-port" };
-  }
   const scheme = String(proxy.scheme || "socks5").toLowerCase();
   const hasAuth = Boolean(proxy.username || proxy.password);
 
@@ -280,34 +300,20 @@ function installMitmCertTrust(sess, profileId) {
     sess.setCertificateVerifyProc(null);
     return;
   }
+  let ca;
+  try { ca = new X509Certificate(caPem); } catch (_) { sess.setCertificateVerifyProc(null); return; }
   sess.setCertificateVerifyProc((req, callback) => {
+    // Accept ONLY a chain cryptographically signed by THIS profile's CA. Matching
+    // on issuer name let anyone (e.g. the proxy provider) forge a cert that passed.
+    // Only the LEAF is checked: a forged leaf with our CA appended must not pass.
     try {
-      const chain = [req.certificate, ...(req.certificate.issuerCert ? collectIssuerChain(req.certificate) : [])];
-      for (const cert of chain) {
-        if (cert && cert.data && caPem.includes(cert.data.trim().slice(0, 200))) {
-          callback(0); return;
-        }
-      }
-      const issuerName = req.certificate && req.certificate.issuerName ? String(req.certificate.issuerName) : "";
-      if (issuerName.includes("PrivacyShield MITM CA")) {
-        callback(0); return;
-      }
+      const leaf = new X509Certificate(req.certificate.data);
+      if (leaf.checkIssued(ca) && leaf.verify(ca.publicKey)) { callback(0); return; }
     } catch (_) {}
     callback(-3); // -3 = use Chromium default validation
   });
 }
 
-function collectIssuerChain(cert) {
-  const out = [];
-  let cur = cert.issuerCert;
-  let depth = 0;
-  while (cur && depth < 8) {
-    out.push(cur);
-    cur = cur.issuerCert;
-    depth++;
-  }
-  return out;
-}
 
 function installPermissionPolicy(sess, profile, config) {
   const denied = new Set([
@@ -572,6 +578,8 @@ function getAllProfileWindows() {
 module.exports = {
   getPartitionForProfile,
   getSessionForProfile,
+  proxyLaunchError,
+  installMitmCertTrust,
   assertProfileSession,
   configureSessionProxy,
   setupProfileSession,

@@ -1148,11 +1148,11 @@ function browserForOs(osName, requestedBrowser = "random") {
   // coerce to Chrome so the claimed browser matches the actual Blink engine.
   if (requested === "safari" || requested === "firefox") requested = "chrome";
   if (requested !== "random") return requested;
-  if (osName === "android") return randomChoice(["privacy", "chrome", "chrome", "brave", "edge"]);
+  if (osName === "android") return randomChoice(["chrome", "chrome", "brave", "edge"]);
   if (osName === "ios") return randomChoice(["chrome", "chrome", "edge"]);
   const options = osName === "macos"
-    ? ["privacy", "chrome", "chrome", "brave", "edge"]
-    : ["privacy", "chrome", "chrome", "chrome", "brave", "edge"];
+    ? ["chrome", "chrome", "brave", "edge"]
+    : ["chrome", "chrome", "chrome", "brave", "edge"];
   return randomChoice(options);
 }
 
@@ -1608,7 +1608,7 @@ function buildProfileUA(os, version, browser, fingerprint = {}) {
     const build = fingerprint.androidBuild || "UP1A.231005.007";
     const browserToken = br === "edge"
       ? ` EdgA/${full}`
-      : br === "privacy" ? ` PrivacyShield/${full}` : "";
+      : "";
     return {
       ua: `Mozilla/5.0 (Linux; Android ${androidVersion}; ${model} Build/${build}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Mobile Safari/537.36${browserToken}`,
       platform: "Linux armv8l",
@@ -1674,8 +1674,6 @@ function buildProfileUA(os, version, browser, fingerprint = {}) {
     case "brave":
       // Brave uses a standard Chrome UA — it's identified by brave.isBrave API, not the UA string
       return { ua: `Mozilla/5.0 (${osStr.win}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`, platform: osStr.platform, os: osStr.os, version: major };
-    case "privacy":
-      return { ua: `Mozilla/5.0 (${osStr.win}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36 PrivacyShield/${full}`, platform: osStr.platform, os: osStr.os, version: major };
     default: // chrome
       return { ua: `Mozilla/5.0 (${osStr.win}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${full} Safari/537.36`, platform: osStr.platform, os: osStr.os, version: major };
   }

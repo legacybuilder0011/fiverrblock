@@ -413,6 +413,8 @@ function registerIpcHandlers() {
   ipcMain.handle("PROFILE_OPEN_CAMOUFOX", async (_ev, { profileId, url } = {}) => {
     let profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
     if (!profile) return { ok: false, reason: "no-profile" };
+    const proxyErr = sessionMgr.proxyLaunchError(profile.proxy);
+    if (proxyErr) return { ok: false, reason: proxyErr };
     try {
       // VPN/direct mode: the browser's location MUST match the ACTUAL exit IP, or
       // a site like Fiverr flags the mismatch (e.g. US timezone on a Nigerian IP →
@@ -1428,7 +1430,7 @@ function buildUserAgentMetadata(config) {
   const major = String(config._uaVersion || ((config.userAgent || "").match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || "150");
   const full = `${major}.0.0.0`;
   const browser = config._browserApp || "chrome";
-  const brand = browser === "edge" ? "Microsoft Edge" : browser === "brave" ? "Brave" : browser === "privacy" ? "Privacy Shield Browser" : "Google Chrome";
+  const brand = browser === "edge" ? "Microsoft Edge" : browser === "brave" ? "Brave" : "Google Chrome";
   const isIos = config._uaOS === "iOS";
   return {
     brands: isIos ? [] : [
@@ -1632,11 +1634,8 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   // ── Required fields & consistency checks ─────────────────────────────────────
   let px = profile.proxy || {};
   const networkMode = px.networkMode || (px.enabled ? "proxy" : "direct");
-  if (networkMode === "proxy" && px.enabled) {
-    if (!px.host || !px.port) {
-      return { ok: false, error: "Proxy is enabled but host/port are missing. Fill them in the Proxy tab and click Test, then save." };
-    }
-  }
+  const proxyErr = sessionMgr.proxyLaunchError(px);
+  if (proxyErr) return { ok: false, error: proxyErr };
   // ── Proxy geo auto-detection at launch ──────────────────────────────────────
   // For proxy profiles the exit is the proxy itself (not the OS network), so the
   // VPN location lock below — which reads the system connection — can't see it.
