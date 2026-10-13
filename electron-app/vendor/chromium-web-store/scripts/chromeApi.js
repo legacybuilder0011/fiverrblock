@@ -1,6 +1,8 @@
 // https://source.chromium.org/chromium/chromium/src/+/main:chrome/common/extensions/api/webstore_private.json
 const ncws_re = /.*detail(?:\/[^\/]+)?\/([a-z]{32})/i; // copied from util.js since it's out of context
-const EXT_ID = document.currentScript.getAttribute("extension_id");
+// Privacy Shield patch: runs as a MAIN-world content script (no currentScript), so
+// fall back to the fixed ID pinned by the manifest "key".
+const EXT_ID = (document.currentScript && document.currentScript.getAttribute("extension_id")) || "ocaahdebbfolfmndjeplogmgcagdmblk";
 const port = chrome.runtime.connect(EXT_ID, { name: "windowchromeport" });
 const CALLBACKS = [];
 port.onMessage.addListener((msg, port) => {

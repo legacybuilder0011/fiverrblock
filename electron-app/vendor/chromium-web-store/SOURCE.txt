@@ -1,3 +1,7 @@
 Chromium Web Store v1.5.5.4 — https://github.com/NeverDecaf/chromium-web-store (MIT)
 Unpacked from the release CRX; manifest "key" re-injected so the ID stays ocaahdebbfolfmndjeplogmgcagdmblk.
 Loaded into Patched Chromium profiles so the Web Store "Add" button works (ungoogled-chromium removes it).
+LOCAL PATCH (Privacy Shield): chromeApi.js moved to a MAIN-world document_start
+content script in manifest.json (EXT_ID falls back to the pinned ID), and the
+async <script> injection at the end of inject.js removed. Upstream's injection
+raced the store's own JS and left "Add to Chrome" disabled on fast loads.

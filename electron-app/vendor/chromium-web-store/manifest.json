@@ -40,6 +40,16 @@
         "scripts/inject.js"
       ],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://chromewebstore.google.com/*"
+      ],
+      "js": [
+        "scripts/chromeApi.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "background": {

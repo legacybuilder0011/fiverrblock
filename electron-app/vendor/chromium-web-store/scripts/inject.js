@@ -212,16 +212,25 @@ window.onload = () => {
         }
     });
 };
+// Privacy Shield patch: chromeApi.js is now a MAIN-world document_start content
+// script (manifest). The old async <script> injection landed AFTER the store had
+// already disabled its Add button on fast page loads.
+// Privacy Shield patch: fallback if the store still renders "Add to Chrome"
+// disabled (its own status check raced the shim) — enable it and install via the
+// same path the Edge store uses. ponytail: English label match; widen if users
+// browse the store in other languages.
 if (is_ncws.test(window.location.href)) {
-    chrome.storage.sync.get(
-        { webstore_integration: true },
-        function (stored_values) {
-            if (stored_values.webstore_integration) {
-                injectScript(
-                    chrome.runtime.getURL("scripts/chromeApi.js"),
-                    "head",
-                );
-            }
-        },
-    );
+    new MutationObserver(function () {
+        document.querySelectorAll("button[disabled]").forEach((btn) => {
+            if (btn.dataset.psInstall) { btn.removeAttribute("disabled"); return; }
+            if (!/^\s*Add to Chrome\s*$/i.test(btn.innerText)) return;
+            btn.dataset.psInstall = "1";
+            btn.removeAttribute("disabled");
+            btn.addEventListener("click", (e) => {
+                e.stopImmediatePropagation();
+                chrome.runtime.sendMessage({ installExt: getExtensionId(window.location.href) });
+                promptInstall(buildExtensionUrl(window.location.href), true);
+            }, true);
+        });
+    }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
 }
