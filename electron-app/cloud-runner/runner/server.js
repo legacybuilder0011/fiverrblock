@@ -265,9 +265,12 @@ setInterval(() => {
 async function readyViewerPort(id) {
   for (let i = 0; i < 40; i++) {
     const port = await viewerPort(id);
+    // Must be an HTTP answer from noVNC itself: Docker's port forwarder accepts
+    // TCP even while the box's websockify isn't listening yet.
     if (port && await new Promise((ok) => {
-      const s = net.connect(port, "127.0.0.1", () => { s.destroy(); ok(true); });
-      s.on("error", () => ok(false));
+      const r = http.get({ host: "127.0.0.1", port, path: "/vnc.html", timeout: 2000 }, (res) => { res.resume(); ok(res.statusCode < 500); });
+      r.on("error", () => ok(false));
+      r.on("timeout", () => { r.destroy(); ok(false); });
     })) return port;
     await new Promise((r) => setTimeout(r, 500));
   }
