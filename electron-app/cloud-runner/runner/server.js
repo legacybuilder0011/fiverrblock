@@ -105,7 +105,7 @@ async function start(body) {
     "run", "-d", "--name", boxName(id), "--network", `psnet-${id}`,
     "-p", "127.0.0.1::6080",
     "-v", `${dataDir}:/data`,
-    "--memory", "1536m", "--cpus", "1.5", "--shm-size", "512m",
+    "--memory", "2560m", "--cpus", "3", "--shm-size", "512m",
     "--restart", "unless-stopped",
     "--label", "ps.profile=" + id, ...labels,
     "-e", `PS_W=${w}`, "-e", `PS_H=${h}`, "-e", `PS_URL=${url}`,
@@ -175,24 +175,26 @@ async function networkGateway(id) {
 
 function openRelay(id, gw, port) {
   return new Promise((resolve, reject) => {
-    const relay = { gw, port, pool: [], active: 0, paused: false, lastTunnelAt: Date.now() };
+    const relay = { gw, port, pool: [], waiters: [], active: 0, paused: false, lastTunnelAt: Date.now() };
     relay.server = net.createServer((boxSock) => {
-      const take = (tries) => {
-        const up = relay.pool.shift();
-        if (up && !up.destroyed && !up.readableEnded) {
-          up._psActive = true;
-          relay.active++;
-          boxSock.pipe(up); up.pipe(boxSock);
-          const done = () => { boxSock.destroy(); up.destroy(); };
-          boxSock.on("close", done); up.on("close", done);
-          boxSock.on("error", done); up.on("error", done);
-          boxSock.once("close", () => { relay.active = Math.max(0, relay.active - 1); });
-          return;
-        }
-        if (tries <= 0) { boxSock.destroy(); return; } // no tunnel → no internet
-        setTimeout(() => take(tries - 1), 250);
+      // Splice onto an idle PC tunnel; if none is ready, queue and get the next one
+      // the moment the PC opens it (no polling). 5s without one → no internet.
+      const splice = (up) => {
+        up._psActive = true;
+        relay.active++;
+        boxSock.pipe(up); up.pipe(boxSock);
+        const done = () => { boxSock.destroy(); up.destroy(); };
+        boxSock.on("close", done); up.on("close", done);
+        boxSock.on("error", done); up.on("error", done);
+        boxSock.once("close", () => { relay.active = Math.max(0, relay.active - 1); });
       };
-      take(20);
+      let up;
+      while ((up = relay.pool.shift()) && (up.destroyed || up.readableEnded)) {}
+      if (up) return splice(up);
+      const waiter = { give: (sock) => { clearTimeout(waiter.timer); splice(sock); } };
+      waiter.timer = setTimeout(() => { relay.waiters.splice(relay.waiters.indexOf(waiter), 1); boxSock.destroy(); }, 5000);
+      boxSock.once("close", () => { const i = relay.waiters.indexOf(waiter); if (i >= 0) { clearTimeout(waiter.timer); relay.waiters.splice(i, 1); } });
+      relay.waiters.push(waiter);
     });
     relay.server.on("error", reject);
     relay.server.listen(port, gw, () => { relay.port = relay.server.address().port; relays.set(id, relay); resolve(relay); });
@@ -226,6 +228,9 @@ function acceptTunnel(id, socket) {
   if (!relay) { socket.end("HTTP/1.1 404 Not Found\r\n\r\n"); return; }
   socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: ps-tunnel\r\nConnection: Upgrade\r\n\r\n");
   socket.setKeepAlive(true, 30000);
+  relay.lastTunnelAt = Date.now();
+  const waiter = relay.waiters.shift();
+  if (waiter) { waiter.give(socket); if (relay.paused) setPaused(id, false); return; }
   relay.pool.push(socket);
   relay.lastTunnelAt = Date.now();
   // Caddy relays the PC's close as a half-close ("end"), so treat end as gone too.

@@ -9,7 +9,7 @@ const tls = require("tls");
 const net = require("net");
 const dns = require("dns").promises;
 
-const POOL_SIZE = 4;
+const POOL_SIZE = 24; // a page opens dozens of connections; each refill costs a PC↔server round trip
 const state = new Map(); // id -> { idle:Set, active:Set, opening:number, retryAt:number }
 let settings = null;
 
