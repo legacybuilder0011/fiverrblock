@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Reserve a 40px "taskbar" strip so screen.availHeight = height - 40 like Windows. -->
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <margins><top>0</top><bottom>40</bottom><left>0</left><right>0</right></margins>
+  <applications><application class="*"><decor>no</decor><maximized>yes</maximized></application></applications>
+</openbox_config>

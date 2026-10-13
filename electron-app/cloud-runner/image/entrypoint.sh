@@ -26,6 +26,10 @@ fi
 
 Xvfb :1 -screen 0 "${W}x${H}x24" -nolisten tcp &
 for i in $(seq 1 50); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.1; done
+# Openbox reserves a 40px bottom strip so screen.availHeight = height - 40 like a
+# Windows taskbar (no WM = availHeight == height, a server tell).
+openbox --config-file /opt/ps/openbox-rc.xml >/dev/null 2>&1 &
+sleep 1
 # VNC only on the box's loopback; noVNC on 6080 is the only exposed port and the
 # runner binds it to the host's loopback behind token auth.
 x11vnc -display :1 -localhost -forever -shared -nopw -quiet -rfbport 5900 &

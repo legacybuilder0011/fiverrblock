@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 
 "${SSH[@]}" 'mkdir -p /opt/ps-cloud/image/vendor /opt/ps-cloud/runner /opt/ps-cloud/profiles'
 scp -q -i "$KEY" cloud-runner/image/Dockerfile cloud-runner/image/entrypoint.sh cloud-runner/image/start-bridge.js \
+  cloud-runner/image/fonts.conf cloud-runner/image/openbox-rc.xml \
   src/local-proxy-bridge.js "$HOST:/opt/ps-cloud/image/"
 scp -q -r -i "$KEY" vendor/chromium-web-store "$HOST:/opt/ps-cloud/image/vendor/"
 scp -q -i "$KEY" cloud-runner/runner/server.js "$HOST:/opt/ps-cloud/runner/"
