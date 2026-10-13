@@ -81,6 +81,57 @@ async function loadExtensionIntoProfile(profileId, selectedPath, options = {}) {
 // Add/replace an entry in profile.extensions. Keyed by path, and by extension id
 // when we know it, so re-installing a Web Store extension updates in place
 // instead of stacking duplicates.
+// ── Cloud runner settings + API ─────────────────────────────────────────────
+// Server address + team token, token encrypted with the OS keychain (safeStorage).
+function cloudSettingsPath() {
+  return path.join(require("electron").app.getPath("userData"), "cloud-runner.json");
+}
+function readCloudSettings() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(cloudSettingsPath(), "utf8"));
+    const { safeStorage } = require("electron");
+    const token = raw.tokenEnc && safeStorage.isEncryptionAvailable()
+      ? safeStorage.decryptString(Buffer.from(raw.tokenEnc, "base64")) : "";
+    return { url: raw.url || "", token };
+  } catch (_) { return { url: "", token: "" }; }
+}
+function writeCloudSettings({ url, token }) {
+  const { safeStorage } = require("electron");
+  if (token && !safeStorage.isEncryptionAvailable()) throw new Error("OS encryption unavailable — can't store the token safely");
+  const tokenEnc = token ? safeStorage.encryptString(token).toString("base64") : "";
+  fs.writeFileSync(cloudSettingsPath(), JSON.stringify({ url, tokenEnc }), "utf8");
+}
+async function cloudApi(s, route, body) {
+  try {
+    const res = await net.fetch(s.url + route, {
+      method: body ? "POST" : "GET",
+      headers: { Authorization: `Bearer ${s.token}`, "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const j = await res.json().catch(() => ({}));
+    if (res.status === 401) return { ok: false, needsSettings: true, error: "Cloud server rejected the team token." };
+    return res.ok ? j : { ok: false, error: j.error || `Cloud server error ${res.status}` };
+  } catch (err) {
+    return { ok: false, error: "Can't reach the cloud server: " + (err.message || err) };
+  }
+}
+const cloudViewers = new Map();
+function openCloudViewer(s, profile) {
+  const existing = cloudViewers.get(profile.id);
+  if (existing && !existing.isDestroyed()) { existing.focus(); return; }
+  const id = encodeURIComponent(profile.id);
+  const win = new BrowserWindow({
+    width: 1400, height: 860, title: `☁ ${profile.name || "Profile"} — cloud`,
+    autoHideMenuBar: true,
+    // Plain viewer: its own partition (holds only the runner cookie), no fingerprint
+    // preload, no Node — the real browsing happens on the server.
+    webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true }
+  });
+  cloudViewers.set(profile.id, win);
+  win.on("closed", () => cloudViewers.delete(profile.id));
+  win.loadURL(`${s.url}/view/${id}/vnc.html?autoconnect=1&reconnect=1&resize=scale&path=${encodeURIComponent(`view/${id}/websockify`)}&t=${encodeURIComponent(s.token)}`);
+}
+
 function saveProfileExtension(profile, entry) {
   const existing = Array.isArray(profile.extensions) ? profile.extensions : [];
   const samePath = (e) => path.resolve(String(e.path || "")) === path.resolve(String(entry.path || ""));
@@ -410,6 +461,49 @@ function registerIpcHandlers() {
   // ── Camoufox "Stealth Engine" — patched-Firefox launch for hard bot-detection ──
   // sites (Fiverr/PerimeterX). Separate process, engine-level fingerprint, no JS
   // footprint. Additive: does not touch the in-app Chromium browser path.
+  // ── Cloud runner: profile runs 24/7 in a sealed box on a server, viewed here ──
+  ipcMain.handle("CLOUD_GET_SETTINGS", async () => {
+    const s = readCloudSettings();
+    return { ok: true, url: s.url || "", hasToken: Boolean(s.token) };
+  });
+  ipcMain.handle("CLOUD_SET_SETTINGS", async (_ev, { url, token } = {}) => {
+    const clean = String(url || "").trim().replace(/\/+$/, "");
+    if (!/^https:\/\/[^\s/]+$/.test(clean)) return { ok: false, error: "Server address must look like https://host" };
+    const prev = readCloudSettings();
+    writeCloudSettings({ url: clean, token: String(token || "").trim() || prev.token || "" });
+    return { ok: true };
+  });
+  ipcMain.handle("PROFILE_START_CLOUD", async (_ev, { profileId } = {}) => {
+    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    if (!profile) return { ok: false, error: "Profile not found" };
+    const px = profile.proxy || {};
+    if ((px.networkMode || (px.enabled ? "proxy" : "direct")) !== "proxy") {
+      return { ok: false, error: "Only Proxy-mode profiles can run in the cloud — the server's own IP is shared and datacenter. Give this profile its own proxy first." };
+    }
+    const proxyErr = sessionMgr.proxyLaunchError(px);
+    if (proxyErr) return { ok: false, error: proxyErr };
+    const s = readCloudSettings();
+    if (!s.url || !s.token) return { ok: false, needsSettings: true, error: "Set the cloud server address and team token first." };
+    const spec = realBrowser.cloudLaunchSpec(profile, store.buildConfigFromProfile(profile));
+    const r = await cloudApi(s, "/api/start", {
+      profileId: profile.id, args: spec.args, width: spec.width, height: spec.height,
+      proxy: { scheme: px.scheme || "http", host: px.host, port: px.port, username: sessionMgr.expandProxyPlaceholders(px.username || "", profile), password: px.password || "" }
+    });
+    if (!r.ok) return r;
+    openCloudViewer(s, profile);
+    return { ok: true };
+  });
+  ipcMain.handle("PROFILE_STOP_CLOUD", async (_ev, { profileId } = {}) => {
+    const s = readCloudSettings();
+    if (!s.url || !s.token) return { ok: false, error: "No cloud server set." };
+    return cloudApi(s, "/api/stop", { profileId });
+  });
+  ipcMain.handle("CLOUD_LIST", async () => {
+    const s = readCloudSettings();
+    if (!s.url || !s.token) return { ok: true, boxes: [] };
+    return cloudApi(s, "/api/list");
+  });
+
   ipcMain.handle("PROFILE_OPEN_CAMOUFOX", async (_ev, { profileId, url } = {}) => {
     let profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
     if (!profile) return { ok: false, reason: "no-profile" };

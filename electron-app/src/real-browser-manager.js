@@ -729,7 +729,23 @@ function fetchPatchedChromium(onProgress) {
   return patchedFetchPromise;
 }
 
+// What the cloud runner needs to launch this profile exactly like the local
+// Patched Chromium: the same seeded fingerprint + locale flags and screen size.
+// Storage, proxy, extensions and sandboxing are fixed by the cloud box itself.
+function cloudLaunchSpec(profile, cfg) {
+  const args = patchedFingerprintArgs(profile, cfg).args;
+  const lang = (cfg && cfg.language) || languageArg(profile);
+  if (lang) args.push(`--lang=${lang}`, `--accept-lang=${acceptLanguagesFromLang(lang)}`);
+  const fp = (profile && profile.fingerprint) || {};
+  return {
+    args,
+    width: Math.max(800, Math.min(3840, Number(fp.screenWidth) || 1920)),
+    height: Math.max(600, Math.min(2160, Number(fp.screenHeight) || 1080))
+  };
+}
+
 module.exports = {
+  cloudLaunchSpec,
   isRealBrowserEngine,
   writePrivacyPreferences,
   isPatchedChromium,

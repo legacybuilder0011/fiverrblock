@@ -573,6 +573,7 @@ function renderList() {
         ${isRunning
           ? `<button class="pm-btn-xs danger" data-action="stop" data-id="${p.id}" title="Stop and save the session">Stop</button>`
           : `<button class="pm-btn-xs success" data-action="start" data-id="${p.id}" title="Start with this profile's chosen engine (${escHtml(launchEngineLabel)})">Start${(p.engine === "stealthfox") ? " 🦊" : ""}</button>`}
+        <button class="pm-btn-xs" data-action="cloud" data-id="${p.id}" title="Run this profile 24/7 on the cloud server (needs its own proxy)">☁ Cloud</button>
         <button class="pm-btn-xs" data-action="dup" data-id="${p.id}" title="Duplicate">Dup</button>
         <button class="pm-btn-xs danger" data-action="del" data-id="${p.id}" title="Delete">Del</button>
       </div>
@@ -1792,6 +1793,7 @@ function bindSidebarEvents() {
     if (action === "apply") { e.stopPropagation(); assignToTab(id); return; }
     if (action === "open" || action === "start") { e.stopPropagation(); openProfileWindow(id); return; }
     if (action === "stealth") { e.stopPropagation(); openInStealthEngine(id); return; }
+    if (action === "cloud") { e.stopPropagation(); startInCloud(id); return; }
     if (action === "stop") { e.stopPropagation(); stopProfile(id); return; }
 
     // Checkbox
@@ -2161,6 +2163,47 @@ function locationText(loc) {
 // Blocking VPN-location warning. Resolves "continue" (launch with the new IP)
 // or "change" (cancel so the user can switch their VPN back). Nothing has
 // launched at this point — the browser only opens after a "continue".
+// ── Cloud runner ─────────────────────────────────────────────────────────────
+async function startInCloud(profileId) {
+  toast("Starting in the cloud…");
+  let r = await msg("PROFILE_START_CLOUD", { profileId });
+  if (!r.ok && r.needsSettings) {
+    if (!(await showCloudSettings())) return;
+    r = await msg("PROFILE_START_CLOUD", { profileId });
+  }
+  if (!r.ok) { alert("Cloud start failed\n\n" + (r.error || "unknown error")); return; }
+  toast("Running in the cloud — keeps going when you close the window");
+}
+
+function showCloudSettings() {
+  return new Promise(async (resolve) => {
+    const cur = await msg("CLOUD_GET_SETTINGS", {});
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(4,6,10,.72);";
+    overlay.innerHTML =
+      '<div style="width:440px;max-width:92vw;background:#11151c;border:1px solid #2a3340;border-radius:14px;padding:20px;color:#e7edf5;">' +
+        '<div style="font-size:16px;font-weight:700;margin-bottom:12px;">☁ Cloud server</div>' +
+        '<label style="font-size:12px;color:#aab6c4;">Server address</label>' +
+        '<input id="cloudUrl" class="pm-inp" style="width:100%;margin:4px 0 10px" placeholder="https://ps-cloud.example.com" />' +
+        '<label style="font-size:12px;color:#aab6c4;">Team token</label>' +
+        '<input id="cloudToken" type="password" class="pm-inp" style="width:100%;margin:4px 0 14px" />' +
+        '<div id="cloudErr" style="color:#f3b1b1;font-size:12px;min-height:16px;margin-bottom:8px"></div>' +
+        '<div style="display:flex;gap:10px;justify-content:flex-end;">' +
+          '<button id="cloudCancel" class="pm-btn-sm">Cancel</button><button id="cloudSave" class="pm-btn-sm primary">Save</button>' +
+        '</div></div>';
+    document.body.appendChild(overlay);
+    overlay.querySelector("#cloudUrl").value = cur.url || "";
+    overlay.querySelector("#cloudToken").placeholder = cur.hasToken ? "(saved — leave blank to keep)" : "";
+    const done = (v) => { overlay.remove(); resolve(v); };
+    overlay.querySelector("#cloudCancel").onclick = () => done(false);
+    overlay.querySelector("#cloudSave").onclick = async () => {
+      const r = await msg("CLOUD_SET_SETTINGS", { url: overlay.querySelector("#cloudUrl").value, token: overlay.querySelector("#cloudToken").value });
+      if (!r.ok) { overlay.querySelector("#cloudErr").textContent = r.error || "Could not save"; return; }
+      done(true);
+    };
+  });
+}
+
 function showVpnLocationConfirm(r) {
   return new Promise((resolve) => {
     const existing = $("vpnLocModal");
