@@ -1,0 +1,3 @@
+Chromium Web Store v1.5.5.4 — https://github.com/NeverDecaf/chromium-web-store (MIT)
+Unpacked from the release CRX; manifest "key" re-injected so the ID stays ocaahdebbfolfmndjeplogmgcagdmblk.
+Loaded into Patched Chromium profiles so the Web Store "Add" button works (ungoogled-chromium removes it).

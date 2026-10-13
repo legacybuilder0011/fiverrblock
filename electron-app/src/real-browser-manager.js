@@ -338,8 +338,9 @@ function extensionArgs(profile) {
 }
 
 // Merge the profile's user extensions with any manager-generated extensions (the
-// fingerprint layer). `--disable-extensions-except` must list every extension we
-// intend to keep enabled, or Chrome disables the ones not named.
+// fingerprint layer / Web Store helper). Only --load-extension: the old
+// --disable-extensions-except switched OFF every extension the user installed
+// from the Web Store inside the browser, on every launch.
 function combinedExtensionArgs(profile, extraDirs) {
   const paths = validExtensionPaths(profile);
   for (const dir of (Array.isArray(extraDirs) ? extraDirs : [])) {
@@ -347,11 +348,16 @@ function combinedExtensionArgs(profile, extraDirs) {
     if (resolved && !paths.includes(resolved)) paths.push(resolved);
   }
   if (!paths.length) return [];
-  const joined = paths.join(",");
-  return [
-    `--disable-extensions-except=${joined}`,
-    `--load-extension=${joined}`
-  ];
+  return [`--load-extension=${paths.join(",")}`];
+}
+
+// Bundled "Chromium Web Store" helper (vendor/, MIT). Ungoogled-chromium removes
+// the Web Store install path; this extension restores the store's "Add" button
+// and installs the CRX via the always-prompt-for-install flag. Its content
+// scripts only match extension-store pages, so no other site sees it.
+function webStoreHelperDir() {
+  const dir = path.join(__dirname, "..", "vendor", "chromium-web-store").replace(/app\.asar([\\/])/, "app.asar.unpacked$1");
+  return fs.existsSync(path.join(dir, "manifest.json")) ? dir : "";
 }
 
 function dnsLeakGuardArgs(px, proxyBridgeActive) {
@@ -504,6 +510,11 @@ async function launchProfile(profile, customUrl = "", options = {}) {
     if (fpDir) extraExtDirs.push(fpDir);
   }
 
+  if (patched) {
+    const helper = webStoreHelperDir();
+    if (helper) extraExtDirs.push(helper);
+  }
+
   // Language: prefer the resolved config's coherent locale, fall back to the
   // profile's manual/auto language.
   const lang = (cfg && cfg.language) || languageArg(profile);
@@ -533,6 +544,7 @@ async function launchProfile(profile, customUrl = "", options = {}) {
     const fpArgs = patchedFingerprintArgs(profile, cfg);
     patchedSeed = fpArgs.seed;
     args.push(...fpArgs.args);
+    args.push("--extension-mime-request-handling=always-prompt-for-install");
     if (lang) { args.push(`--lang=${lang}`); args.push(`--accept-lang=${acceptLanguagesFromLang(lang)}`); }
   } else {
     // real-chrome / real-brave are GENUINE browsers: they derive User-Agent Client

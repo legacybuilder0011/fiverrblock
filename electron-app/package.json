@@ -1,6 +1,6 @@
 {
   "name": "privacy-shield",
-  "version": "1.18.9",
+  "version": "1.18.10",
   "description": "Privacy Shield Browser - Profile Identity Manager Desktop App",
   "author": "Privacy Shield",
   "main": "src/main.js",
@@ -27,11 +27,13 @@
       "src/**",
       "renderer/**",
       "icons/**",
-      "node_modules/**"
+      "node_modules/**",
+      "vendor/**"
     ],
     "asarUnpack": [
       "renderer/**",
-      "node_modules/**"
+      "node_modules/**",
+      "vendor/**"
     ],
     "win": {
       "target": [
