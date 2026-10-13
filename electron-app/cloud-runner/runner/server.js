@@ -259,6 +259,21 @@ setInterval(() => {
   }
 })();
 
+// A box that was just started or restarted (e.g. right after logins are moved
+// in) needs a few seconds before noVNC listens. Wait up to 20s for it to accept
+// a connection instead of failing the viewer with "viewer unavailable".
+async function readyViewerPort(id) {
+  for (let i = 0; i < 40; i++) {
+    const port = await viewerPort(id);
+    if (port && await new Promise((ok) => {
+      const s = net.connect(port, "127.0.0.1", () => { s.destroy(); ok(true); });
+      s.on("error", () => ok(false));
+    })) return port;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return 0;
+}
+
 async function viewerPort(id) {
   const r = await docker(["port", boxName(id), "6080/tcp"]);
   const m = /127\.0\.0\.1:(\d+)/.exec(r.out);
@@ -308,8 +323,8 @@ const server = http.createServer(async (req, res) => {
 
     const t = viewTarget(url);
     if (t) {
-      const port = await viewerPort(t.id);
-      if (!port) return send(res, 404, { ok: false, error: "profile not running" });
+      const port = await readyViewerPort(t.id);
+      if (!port) return send(res, 404, { ok: false, error: "profile not running (or still starting) — try again in a moment" });
       const up = http.request({ host: "127.0.0.1", port, path: t.rest, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${port}` } }, (ur) => {
         res.writeHead(ur.statusCode || 502, ur.headers);
         ur.pipe(res);
@@ -335,7 +350,7 @@ server.on("upgrade", async (req, socket, head) => {
   }
   const t = viewTarget(req.url || "");
   if (!t || !authed(req)) { socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n"); return; }
-  const port = await viewerPort(t.id);
+  const port = await readyViewerPort(t.id);
   if (!port) { socket.end("HTTP/1.1 404 Not Found\r\n\r\n"); return; }
   const up = net.connect(port, "127.0.0.1", () => {
     const lines = [`${req.method} ${t.rest} HTTP/1.1`];
