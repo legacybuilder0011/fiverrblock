@@ -484,7 +484,10 @@ function registerIpcHandlers() {
     if (proxyErr) return { ok: false, error: proxyErr };
     const s = readCloudSettings();
     if (!s.url || !s.token) return { ok: false, needsSettings: true, error: "Set the cloud server address and team token first." };
-    const spec = realBrowser.cloudLaunchSpec(profile, store.buildConfigFromProfile(profile));
+    // Same as local Start: "Auto" timezone/language/geo must follow the proxy's
+    // current exit, not whatever was saved the last time it ran locally.
+    const fresh = await refreshProxyGeo(profile);
+    const spec = realBrowser.cloudLaunchSpec(fresh, store.buildConfigFromProfile(fresh));
     const r = await cloudApi(s, "/api/start", {
       profileId: profile.id, args: spec.args, width: spec.width, height: spec.height,
       proxy: { scheme: px.scheme || "http", host: px.host, port: px.port, username: sessionMgr.expandProxyPlaceholders(px.username || "", profile), password: px.password || "" }
@@ -1739,36 +1742,8 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   // Test result (or nothing, if the user never clicked Test). Placeholders are
   // expanded with this profile so the sticky session ID matches the browser's.
   if (networkMode === "proxy" && px.enabled && px.host && px.port) {
-    try {
-      const expandedUser = sessionMgr.expandProxyPlaceholders(px.username, profile);
-      const geo = await detectProxyGeo({
-        host: px.host, port: px.port, scheme: px.scheme,
-        username: expandedUser, password: px.password
-      });
-      if (geo && geo.countryCode) {
-        const updated = store.updateProfile(profileId, {
-          proxy: {
-            detectedCountryCode: geo.countryCode,
-            detectedCountry: geo.country,
-            detectedCity: geo.city,
-            detectedState: geo.state,
-            detectedTimezone: geo.timezone,
-            detectedLatitude: geo.latitude,
-            detectedLongitude: geo.longitude,
-            detectedIp: geo.ip,
-            proxyType: geo.proxyType || (geo.isMobile ? "mobile" : ""),
-            detectedAt: Date.now()
-          }
-        });
-        if (updated) { profile = updated; px = profile.proxy || {}; }
-      } else {
-        logError(`proxy geo auto-detect returned nothing profile=${profileId} host=${px.host}:${px.port}`);
-      }
-    } catch (err) {
-      // Non-fatal: fall back to whatever was last detected. Never block a launch
-      // just because the geo API was unreachable.
-      logError(`proxy geo auto-detect failed profile=${profileId}: ${err && (err.message || err)}`);
-    }
+    profile = await refreshProxyGeo(profile);
+    px = profile.proxy || {};
   }
 
   // Geo consistency: runs for both proxy and VPN modes
@@ -2885,6 +2860,35 @@ async function configureTempProxySession(tempSess, bridgeId, { host, port, schem
 // sticky session ID matches the one the browser will use — otherwise a rotating
 // provider could hand back a different exit IP than the profile actually runs on.
 // Returns a normalized network capture (ip/country/timezone/lat/lng/…) or null.
+// Route an IP-geo lookup THROUGH the profile's proxy and store the exit's
+// country/city/timezone/coords, so "Auto" timezone / language / geolocation
+// follow the proxy's REAL current location. Placeholders are expanded with this
+// profile so the sticky session matches the browser's. Never blocks a launch:
+// on failure the last detected values stay. Used by local Start and ☁ Cloud.
+async function refreshProxyGeo(profile) {
+  const px = profile.proxy || {};
+  try {
+    const expandedUser = sessionMgr.expandProxyPlaceholders(px.username, profile);
+    const geo = await detectProxyGeo({ host: px.host, port: px.port, scheme: px.scheme, username: expandedUser, password: px.password });
+    if (geo && geo.countryCode) {
+      const updated = store.updateProfile(profile.id, {
+        proxy: {
+          detectedCountryCode: geo.countryCode, detectedCountry: geo.country, detectedCity: geo.city,
+          detectedState: geo.state, detectedTimezone: geo.timezone, detectedLatitude: geo.latitude,
+          detectedLongitude: geo.longitude, detectedIp: geo.ip,
+          proxyType: geo.proxyType || (geo.isMobile ? "mobile" : ""), detectedAt: Date.now()
+        }
+      });
+      if (updated) return updated;
+    } else {
+      logError(`proxy geo auto-detect returned nothing profile=${profile.id} host=${px.host}:${px.port}`);
+    }
+  } catch (err) {
+    logError(`proxy geo auto-detect failed profile=${profile.id}: ${err && (err.message || err)}`);
+  }
+  return profile;
+}
+
 async function detectProxyGeo({ host, port, scheme, username, password } = {}) {
   if (!host || !port) return null;
   const { session: electronSession } = require("electron");
