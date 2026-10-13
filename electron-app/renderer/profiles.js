@@ -2173,7 +2173,23 @@ function locationText(loc) {
 // or "change" (cancel so the user can switch their VPN back). Nothing has
 // launched at this point — the browser only opens after a "continue".
 // ── Cloud runner ─────────────────────────────────────────────────────────────
+// One cloud start per profile at a time: starting (geo check + box + logins
+// move) takes 10-20s, and repeat clicks used to fire duplicate starts.
+const cloudStarting = new Set();
 async function startInCloud(profileId) {
+  if (cloudStarting.has(profileId)) { toast("Still starting in the cloud — please wait…"); return; }
+  cloudStarting.add(profileId);
+  const btns = [...document.querySelectorAll(`[data-action="cloud"][data-id="${profileId}"]`)];
+  const labels = btns.map((b) => b.textContent);
+  btns.forEach((b) => { b.disabled = true; b.textContent = "☁ Starting…"; });
+  try { await startInCloudOnce(profileId); }
+  finally {
+    cloudStarting.delete(profileId);
+    btns.forEach((b, i) => { b.disabled = false; b.textContent = labels[i]; });
+  }
+}
+
+async function startInCloudOnce(profileId) {
   toast("Starting in the cloud…");
   let r = await msg("PROFILE_START_CLOUD", { profileId });
   if (!r.ok && r.needsSettings) {
