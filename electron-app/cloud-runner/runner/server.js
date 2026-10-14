@@ -190,7 +190,7 @@ async function start(body, who) {
     "-v", `${dataDir}:/data`,
     "--memory", "2560m", "--cpus", "3",
     "--restart", "unless-stopped",
-    "--label", "ps.profile=" + id, "--label", `ps.owner=${who || "admin"}`, ...labels,
+    "--label", "ps.profile=" + id, "--label", `ps.owner=${who || "admin"}`, "--label", `ps.name=${String(body.profileName || "").replace(/[^\w .|&()-]/g, "").slice(0, 60)}`, ...labels,
     "-e", `PS_W=${w}`, "-e", `PS_H=${h}`, "-e", `PS_URL=${url}`,
     "-e", `PS_ARGS=${args.join("\n")}`, "-e", `PS_PROXY=${proxyJson}`,
     ...streamArgs
@@ -457,6 +457,16 @@ const server = http.createServer(async (req, res) => {
     const url = req.url || "/";
     // First viewer load passes ?t=<token>; turn it into an HttpOnly cookie so the
     // noVNC assets + websocket are authorized without the token in every URL.
+    // Phone link from a Press & Hold alert: ?p=<signed 2h pass>. Lax (not Strict)
+    // so the cookie survives the hop from the notification app into the browser.
+    const pq = /[?&]p=([^&]+)/.exec(url);
+    if (pq && url.startsWith("/view/")) {
+      const who = readPass(decodeURIComponent(pq[1]));
+      if (!who) return send(res, 401, { ok: false, error: "This alert link has expired — open the profile from Privacy Shield." });
+      const clean = url.replace(/([?&])p=[^&]+&?/, "$1").replace(/[?&]$/, "");
+      res.writeHead(302, { "Set-Cookie": `ps_v=${encodeURIComponent(decodeURIComponent(pq[1]))}; Path=/; HttpOnly; Secure; SameSite=Lax`, Location: clean });
+      return res.end();
+    }
     const tq = /[?&]t=([^&]+)/.exec(url);
     if (tq && url.startsWith("/view/")) {
       const t = decodeURIComponent(tq[1]);
@@ -490,6 +500,18 @@ const server = http.createServer(async (req, res) => {
       const r = await importCookies(body); return send(res, r.code, r.body);
     }
     if (req.method === "GET" && url === "/api/list") { const r = await list(who); return send(res, r.code, r.body); }
+    // Phone alerts (ntfy topic) — per account.
+    if (url === "/api/alerts" && req.method === "GET") return send(res, 200, { ok: true, topic: (loadAlerts()[who] || {}).topic || "" });
+    if (url === "/api/alerts" && req.method === "POST") {
+      const body = await readJson(req);
+      const topic = String((body && body.topic) || "");
+      if (topic && !/^[A-Za-z0-9_-]{20,64}$/.test(topic)) return send(res, 400, { ok: false, error: "bad topic" });
+      const all = loadAlerts();
+      if (topic) all[who] = { topic }; else delete all[who];
+      saveAlerts(all);
+      if (topic && body.test) await notifyPhone(topic, "✅ Privacy Shield alerts are on", "You'll get a message here when a cloud profile needs a Press & Hold.", null);
+      return send(res, 200, { ok: true });
+    }
     if (req.method === "POST" && url.startsWith("/api/put?")) {
       const q = new URL(url, "http://x").searchParams;
       const id = safeId(q.get("profileId"));
@@ -575,5 +597,51 @@ server.on("upgrade", async (req, socket, head) => {
   up.on("error", () => socket.destroy());
   socket.on("error", () => up.destroy());
 });
+
+// ── Press & Hold watcher → phone alert ─────────────────────────────────────
+// Every 30s read each running box's active window title (the page title) via
+// xdotool. A bot/human check page (Fiverr/PerimeterX "It needs a human touch",
+// Cloudflare "Just a moment", "Access denied") → push to the owner's ntfy topic
+// with a 2h link that opens that profile live on the phone. A person solves it;
+// nothing here clicks anything.
+const ALERTS_FILE = path.join(ROOT, "runner", "alerts.json");
+const PUBLIC_URL = process.env.PS_PUBLIC_URL || "https://ps-cloud.2-25-126-125.sslip.io";
+const CHALLENGE = /human touch|press\s*&\s*hold|access to this page has been denied|just a moment|verify you are human|are you a robot/i;
+function loadAlerts() { try { return JSON.parse(fs.readFileSync(ALERTS_FILE, "utf8")); } catch (_) { return {}; } }
+function saveAlerts(a) { fs.writeFileSync(ALERTS_FILE, JSON.stringify(a), { mode: 0o600 }); }
+
+async function notifyPhone(topic, title, message, link) {
+  try {
+    // JSON publish: HTTP headers can't carry the emoji in titles.
+    const r = await fetch("https://ntfy.sh/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic, title, message, priority: 4, tags: ["warning"],
+        ...(link ? { click: link, actions: [{ action: "view", label: "Solve now", url: link }] } : {}) })
+    });
+    if (!r.ok) console.error("ntfy", r.status);
+  } catch (err) { console.error("ntfy", err.message); }
+}
+
+const lastAlert = new Map(); // box id -> time (re-alert at most every 10 min)
+async function challengeWatch() {
+  const alerts = loadAlerts();
+  if (!Object.keys(alerts).length) return;
+  const r = await docker(["ps", "--filter", "label=ps.profile", "--format", "{{.Label \"ps.profile\"}}\t{{.Label \"ps.owner\"}}\t{{.Label \"ps.stream\"}}\t{{.Label \"ps.name\"}}\t{{.Status}}"]);
+  for (const line of (r.out ? r.out.split("\n") : [])) {
+    const [id, owner, stream, name, status] = line.split("\t");
+    const topic = (alerts[owner] || {}).topic;
+    if (!topic || /Paused/.test(status)) continue;
+    const display = stream === "rtc" ? ":99.0" : ":1";
+    const t = await docker(["exec", "-u", stream === "rtc" ? "1000" : "1500", "-e", `DISPLAY=${display}`, boxName(id), "xdotool", "getactivewindow", "getwindowname"]);
+    if (!t.ok || !CHALLENGE.test(t.out)) continue;
+    if (Date.now() - (lastAlert.get(id) || 0) < 10 * 60e3) continue;
+    lastAlert.set(id, Date.now());
+    const link = `${PUBLIC_URL}/view/${id}/?p=${encodeURIComponent(signPass(owner, 2 * 3600e3))}`;
+    await notifyPhone(topic, `🛑 ${name || id} needs a Press & Hold`, `"${t.out.replace(/ - Chromium$/, "").slice(0, 80)}" — tap to open it on your phone and solve it.`, link);
+    console.log(`challenge alert box=${id} title=${t.out.slice(0, 60)}`);
+  }
+}
+setInterval(() => { challengeWatch().catch((e) => console.error("watch", e.message)); }, 30000);
 
 server.listen(PORT, "127.0.0.1", () => console.log(`ps-cloud runner on 127.0.0.1:${PORT}`));

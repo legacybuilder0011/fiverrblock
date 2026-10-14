@@ -207,6 +207,29 @@ ipcMain.on("CLOUD_VIEWER_DROP", async (ev, { x, y, paths } = {}) => {
   await sendToCloud(BrowserWindow.fromWebContents(ev.sender), profileId, paths, { x, y });
 });
 
+// Press & Hold → phone. The runner watches this account's cloud profiles and
+// pushes to a private ntfy channel; tapping the alert opens that profile live on
+// the phone so the person solves it there. One random channel per account.
+async function setupPhoneAlerts(win) {
+  const s = await cloudCreds();
+  const cur = await cloudApi(s, "/api/alerts");
+  if (!cur.ok) return dialog.showMessageBox(win, { type: "warning", message: "Couldn't reach the cloud server", detail: cur.error || "" });
+  let topic = cur.topic;
+  const steps = (t) => `1. On your phone, install the free "ntfy" app (Play Store / App Store).\n2. In ntfy tap "+" (Subscribe to topic) and enter exactly:\n\n      ${t}\n\nKeep this name private — it's your own alert channel.\n\nWhen a cloud profile shows Fiverr's "Press & Hold", you'll get an alert. Tap it to open that profile on your phone and press-and-hold the button with your finger.`;
+  if (!topic) {
+    topic = "ps-" + require("crypto").randomBytes(16).toString("hex");
+    const r = await cloudApi(s, "/api/alerts", { topic, test: true });
+    if (!r.ok) return dialog.showMessageBox(win, { type: "warning", message: "Couldn't turn on phone alerts", detail: r.error || "" });
+  }
+  const { response } = await dialog.showMessageBox(win, {
+    type: "info", message: "📱 Press & Hold alerts on your phone are ON",
+    detail: steps(topic), buttons: ["Copy channel name", "Send test alert", "Turn off alerts", "Close"], defaultId: 0, cancelId: 3
+  });
+  if (response === 0) require("electron").clipboard.writeText(topic);
+  if (response === 1) await cloudApi(s, "/api/alerts", { topic, test: true });
+  if (response === 2) await cloudApi(s, "/api/alerts", { topic: "" });
+}
+
 async function uploadFromPc(win, profile, folders) {
   const picked = await dialog.showOpenDialog(win, {
     title: folders ? "Choose folders to send to the cloud browser" : "Choose files to send to the cloud browser",
@@ -258,6 +281,7 @@ function openCloudViewer(s, profile) {
   win.setMenu(Menu.buildFromTemplate([
     { label: "📎 Upload from PC", accelerator: "CmdOrCtrl+U", click: () => uploadFromPc(win, profile) },
     { label: "📁 Upload folder from PC", click: () => uploadFromPc(win, profile, true) },
+    { label: "📱 Phone alerts", click: () => setupPhoneAlerts(win) },
     { label: "Reconnect", accelerator: "F5", click: () => win.webContents.reload() }
   ]));
   // A file dropped outside the drop handler must never navigate the viewer away.
@@ -702,7 +726,7 @@ function registerIpcHandlers() {
     }
 
     const spec = realBrowser.cloudLaunchSpec(profile, store.buildConfigFromProfile(profile));
-    const r = await cloudApi(s, "/api/start", { profileId: profile.id, args: spec.args, width: spec.width, height: spec.height, ...body });
+    const r = await cloudApi(s, "/api/start", { profileId: profile.id, profileName: profile.name || "", args: spec.args, width: spec.width, height: spec.height, ...body });
     if (!r.ok) return r;
     profile = store.updateProfile(profile.id, { cloudRunning: body.mode, cloudStartedAt: Date.now(), cloudDevice: thisDeviceId() }) || profile;
     if (body.mode === "pc") await runCloudGateTick();
