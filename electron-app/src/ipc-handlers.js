@@ -164,7 +164,7 @@ function openCloudViewer(s, profile) {
     autoHideMenuBar: true, show: false,
     // Plain viewer: its own partition (holds only the runner cookie), no fingerprint
     // preload, no Node — the real browsing happens on the server.
-    webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true }
+    webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false }
   });
   // Own taskbar button per cloud profile: Windows groups windows by AppUserModelID,
   // so without this every cloud window stacked inside the Privacy Shield button.
@@ -213,7 +213,27 @@ function openCloudViewer(s, profile) {
       if (t && t !== lastFromCloud) { lastFromCloud = t; clipboard.writeText(t); }
     }).catch(() => {});
   }, 1000);
-  win.on("closed", () => { clearInterval(copyPoll); cloudViewers.delete(profile.id); });
+  // Stream watchdog: on a flaky connection the WebRTC peer drops and the viewer
+  // keeps showing a frozen last frame. If no new video frame arrives for ~6s
+  // (and the window isn't minimized), reload the viewer to reconnect.
+  let lastFrames = -1, stalledSince = 0, lastReload = 0;
+  const watchdog = setInterval(() => {
+    if (win.isDestroyed()) return clearInterval(watchdog);
+    if (win.isMinimized()) { stalledSince = 0; return; }
+    win.webContents.executeJavaScript(`(() => { const v = document.querySelector("video");
+      return v && v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : -1; })()`).then((frames) => {
+      if (frames < 0) { stalledSince = 0; return; } // no video element (VNC viewer / still loading)
+      const now = Date.now();
+      if (frames !== lastFrames) { lastFrames = frames; stalledSince = 0; return; }
+      if (!stalledSince) stalledSince = now;
+      if (now - stalledSince > 6000 && now - lastReload > 15000) {
+        lastReload = now; stalledSince = 0; lastFrames = -1;
+        logInfo(`cloud viewer stalled — reconnecting profile=${profile.id}`);
+        win.webContents.reload();
+      }
+    }).catch(() => {});
+  }, 2000);
+  win.on("closed", () => { clearInterval(copyPoll); clearInterval(watchdog); cloudViewers.delete(profile.id); });
   // The runner sends /view/<id>/ to the right viewer (WebRTC neko or legacy VNC), logged in.
   win.loadURL(`${s.url}/view/${id}/?t=${encodeURIComponent(s.token)}`);
 }
