@@ -360,6 +360,39 @@ async function readyViewerPort(id) {
   return 0;
 }
 
+// File dropped on the cloud window on the PC → drop it into the box's browser at
+// the same spot (neko /api/room/upload/drop drags it in with xdotool), so a
+// site's upload area receives it as if dragged from the user's own desktop.
+async function nekoToken(id) {
+  const { stream, pw } = await boxStream(id);
+  if (stream !== "rtc") throw new Error("Drag-and-drop upload needs the new video viewer — ☁ Stop then ☁ Cloud this profile once.");
+  const port = await readyViewerPort(id);
+  if (!port) throw new Error("profile not running");
+  const r = await fetch(`http://127.0.0.1:${port}/api/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "runner", password: pw }) });
+  const j = await r.json().catch(() => ({}));
+  if (!j.token) throw new Error("box login failed");
+  return { port, token: j.token };
+}
+
+function readBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let n = 0;
+    req.on("data", (c) => { n += c.length; if (n > limit) { req.destroy(); reject(new Error("file too large (max 200 MB)")); } else chunks.push(c); });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+async function dropFile(id, x, y, name, data) {
+  const { port, token } = await nekoToken(id);
+  const form = new FormData();
+  form.append("x", String(Math.max(0, Math.round(x))));
+  form.append("y", String(Math.max(0, Math.round(y))));
+  form.append("files", new Blob([data]), name);
+  const r = await fetch(`http://127.0.0.1:${port}/api/room/upload/drop`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form });
+  if (!r.ok) throw new Error(`drop failed (${r.status})`);
+}
+
 async function freeRtcPort() {
   const r = await docker(["ps", "-a", "--filter", "label=ps.rtcport", "--format", "{{.Label \"ps.rtcport\"}}"]);
   const used = new Set((r.out ? r.out.split("\n") : []).map(Number));
@@ -427,6 +460,18 @@ const server = http.createServer(async (req, res) => {
       const r = await importCookies(body); return send(res, r.code, r.body);
     }
     if (req.method === "GET" && url === "/api/list") { const r = await list(who); return send(res, r.code, r.body); }
+    if (req.method === "POST" && url.startsWith("/api/drop?")) {
+      const q = new URL(url, "http://x").searchParams;
+      const id = safeId(q.get("profileId"));
+      const name = String(q.get("name") || "file").replace(/[\/\\\0]/g, "_").slice(0, 200) || "file";
+      if (!id) return send(res, 400, { ok: false, error: "Invalid profileId" });
+      if (!(await canAccess(who, id))) return forbidden();
+      try {
+        const data = await readBody(req, 200 * 1024 * 1024);
+        await dropFile(id, Number(q.get("x")) || 0, Number(q.get("y")) || 0, name, data);
+        return send(res, 200, { ok: true });
+      } catch (err) { return send(res, 400, { ok: false, error: String(err.message || err) }); }
+    }
 
     const t = viewTarget(url);
     if (t) {

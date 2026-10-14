@@ -160,6 +160,30 @@ async function moveLoginsToCloud(s, profile) {
 }
 
 const cloudViewers = new Map();
+const viewerProfileByWc = new Map(); // cloud viewer webContents.id -> profile id
+
+// Files dropped on a cloud window (cloud-viewer-preload.js) → runner → dropped
+// into that profile's cloud browser at the same spot.
+ipcMain.on("CLOUD_VIEWER_DROP", async (ev, { x, y, paths } = {}) => {
+  const profileId = viewerProfileByWc.get(ev.sender.id);
+  const win = BrowserWindow.fromWebContents(ev.sender);
+  if (!profileId || !Array.isArray(paths)) return;
+  const s = await cloudCreds();
+  for (const p of paths.slice(0, 20)) {
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile()) throw new Error("only files can be dropped (not folders)");
+      if (st.size > 200 * 1024 * 1024) throw new Error("file is larger than 200 MB");
+      const q = new URLSearchParams({ profileId, x: String(x), y: String(y), name: path.basename(p) });
+      const res = await net.fetch(`${s.url}/api/drop?${q}`, { method: "POST", headers: { Authorization: `Bearer ${s.token}` }, body: fs.readFileSync(p) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `server error ${res.status}`);
+      logInfo(`cloud drop profile=${profileId} file=${path.basename(p)} bytes=${st.size}`);
+    } catch (err) {
+      if (win && !win.isDestroyed()) dialog.showMessageBox(win, { type: "warning", message: `Couldn't send "${path.basename(p)}" to the cloud browser`, detail: String(err.message || err) });
+    }
+  }
+});
 function openCloudViewer(s, profile) {
   const bringToFront = (w) => {
     // Windows blocks background apps from stealing focus; a brief always-on-top
@@ -176,7 +200,8 @@ function openCloudViewer(s, profile) {
     autoHideMenuBar: true, show: false,
     // Plain viewer: its own partition (holds only the runner cookie), no fingerprint
     // preload, no Node — the real browsing happens on the server.
-    webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false }
+    webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false,
+      preload: path.join(__dirname, "cloud-viewer-preload.js") }
   });
   // Own taskbar button per cloud profile: Windows groups windows by AppUserModelID,
   // so without this every cloud window stacked inside the Privacy Shield button.
@@ -195,6 +220,9 @@ function openCloudViewer(s, profile) {
   win.webContents.session.setPermissionRequestHandler((_wc, perm, cb) => cb(allowClip(perm)));
   win.webContents.session.setPermissionCheckHandler((_wc, perm) => allowClip(perm));
   cloudViewers.set(profile.id, win);
+  viewerProfileByWc.set(win.webContents.id, profile.id);
+  // A file dropped outside the drop handler must never navigate the viewer away.
+  win.webContents.on("will-navigate", (e, u) => { if (String(u).startsWith("file:")) e.preventDefault(); });
   win.once("ready-to-show", () => bringToFront(win));
   win.on("page-title-updated", (e) => e.preventDefault()); // keep the profile name as the title
 
@@ -245,7 +273,8 @@ function openCloudViewer(s, profile) {
       }
     }).catch(() => {});
   }, 2000);
-  win.on("closed", () => { clearInterval(copyPoll); clearInterval(watchdog); cloudViewers.delete(profile.id); });
+  const wcId = win.webContents.id;
+  win.on("closed", () => { clearInterval(copyPoll); clearInterval(watchdog); cloudViewers.delete(profile.id); viewerProfileByWc.delete(wcId); });
   // The runner sends /view/<id>/ to the right viewer (WebRTC neko or legacy VNC), logged in.
   win.loadURL(`${s.url}/view/${id}/?t=${encodeURIComponent(s.token)}`);
 }
