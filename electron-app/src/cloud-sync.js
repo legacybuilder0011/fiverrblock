@@ -177,6 +177,16 @@ async function getSession() {
   } catch (_) { return null; }
 }
 
+// The signed-in user's current Supabase access token (auto-refreshed by the
+// client). The cloud runner verifies it to know whose profiles a request is for.
+async function getAccessToken() {
+  if (!cloudReady()) return "";
+  try {
+    const { data } = await supabase.auth.getSession();
+    return (data && data.session && data.session.access_token) || "";
+  } catch (_) { return ""; }
+}
+
 function getCurrentUserId() {
   const sess = readJson(SESSION_FILE, {});
   // Find the session key — Supabase stores it under 'sb-<project>-auth-token'
@@ -353,7 +363,7 @@ async function fullSync(localProfiles, localProxies) {
 }
 
 module.exports = {
-  register, login, logout, getSession, getCurrentUserId,
+  register, login, logout, getSession, getCurrentUserId, getAccessToken,
   pullProfiles, pushProfile, pushAllProfiles, deleteProfileRemote,
   pullProxies, pushAllProxies, deleteProxyRemote,
   fullSync

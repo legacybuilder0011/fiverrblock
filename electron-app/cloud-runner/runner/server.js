@@ -31,12 +31,66 @@ const docker = (args) => new Promise((resolve) => {
 const safeId = (id) => /^[a-zA-Z0-9_-]{1,64}$/.test(String(id || "")) ? String(id) : null;
 const boxName = (id) => `ps-${id}`;
 
-function authed(req) {
+// ── Who is asking ──────────────────────────────────────────────────────────
+// Each team member signs in to their OWN Privacy Shield (Supabase) account; the
+// app sends that session's access token and we verify it with Supabase. A user
+// only ever reaches boxes labelled with their own user id. The team token in
+// runner/token is the admin key (sees everything). Viewer windows get a signed
+// 24h pass cookie (ps_v) so assets/websockets don't carry the token.
+const SUPABASE_URL = process.env.PS_SUPABASE_URL || "https://pnhzsteoouhngjdgsfeh.supabase.co";
+const SUPABASE_KEY = process.env.PS_SUPABASE_KEY || "sb_publishable_8xJbMF4kr6yTALY-XJua-Q_XFT0iKe2"; // public client key
+const jwtCache = new Map(); // access token -> { uid, until }
+
+const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+
+async function userFromJwt(t) {
+  if (!t || t.split(".").length !== 3) return null;
+  const c = jwtCache.get(t);
+  if (c && c.until > Date.now()) return c.uid;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${t}` } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!/^[a-f0-9-]{36}$/.test(String(j.id || ""))) return null;
+    if (jwtCache.size > 5000) jwtCache.clear();
+    jwtCache.set(t, { uid: j.id, until: Date.now() + 60000 });
+    return j.id;
+  } catch (_) { return null; }
+}
+
+const signPass = (who, ms) => {
+  const body = `${who}.${Date.now() + ms}`;
+  return `${body}.${crypto.createHmac("sha256", TOKEN).update(body).digest("base64url")}`;
+};
+const readPass = (p) => {
+  const m = /^([a-zA-Z0-9-]+)\.(\d+)\.([A-Za-z0-9_-]+)$/.exec(p || "");
+  if (!m || Number(m[2]) < Date.now()) return null;
+  return same(crypto.createHmac("sha256", TOKEN).update(`${m[1]}.${m[2]}`).digest("base64url"), m[3]) ? m[1] : null;
+};
+
+// → "admin", a Supabase user id, or null.
+async function identify(req) {
   const h = req.headers.authorization || "";
-  const cookie = /(?:^|;\s*)ps_t=([^;]+)/.exec(req.headers.cookie || "");
-  const given = h.startsWith("Bearer ") ? h.slice(7) : cookie ? decodeURIComponent(cookie[1]) : "";
-  const a = Buffer.from(given), b = Buffer.from(TOKEN);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  if (h.startsWith("Bearer ")) { const t = h.slice(7); return same(t, TOKEN) ? "admin" : userFromJwt(t); }
+  const pass = /(?:^|;\s*)ps_v=([^;]+)/.exec(req.headers.cookie || "");
+  if (pass) return readPass(decodeURIComponent(pass[1]));
+  const legacy = /(?:^|;\s*)ps_t=([^;]+)/.exec(req.headers.cookie || "");
+  return legacy && same(decodeURIComponent(legacy[1]), TOKEN) ? "admin" : null;
+}
+
+// Owner label of a box: null = no such box, "" = created before accounts.
+async function boxOwner(id) {
+  const r = await docker(["inspect", "-f", "{{index .Config.Labels \"ps.owner\"}}", boxName(id)]);
+  return r.ok ? (r.out || "") : null;
+}
+// Admin → any box. A user → their own boxes, a not-yet-existing one (to start
+// it), and unlabelled pre-accounts boxes (ponytail: those predate per-user
+// ownership and get the label on their next start).
+async function canAccess(who, id) {
+  if (!who) return false;
+  if (who === "admin") return true;
+  const owner = await boxOwner(id);
+  return owner === null || owner === "" || owner === who;
 }
 
 function send(res, code, obj) {
@@ -63,7 +117,7 @@ function validateProxy(p) {
   return "";
 }
 
-async function start(body) {
+async function start(body, who) {
   const id = safeId(body.profileId);
   if (!id) return { code: 400, body: { ok: false, error: "Invalid profileId" } };
   // mode "pc": the box's only internet exit is a tunnel to the owner's PC (its
@@ -136,7 +190,7 @@ async function start(body) {
     "-v", `${dataDir}:/data`,
     "--memory", "2560m", "--cpus", "3",
     "--restart", "unless-stopped",
-    "--label", "ps.profile=" + id, ...labels,
+    "--label", "ps.profile=" + id, "--label", `ps.owner=${who || "admin"}`, ...labels,
     "-e", `PS_W=${w}`, "-e", `PS_H=${h}`, "-e", `PS_URL=${url}`,
     "-e", `PS_ARGS=${args.join("\n")}`, "-e", `PS_PROXY=${proxyJson}`,
     ...streamArgs
@@ -178,13 +232,13 @@ async function importCookies(body) {
   return { code: 200, body: { ok: true, imported: body.cookies.length } };
 }
 
-async function list() {
-  const r = await docker(["ps", "--filter", "label=ps.profile", "--format", "{{.Label \"ps.profile\"}}\t{{.Status}}\t{{.Label \"ps.mode\"}}"]);
+async function list(who) {
+  const r = await docker(["ps", "--filter", "label=ps.profile", "--format", "{{.Label \"ps.profile\"}}\t{{.Status}}\t{{.Label \"ps.mode\"}}\t{{.Label \"ps.owner\"}}"]);
   const boxes = r.out ? r.out.split("\n").map((l) => {
-    const [profileId, status, mode] = l.split("\t");
+    const [profileId, status, mode, owner] = l.split("\t");
     const relay = relays.get(profileId);
-    return { profileId, status, mode: mode || "proxy", paused: /Paused/.test(status), tunnels: relay ? relay.pool.length : 0 };
-  }) : [];
+    return { profileId, owner: owner || "", status, mode: mode || "proxy", paused: /Paused/.test(status), tunnels: relay ? relay.pool.length : 0 };
+  }).filter((b) => who === "admin" || b.owner === who) : []; // each user sees only their own boxes
   return { code: 200, body: { ok: true, boxes } };
 }
 
@@ -343,33 +397,40 @@ const server = http.createServer(async (req, res) => {
     const tq = /[?&]t=([^&]+)/.exec(url);
     if (tq && url.startsWith("/view/")) {
       const t = decodeURIComponent(tq[1]);
-      if (t.length === TOKEN.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(TOKEN))) {
+      const who = same(t, TOKEN) ? "admin" : await userFromJwt(t);
+      if (who) {
         const clean = url.replace(/([?&])t=[^&]+&?/, "$1").replace(/[?&]$/, "");
-        res.writeHead(302, { "Set-Cookie": `ps_t=${encodeURIComponent(TOKEN)}; Path=/; HttpOnly; Secure; SameSite=Strict`, Location: clean });
+        res.writeHead(302, { "Set-Cookie": `ps_v=${encodeURIComponent(signPass(who, 24 * 3600e3))}; Path=/; HttpOnly; Secure; SameSite=Strict`, Location: clean });
         return res.end();
       }
     }
-    if (!authed(req)) return send(res, 401, { ok: false, error: "unauthorized" });
+    const who = await identify(req);
+    if (!who) return send(res, 401, { ok: false, error: "unauthorized — sign in to your Privacy Shield account" });
+    const forbidden = () => send(res, 403, { ok: false, error: "This cloud profile belongs to another account." });
 
     if (req.method === "POST" && url === "/api/start") {
       const body = await readJson(req);
       if (!body) return send(res, 400, { ok: false, error: "bad json" });
-      const r = await start(body); return send(res, r.code, r.body);
+      if (!(await canAccess(who, safeId(body.profileId)))) return forbidden();
+      const r = await start(body, who); return send(res, r.code, r.body);
     }
     if (req.method === "POST" && url === "/api/stop") {
       const body = await readJson(req);
       if (!body) return send(res, 400, { ok: false, error: "bad json" });
+      if (!(await canAccess(who, safeId(body.profileId)))) return forbidden();
       const r = await stop(body); return send(res, r.code, r.body);
     }
     if (req.method === "POST" && url === "/api/cookies") {
       const body = await readJson(req, 25 * 1024 * 1024);
       if (!body) return send(res, 400, { ok: false, error: "bad json" });
+      if (!(await canAccess(who, safeId(body.profileId)))) return forbidden();
       const r = await importCookies(body); return send(res, r.code, r.body);
     }
-    if (req.method === "GET" && url === "/api/list") { const r = await list(); return send(res, r.code, r.body); }
+    if (req.method === "GET" && url === "/api/list") { const r = await list(who); return send(res, r.code, r.body); }
 
     const t = viewTarget(url);
     if (t) {
+      if (!(await canAccess(who, t.id))) return forbidden();
       // The app always opens /view/<id>/ — send it to the right viewer, logged in.
       // Older apps open the noVNC page directly; a WebRTC box has none.
       if (req.method === "GET" && /^\/vnc\.html/.test(t.rest) && (await boxStream(t.id)).stream === "rtc") {
@@ -406,14 +467,14 @@ const server = http.createServer(async (req, res) => {
 server.on("upgrade", async (req, socket, head) => {
   const tun = /^\/tunnel\/([a-zA-Z0-9_-]{1,64})$/.exec(req.url || "");
   if (tun) {
-    if (!authed(req)) { socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n"); return; }
+    if (!(await canAccess(await identify(req), tun[1]))) { socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n"); return; }
     await restoreRelay(tun[1]);
     if (head && head.length) socket.unshift(head);
     acceptTunnel(tun[1], socket);
     return;
   }
   const t = viewTarget(req.url || "");
-  if (!t || !authed(req)) { socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n"); return; }
+  if (!t || !(await canAccess(await identify(req), t.id))) { socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n"); return; }
   const port = await readyViewerPort(t.id);
   if (!port) { socket.end("HTTP/1.1 404 Not Found\r\n\r\n"); return; }
   const up = net.connect(port, "127.0.0.1", () => {

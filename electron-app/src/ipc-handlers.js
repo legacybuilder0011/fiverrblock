@@ -95,6 +95,18 @@ function readCloudSettings() {
     return { url: raw.url || "", token };
   } catch (_) { return { url: "", token: "" }; }
 }
+// Who the cloud server should treat this request as: the signed-in Privacy
+// Shield account (each user only ever sees their own cloud profiles). A saved
+// team token is only a fallback (admin / not signed in). Server address
+// defaults to the team server so members never have to type it.
+const DEFAULT_CLOUD_URL = "https://ps-cloud.2-25-126-125.sslip.io";
+async function cloudCreds() {
+  const saved = readCloudSettings();
+  let token = "";
+  try { token = await require("./cloud-sync").getAccessToken(); } catch (_) {}
+  return { url: saved.url || DEFAULT_CLOUD_URL, token: token || saved.token, viaAccount: Boolean(token) };
+}
+
 function writeCloudSettings({ url, token }) {
   const { safeStorage } = require("electron");
   if (token && !safeStorage.isEncryptionAvailable()) throw new Error("OS encryption unavailable — can't store the token safely");
@@ -571,7 +583,7 @@ function registerIpcHandlers() {
   // ── Cloud runner: profile runs 24/7 in a sealed box on a server, viewed here ──
   ipcMain.handle("CLOUD_GET_SETTINGS", async () => {
     const s = readCloudSettings();
-    return { ok: true, url: s.url || "", hasToken: Boolean(s.token) };
+    return { ok: true, url: s.url || DEFAULT_CLOUD_URL, hasToken: Boolean(s.token) };
   });
   ipcMain.handle("CLOUD_SET_SETTINGS", async (_ev, { url, token } = {}) => {
     const clean = String(url || "").trim().replace(/\/+$/, "");
@@ -583,8 +595,8 @@ function registerIpcHandlers() {
   ipcMain.handle("PROFILE_START_CLOUD", async (_ev, { profileId } = {}) => {
     let profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
     if (!profile) return { ok: false, error: "Profile not found" };
-    const s = readCloudSettings();
-    if (!s.url || !s.token) return { ok: false, needsSettings: true, error: "Set the cloud server address and team token first." };
+    const s = await cloudCreds();
+    if (!s.token) return { ok: false, needsSettings: true, error: "Sign in to your Privacy Shield account to use the cloud." };
     // Already running in the cloud → just show it (it may be paused by the VPN lock).
     if (profile.cloudRunning) {
       const moved = profile.cloudLoginsMovedAt ? { ok: true } : await moveLoginsToCloud(s, profile);
@@ -631,8 +643,8 @@ function registerIpcHandlers() {
     return { ok: true, mode: body.mode, loginsWarning: moved.ok ? "" : moved.error, loginsMoved: moved.imported || 0 };
   });
   ipcMain.handle("PROFILE_STOP_CLOUD", async (_ev, { profileId } = {}) => {
-    const s = readCloudSettings();
-    if (!s.url || !s.token) return { ok: false, error: "No cloud server set." };
+    const s = await cloudCreds();
+    if (!s.token) return { ok: false, error: "Sign in to your Privacy Shield account to use the cloud." };
     const r = await cloudApi(s, "/api/stop", { profileId });
     if (r.ok) {
       store.updateProfile(profileId, { cloudRunning: null, cloudStartedAt: null, cloudDevice: null });
@@ -643,8 +655,8 @@ function registerIpcHandlers() {
     return r;
   });
   ipcMain.handle("CLOUD_LIST", async () => {
-    const s = readCloudSettings();
-    if (!s.url || !s.token) return { ok: true, boxes: [] };
+    const s = await cloudCreds();
+    if (!s.token) return { ok: true, boxes: [] };
     return cloudApi(s, "/api/list");
   });
 
@@ -3283,7 +3295,7 @@ async function runCloudGateTick() {
   if (cloudGateBusy) return;
   cloudGateBusy = true;
   try {
-    const s = readCloudSettings();
+    const s = await cloudCreds();
     const list = store.getProfiles()
       .filter((p) => !p.deletedAt && p.cloudRunning === "pc" && p.cloudDevice === thisDeviceId())
       .sort((a, b) => (a.cloudStartedAt || 0) - (b.cloudStartedAt || 0));

@@ -134,7 +134,8 @@ function stop(id) {
 
 // Called by the VPN gate: exactly these profiles may use this PC as their exit.
 function setAllowed(nextSettings, ids) {
-  const sameServer = settings && nextSettings && settings.url === nextSettings.url && settings.token === nextSettings.token;
+  // Same server → keep open tunnels; a refreshed sign-in token only applies to new ones.
+  const sameServer = settings && nextSettings && settings.url === nextSettings.url;
   if (!sameServer) for (const id of [...state.keys()]) stop(id);
   settings = nextSettings && nextSettings.url && nextSettings.token ? nextSettings : null;
   const want = new Set(settings ? ids : []);
