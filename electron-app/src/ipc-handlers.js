@@ -184,6 +184,31 @@ ipcMain.on("CLOUD_VIEWER_DROP", async (ev, { x, y, paths } = {}) => {
     }
   }
 });
+async function uploadFromPc(win, profile) {
+  const picked = await dialog.showOpenDialog(win, { title: "Choose files to send to the cloud browser", properties: ["openFile", "multiSelections"] });
+  if (picked.canceled || !picked.filePaths.length) return;
+  const s = await cloudCreds();
+  const sent = [], failed = [];
+  for (const p of picked.filePaths.slice(0, 20)) {
+    try {
+      const st = fs.statSync(p);
+      if (st.size > 200 * 1024 * 1024) throw new Error("larger than 200 MB");
+      const q = new URLSearchParams({ profileId: profile.id, name: path.basename(p) });
+      const res = await net.fetch(`${s.url}/api/put?${q}`, { method: "POST", headers: { Authorization: `Bearer ${s.token}` }, body: fs.readFileSync(p) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j.ok) throw new Error(j.error || `server error ${res.status}`);
+      sent.push(j.name || path.basename(p));
+    } catch (err) { failed.push(`${path.basename(p)} — ${err.message || err}`); }
+  }
+  if (win.isDestroyed()) return;
+  dialog.showMessageBox(win, {
+    type: failed.length ? "warning" : "info",
+    message: sent.length ? `Sent ${sent.length} file(s) to the cloud browser` : "Nothing was sent",
+    detail: (sent.length ? `${sent.join("\n")}\n\nNow click the site's upload button in the cloud window and open the "Downloads" folder — your file is there.\n(Tip: you can also drag files straight onto the site's upload area.)` : "")
+      + (failed.length ? `\n\nFailed:\n${failed.join("\n")}` : "")
+  });
+}
+
 function openCloudViewer(s, profile) {
   const bringToFront = (w) => {
     // Windows blocks background apps from stealing focus; a brief always-on-top
@@ -197,7 +222,7 @@ function openCloudViewer(s, profile) {
   const id = encodeURIComponent(profile.id);
   const win = new BrowserWindow({
     width: 1400, height: 860, title: `☁ ${profile.name || "Profile"} — cloud`,
-    autoHideMenuBar: true, show: false,
+    autoHideMenuBar: false, show: false,
     // Plain viewer: its own partition (holds only the runner cookie), no fingerprint
     // preload, no Node — the real browsing happens on the server.
     webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false,
@@ -221,6 +246,12 @@ function openCloudViewer(s, profile) {
   win.webContents.session.setPermissionCheckHandler((_wc, perm) => allowClip(perm));
   cloudViewers.set(profile.id, win);
   viewerProfileByWc.set(win.webContents.id, profile.id);
+  // The cloud browser's own file picker only sees the server's disk. "Upload from
+  // PC" uses THIS PC's file dialog and puts the files in the cloud ~/Downloads.
+  win.setMenu(Menu.buildFromTemplate([
+    { label: "📎 Upload from PC", accelerator: "CmdOrCtrl+U", click: () => uploadFromPc(win, profile) },
+    { label: "Reconnect", accelerator: "F5", click: () => win.webContents.reload() }
+  ]));
   // A file dropped outside the drop handler must never navigate the viewer away.
   win.webContents.on("will-navigate", (e, u) => { if (String(u).startsWith("file:")) e.preventDefault(); });
   win.once("ready-to-show", () => bringToFront(win));

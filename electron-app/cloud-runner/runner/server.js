@@ -393,6 +393,19 @@ async function dropFile(id, x, y, name, data) {
   if (!r.ok) throw new Error(`drop failed (${r.status})`);
 }
 
+// "Upload from PC" (picked with the PC's own file dialog) → the box's
+// ~/Downloads, where the cloud browser's file picker can then choose it.
+async function putFile(id, name, data) {
+  const tmp = path.join(require("os").tmpdir(), `ps-put-${crypto.randomBytes(6).toString("hex")}`);
+  fs.writeFileSync(tmp, data, { mode: 0o644 });
+  try {
+    await docker(["exec", boxName(id), "mkdir", "-p", "/home/neko/Downloads"]);
+    const r = await docker(["cp", tmp, `${boxName(id)}:/home/neko/Downloads/${name}`]);
+    if (!r.ok) throw new Error("copy into the cloud profile failed: " + r.err.slice(0, 120));
+    await docker(["exec", boxName(id), "chown", "-R", "1000:1000", "/home/neko/Downloads"]);
+  } finally { fs.rmSync(tmp, { force: true }); }
+}
+
 async function freeRtcPort() {
   const r = await docker(["ps", "-a", "--filter", "label=ps.rtcport", "--format", "{{.Label \"ps.rtcport\"}}"]);
   const used = new Set((r.out ? r.out.split("\n") : []).map(Number));
@@ -460,6 +473,18 @@ const server = http.createServer(async (req, res) => {
       const r = await importCookies(body); return send(res, r.code, r.body);
     }
     if (req.method === "GET" && url === "/api/list") { const r = await list(who); return send(res, r.code, r.body); }
+    if (req.method === "POST" && url.startsWith("/api/put?")) {
+      const q = new URL(url, "http://x").searchParams;
+      const id = safeId(q.get("profileId"));
+      const name = String(q.get("name") || "file").replace(/[\/\\\0]/g, "_").replace(/^\.+/, "_").slice(0, 200) || "file";
+      if (!id) return send(res, 400, { ok: false, error: "Invalid profileId" });
+      if (!(await canAccess(who, id))) return forbidden();
+      try {
+        if ((await boxStream(id)).stream !== "rtc") throw new Error("Needs the new video viewer — ☁ Stop then ☁ Cloud this profile once.");
+        await putFile(id, name, await readBody(req, 200 * 1024 * 1024));
+        return send(res, 200, { ok: true, name });
+      } catch (err) { return send(res, 400, { ok: false, error: String(err.message || err) }); }
+    }
     if (req.method === "POST" && url.startsWith("/api/drop?")) {
       const q = new URL(url, "http://x").searchParams;
       const id = safeId(q.get("profileId"));
