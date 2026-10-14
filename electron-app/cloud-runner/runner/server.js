@@ -406,6 +406,23 @@ async function putFile(id, name, data) {
   } finally { fs.rmSync(tmp, { force: true }); }
 }
 
+// A whole folder (e.g. an unpacked extension), packed with tar on the PC →
+// unpacked into the box's ~/Downloads.
+async function putFolder(id, data) {
+  const tmp = path.join(require("os").tmpdir(), `ps-put-${crypto.randomBytes(6).toString("hex")}.tar`);
+  fs.writeFileSync(tmp, data, { mode: 0o644 });
+  try {
+    await docker(["exec", boxName(id), "mkdir", "-p", "/home/neko/Downloads"]);
+    const cp = await docker(["cp", tmp, `${boxName(id)}:/tmp/ps-put.tar`]);
+    if (!cp.ok) throw new Error("copy into the cloud profile failed");
+    // GNU tar refuses absolute paths and "../" members; it runs inside the box anyway.
+    const x = await docker(["exec", boxName(id), "tar", "-xf", "/tmp/ps-put.tar", "-C", "/home/neko/Downloads"]);
+    await docker(["exec", boxName(id), "rm", "-f", "/tmp/ps-put.tar"]);
+    if (!x.ok) throw new Error("unpacking the folder failed: " + x.err.slice(0, 120));
+    await docker(["exec", boxName(id), "chown", "-R", "1000:1000", "/home/neko/Downloads"]);
+  } finally { fs.rmSync(tmp, { force: true }); }
+}
+
 async function freeRtcPort() {
   const r = await docker(["ps", "-a", "--filter", "label=ps.rtcport", "--format", "{{.Label \"ps.rtcport\"}}"]);
   const used = new Set((r.out ? r.out.split("\n") : []).map(Number));
@@ -481,7 +498,8 @@ const server = http.createServer(async (req, res) => {
       if (!(await canAccess(who, id))) return forbidden();
       try {
         if ((await boxStream(id)).stream !== "rtc") throw new Error("Needs the new video viewer — ☁ Stop then ☁ Cloud this profile once.");
-        await putFile(id, name, await readBody(req, 200 * 1024 * 1024));
+        const data = await readBody(req, 200 * 1024 * 1024);
+        if (q.get("kind") === "folder") await putFolder(id, data); else await putFile(id, name, data);
         return send(res, 200, { ok: true, name });
       } catch (err) { return send(res, 400, { ok: false, error: String(err.message || err) }); }
     }

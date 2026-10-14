@@ -162,51 +162,63 @@ async function moveLoginsToCloud(s, profile) {
 const cloudViewers = new Map();
 const viewerProfileByWc = new Map(); // cloud viewer webContents.id -> profile id
 
-// Files dropped on a cloud window (cloud-viewer-preload.js) → runner → dropped
-// into that profile's cloud browser at the same spot.
-ipcMain.on("CLOUD_VIEWER_DROP", async (ev, { x, y, paths } = {}) => {
-  const profileId = viewerProfileByWc.get(ev.sender.id);
-  const win = BrowserWindow.fromWebContents(ev.sender);
-  if (!profileId || !Array.isArray(paths)) return;
+// Send files/folders from this PC to a profile's cloud browser.
+//  - file dropped on the page → dropped into the cloud browser at that spot
+//  - file picked from the menu, or any folder → copied into the cloud ~/Downloads
+//    (folders are packed with Windows' built-in tar and unpacked on the server)
+// The cloud browser's own file dialogs only see the server's disk.
+async function sendToCloud(win, profileId, paths, drop) {
   const s = await cloudCreds();
+  const MAX = 200 * 1024 * 1024;
+  const toDownloads = [], failed = [];
+  const post = async (route, params, body) => {
+    const res = await net.fetch(`${s.url}${route}?${new URLSearchParams({ profileId, ...params })}`, { method: "POST", headers: { Authorization: `Bearer ${s.token}` }, body });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.ok) throw new Error(j.error || `server error ${res.status}`);
+  };
   for (const p of paths.slice(0, 20)) {
+    const name = path.basename(p);
     try {
       const st = fs.statSync(p);
-      if (!st.isFile()) throw new Error("only files can be dropped (not folders)");
-      if (st.size > 200 * 1024 * 1024) throw new Error("file is larger than 200 MB");
-      const q = new URLSearchParams({ profileId, x: String(x), y: String(y), name: path.basename(p) });
-      const res = await net.fetch(`${s.url}/api/drop?${q}`, { method: "POST", headers: { Authorization: `Bearer ${s.token}` }, body: fs.readFileSync(p) });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || `server error ${res.status}`);
-      logInfo(`cloud drop profile=${profileId} file=${path.basename(p)} bytes=${st.size}`);
-    } catch (err) {
-      if (win && !win.isDestroyed()) dialog.showMessageBox(win, { type: "warning", message: `Couldn't send "${path.basename(p)}" to the cloud browser`, detail: String(err.message || err) });
-    }
+      if (st.isDirectory()) {
+        const tar = path.join(require("os").tmpdir(), `ps-folder-${Date.now()}.tar`);
+        try {
+          await new Promise((ok, fail) => require("child_process").execFile("tar", ["-cf", tar, "-C", path.dirname(p), name], { windowsHide: true },
+            (err) => (err ? fail(new Error("couldn't pack the folder")) : ok())));
+          if (fs.statSync(tar).size > MAX) throw new Error("folder is larger than 200 MB");
+          await post("/api/put", { kind: "folder", name }, fs.readFileSync(tar));
+        } finally { fs.rmSync(tar, { force: true }); }
+        toDownloads.push(`📁 ${name}`);
+      } else {
+        if (st.size > MAX) throw new Error("file is larger than 200 MB");
+        if (drop) await post("/api/drop", { x: String(drop.x), y: String(drop.y), name }, fs.readFileSync(p));
+        else { await post("/api/put", { name }, fs.readFileSync(p)); toDownloads.push(name); }
+      }
+      logInfo(`cloud send profile=${profileId} ${st.isDirectory() ? "folder" : "file"}=${name}`);
+    } catch (err) { failed.push(`${name} — ${err.message || err}`); }
   }
-});
-async function uploadFromPc(win, profile) {
-  const picked = await dialog.showOpenDialog(win, { title: "Choose files to send to the cloud browser", properties: ["openFile", "multiSelections"] });
-  if (picked.canceled || !picked.filePaths.length) return;
-  const s = await cloudCreds();
-  const sent = [], failed = [];
-  for (const p of picked.filePaths.slice(0, 20)) {
-    try {
-      const st = fs.statSync(p);
-      if (st.size > 200 * 1024 * 1024) throw new Error("larger than 200 MB");
-      const q = new URLSearchParams({ profileId: profile.id, name: path.basename(p) });
-      const res = await net.fetch(`${s.url}/api/put?${q}`, { method: "POST", headers: { Authorization: `Bearer ${s.token}` }, body: fs.readFileSync(p) });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || `server error ${res.status}`);
-      sent.push(j.name || path.basename(p));
-    } catch (err) { failed.push(`${path.basename(p)} — ${err.message || err}`); }
-  }
-  if (win.isDestroyed()) return;
+  if (!win || win.isDestroyed() || (!toDownloads.length && !failed.length)) return; // plain file drops: silent on success
   dialog.showMessageBox(win, {
     type: failed.length ? "warning" : "info",
-    message: sent.length ? `Sent ${sent.length} file(s) to the cloud browser` : "Nothing was sent",
-    detail: (sent.length ? `${sent.join("\n")}\n\nNow click the site's upload button in the cloud window and open the "Downloads" folder — your file is there.\n(Tip: you can also drag files straight onto the site's upload area.)` : "")
+    message: toDownloads.length ? `Sent to the cloud browser's Downloads folder` : "Nothing was sent",
+    detail: (toDownloads.length ? `${toDownloads.join("\n")}\n\nIn the cloud window, open the site's file picker (e.g. Upload, or "Load unpacked" for an extension) and choose it from Downloads.` : "")
       + (failed.length ? `\n\nFailed:\n${failed.join("\n")}` : "")
   });
+}
+
+ipcMain.on("CLOUD_VIEWER_DROP", async (ev, { x, y, paths } = {}) => {
+  const profileId = viewerProfileByWc.get(ev.sender.id);
+  if (!profileId || !Array.isArray(paths)) return;
+  await sendToCloud(BrowserWindow.fromWebContents(ev.sender), profileId, paths, { x, y });
+});
+
+async function uploadFromPc(win, profile, folders) {
+  const picked = await dialog.showOpenDialog(win, {
+    title: folders ? "Choose folders to send to the cloud browser" : "Choose files to send to the cloud browser",
+    properties: [folders ? "openDirectory" : "openFile", "multiSelections"]
+  });
+  if (picked.canceled || !picked.filePaths.length) return;
+  await sendToCloud(win, profile.id, picked.filePaths, null);
 }
 
 function openCloudViewer(s, profile) {
@@ -250,6 +262,7 @@ function openCloudViewer(s, profile) {
   // PC" uses THIS PC's file dialog and puts the files in the cloud ~/Downloads.
   win.setMenu(Menu.buildFromTemplate([
     { label: "📎 Upload from PC", accelerator: "CmdOrCtrl+U", click: () => uploadFromPc(win, profile) },
+    { label: "📁 Upload folder from PC", click: () => uploadFromPc(win, profile, true) },
     { label: "Reconnect", accelerator: "F5", click: () => win.webContents.reload() }
   ]));
   // A file dropped outside the drop handler must never navigate the viewer away.
