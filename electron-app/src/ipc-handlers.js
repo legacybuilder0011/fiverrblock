@@ -165,7 +165,7 @@ const viewerProfileByWc = new Map(); // cloud viewer webContents.id -> profile i
 // Send files/folders from this PC to a profile's cloud browser.
 //  - file dropped on the page → dropped into the cloud browser at that spot
 //  - file picked from the menu, or any folder → copied into the cloud ~/Downloads
-//    (folders are packed with Windows' built-in tar and unpacked on the server)
+//    (folders are packed in-process by tar-pack.js and unpacked on the server)
 // The cloud browser's own file dialogs only see the server's disk.
 async function sendToCloud(win, profileId, paths, drop) {
   const s = await cloudCreds();
@@ -181,13 +181,8 @@ async function sendToCloud(win, profileId, paths, drop) {
     try {
       const st = fs.statSync(p);
       if (st.isDirectory()) {
-        const tar = path.join(require("os").tmpdir(), `ps-folder-${Date.now()}.tar`);
-        try {
-          await new Promise((ok, fail) => require("child_process").execFile("tar", ["-cf", tar, "-C", path.dirname(p), name], { windowsHide: true },
-            (err) => (err ? fail(new Error("couldn't pack the folder")) : ok())));
-          if (fs.statSync(tar).size > MAX) throw new Error("folder is larger than 200 MB");
-          await post("/api/put", { kind: "folder", name }, fs.readFileSync(tar));
-        } finally { fs.rmSync(tar, { force: true }); }
+        // Packed in-process (tar-pack.js): Windows' tar.exe refused some folders.
+        await post("/api/put", { kind: "folder", name }, require("./tar-pack").packFolder(p, MAX));
         toDownloads.push(`📁 ${name}`);
       } else {
         if (st.size > MAX) throw new Error("file is larger than 200 MB");
