@@ -512,7 +512,7 @@ function buildNewProfile(data, nameIndex) {
     status: data.status || "new",
     tags: Array.isArray(data.tags) ? data.tags : [],
     notes: data.notes || "",
-    os: data.os || "windows",
+    os: data.os || (process.platform === "darwin" ? "macos" : "windows"),
     browserApp: data.browserApp || "chrome",
     windowMode: data.windowMode || "normal",
     // Which engine launches on Start. External real-browser modes use installed

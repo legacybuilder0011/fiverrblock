@@ -1,0 +1,32 @@
+# Real-Mac checks for the macOS version: engine, identity, proxy, WebRTC,
+# fonts, account backup (test/mac-e2e.cjs) and that the app itself starts.
+name: Mac test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mac-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-13] # Apple Silicon, Intel
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: electron-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Engine, identity, proxy, WebRTC, fonts, backup
+        run: node test/mac-e2e.cjs
+      - name: App starts and stays up
+        run: |
+          npx electron . > app.log 2>&1 &
+          APP=$!
+          sleep 40
+          if kill -0 $APP 2>/dev/null; then echo "APP RUNNING after 40s"; kill $APP; else echo "APP EXITED"; cat app.log; exit 1; fi
+          grep -iE "uncaught|error" app.log | head -20 || true

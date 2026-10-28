@@ -292,7 +292,7 @@ function startNewProfile() {
     id: "__new__",
     name: "New Profile " + (profiles.length + 1),
     status: "new",
-    os: "windows",
+    os: HOST_OS,
     browserApp: "chrome",
     windowMode: "normal",
     tags: [],
@@ -729,8 +729,15 @@ async function addUnpackedExtension() {
 // device fingerprint (UA ↔ WebGL ↔ screen ↔ CPU/RAM ↔ timezone ↔ language ↔
 // version all matched) for the current OS + country, then loads it into the form
 // while KEEPING the profile name, tags, notes and proxy. User reviews and Saves.
+// New identities match the computer the app runs on: a Windows identity on a
+// Mac leaks Mac fonts (and the reverse), so on a Mac desktop presets become macOS.
+const HOST_OS = /Mac/i.test(navigator.platform) ? "macos" : "windows";
+function hostMatchedOs(os) {
+  return HOST_OS === "macos" && os === "windows" ? "macos" : os;
+}
+
 async function generateCoherentIdentity() {
-  const os = $("fp-os")?.value || "windows";
+  const os = $("fp-os")?.value || HOST_OS;
   const country = (currentFingerprintMeta && currentFingerprintMeta.countryCode)
     || (typeof selectedCountry !== "undefined" && selectedCountry) || "us";
   const deviceClass = (os === "android" || os === "ios") ? "mobile" : "desktop";
@@ -2732,7 +2739,7 @@ function applyGeneratedIdentityToForm(data) {
   if (creatingNew || !$("fp-name")?.value.trim() || /^New Profile\b/.test($("fp-name")?.value || "")) {
     setVal("fp-name", data.name || $("fp-name")?.value || "New Profile");
   }
-  setVal("fp-os", data.os || "windows");
+  setVal("fp-os", hostMatchedOs(data.os || "windows"));
   setVal("fp-browserApp", data.browserApp || fp.browser || "chrome");
   setVal("fp-browser", fp.browser || data.browserApp || "chrome");
   updateBrowserVersionOptions();
