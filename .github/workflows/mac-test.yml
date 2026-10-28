@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-14, macos-13] # Apple Silicon, Intel
+        runner: [macos-14, macos-15-intel] # Apple Silicon, Intel
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
