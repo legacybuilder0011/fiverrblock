@@ -58,7 +58,8 @@
       ],
       "icon": "icons/icon512.png",
       "category": "public.app-category.productivity",
-      "identity": "-"
+      "identity": "-",
+      "hardenedRuntime": false
     },
     "dmg": {
       "artifactName": "Privacy-Shield-Browser-${version}-mac-${arch}.${ext}"
