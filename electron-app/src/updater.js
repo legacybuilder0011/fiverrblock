@@ -30,8 +30,30 @@ function initAutoUpdater(logInfo, logError) {
     return;
   }
 
-  // Download in the background; install on quit if the user doesn't restart now.
-  autoUpdater.autoDownload = true;
+  // macOS builds are unsigned and Squirrel.Mac refuses to install unsigned
+  // updates, so on a Mac we only announce the new version with a download link.
+  if (process.platform === "darwin") {
+    autoUpdater.autoDownload = false;
+    let told = "";
+    autoUpdater.on("update-available", async (i) => {
+      const v = (i && i.version) || "";
+      if (!v || told === v) return;
+      told = v;
+      const parent = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed());
+      try {
+        const { response } = await dialog.showMessageBox(parent || undefined, {
+          type: "info", buttons: ["Download", "Later"], defaultId: 0, cancelId: 1,
+          title: "Update available",
+          message: `Privacy Shield v${v} is available.`,
+          detail: "Download the new Mac version, open it and drag Privacy Shield Browser into Applications (Replace)."
+        });
+        if (response === 0) require("electron").shell.openExternal("https://github.com/legacybuilder0011/fiverrblock/releases/latest");
+      } catch (_) {}
+    });
+  } else {
+    // Download in the background; install on quit if the user doesn't restart now.
+    autoUpdater.autoDownload = true;
+  }
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on("checking-for-update", () => info("checking"));

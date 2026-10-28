@@ -26,8 +26,10 @@ let changeHandler = null;
 // Which fingerprint-chromium release we ship / fetch. Keep in sync with the seeded
 // binary. Windows portable ZIP from the adryfish/fingerprint-chromium releases.
 const PATCHED_VERSION = "148.0.7778.215-1.1";
-const PATCHED_DIRNAME = `ungoogled-chromium_${PATCHED_VERSION}_windows_x64`;
-const PATCHED_ZIP = `ungoogled-chromium_${PATCHED_VERSION}_windows_x64.zip`;
+// Macs get the same release's macOS .dmg (copied out as Chromium.app).
+const IS_MAC = process.platform === "darwin";
+const PATCHED_DIRNAME = `ungoogled-chromium_${PATCHED_VERSION}_${IS_MAC ? "macos" : "windows_x64"}`;
+const PATCHED_ZIP = IS_MAC ? `ungoogled-chromium_${PATCHED_VERSION}_macos.dmg` : `ungoogled-chromium_${PATCHED_VERSION}_windows_x64.zip`;
 const PATCHED_URL = `https://github.com/adryfish/fingerprint-chromium/releases/download/148.0.7778.215/${PATCHED_ZIP}`;
 
 function isRealBrowserEngine(engine) {
@@ -68,7 +70,11 @@ function patchedChromiumRoot() {
   return path.join(app.getPath("userData"), "fingerprint-chromium");
 }
 function patchedChromiumBinary() {
-  return path.join(patchedChromiumRoot(), PATCHED_DIRNAME, "chrome.exe");
+  if (!IS_MAC) return path.join(patchedChromiumRoot(), PATCHED_DIRNAME, "chrome.exe");
+  const macos = path.join(patchedChromiumRoot(), PATCHED_DIRNAME, "Chromium.app", "Contents", "MacOS");
+  let exe = "Chromium";
+  try { exe = fs.readdirSync(macos).find((n) => !n.startsWith(".")) || exe; } catch (_) {}
+  return path.join(macos, exe);
 }
 function patchedChromiumReady() {
   try { return fs.existsSync(patchedChromiumBinary()); } catch (_) { return false; }
@@ -653,6 +659,9 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
     patchedSeed = fpArgs.seed;
     args.push(...fpArgs.args);
     args.push("--extension-mime-request-handling=always-prompt-for-install");
+    // macOS: a fixed cookie key instead of the per-Mac Keychain one, so the
+    // account backup restores logins on another Mac (and no Keychain prompt).
+    if (IS_MAC) args.push("--use-mock-keychain");
     if (disableGpuSpoof) {
       // Software GL gets a window up on a virtual display. The spoofed graphics
       // name stays on: --fingerprint still supplies it, and --disable-spoofing=gpu
@@ -812,8 +821,8 @@ function fetchPatchedChromium(onProgress) {
   if (patchedChromiumReady()) return Promise.resolve({ ok: true, already: true, path: patchedChromiumBinary() });
   if (patchedFetchPromise) return patchedFetchPromise;
   patchedFetchPromise = (async () => {
-    if (process.platform !== "win32") {
-      return { ok: false, error: "The patched-chromium engine currently ships a Windows build only." };
+    if (process.platform !== "win32" && !IS_MAC) {
+      return { ok: false, error: "The patched-chromium engine ships Windows and macOS builds only." };
     }
     const https = require("https");
     const root = patchedChromiumRoot();
@@ -844,11 +853,24 @@ function fetchPatchedChromium(onProgress) {
       return { ok: false, error: "Download failed: " + String(err && (err.message || err)) };
     }
 
-    // Extract with PowerShell Expand-Archive.
-    const extracted = await new Promise((resolve) => {
-      execFile("powershell", ["-NoProfile", "-Command", `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${root}' -Force`],
-        { windowsHide: true, timeout: 300000 }, (err) => resolve(!err));
-    });
+    // Extract: PowerShell Expand-Archive on Windows, hdiutil + ditto on macOS.
+    const run = (cmd, args) => new Promise((resolve) => execFile(cmd, args, { windowsHide: true, timeout: 300000 }, (err) => resolve(!err)));
+    let extracted;
+    if (IS_MAC) {
+      const mnt = path.join(root, "mnt");
+      fs.mkdirSync(mnt, { recursive: true });
+      extracted = await run("hdiutil", ["attach", "-nobrowse", "-readonly", "-mountpoint", mnt, zipPath]);
+      if (extracted) {
+        const appName = fs.readdirSync(mnt).find((n) => n.endsWith(".app")) || "";
+        const dest = path.join(root, PATCHED_DIRNAME, "Chromium.app");
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        extracted = Boolean(appName) && await run("ditto", [path.join(mnt, appName), dest]);
+        await run("hdiutil", ["detach", mnt, "-force"]);
+        if (extracted) await run("xattr", ["-dr", "com.apple.quarantine", dest]);
+      }
+    } else {
+      extracted = await run("powershell", ["-NoProfile", "-Command", `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${root}' -Force`]);
+    }
     try { fs.rmSync(zipPath, { force: true }); } catch (_) {}
     patchedFetchPromise = null;
     if (!extracted || !patchedChromiumReady()) {

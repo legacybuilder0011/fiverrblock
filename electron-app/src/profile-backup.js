@@ -26,7 +26,13 @@ const SKIP_IN_DEFAULT = new Set(["Cache", "Code Cache", "GPUCache", "DawnGraphit
 
 const pending = new Map(); // profileId -> promise of the running backup
 
-function supported(dir) { return path.basename(dir) !== "chrome"; }
+// macOS: only Patched Chromium (runs with --use-mock-keychain, so its cookie key
+// is the same on every Mac). Brave/Chrome there lock cookies to the Mac Keychain.
+const IS_WIN = process.platform === "win32";
+function supported(dir) {
+  const engine = path.basename(dir);
+  return IS_WIN ? engine !== "chrome" : engine === "patched";
+}
 function stampFile(dir) { return dir + ".backup.json"; }
 function readStamp(dir) { try { return JSON.parse(fs.readFileSync(stampFile(dir), "utf8")).remoteAt || ""; } catch (_) { return ""; } }
 function writeStamp(dir, remoteAt) { try { fs.writeFileSync(stampFile(dir), JSON.stringify({ remoteAt }) + "\n"); } catch (_) {} }
@@ -56,6 +62,7 @@ function readLocalState(dir) {
 
 // Raw AES key (base64) that encrypts this profile's cookies + passwords.
 async function unlockKey(dir) {
+  if (!IS_WIN) return "";
   const enc = readLocalState(dir)?.os_crypt?.encrypted_key;
   if (!enc) return "";
   const blob = Buffer.from(enc, "base64");
@@ -65,7 +72,7 @@ async function unlockKey(dir) {
 
 async function lockKey(dir, keyB64) {
   const state = readLocalState(dir);
-  if (!state || !keyB64) return;
+  if (!state || !keyB64 || !IS_WIN) return;
   const locked = Buffer.from(await dpapi("Protect", keyB64), "base64");
   state.os_crypt = { ...(state.os_crypt || {}), encrypted_key: Buffer.concat([Buffer.from("DPAPI"), locked]).toString("base64") };
   fs.writeFileSync(path.join(dir, "Local State"), JSON.stringify(state));
@@ -74,7 +81,7 @@ async function lockKey(dir, keyB64) {
 // payload = gzip( u32 manifestLen | manifest JSON | tar ), then sealed.
 async function backup(profileId, dir) {
   if (!supported(dir) || !cloud.getCurrentUserId() || !fs.existsSync(path.join(dir, "Default"))) return;
-  const manifest = Buffer.from(JSON.stringify({ v: 1, key: await unlockKey(dir) }), "utf8");
+  const manifest = Buffer.from(JSON.stringify({ v: 1, platform: process.platform, key: await unlockKey(dir) }), "utf8");
   const len = Buffer.alloc(4); len.writeUInt32BE(manifest.length);
   const sealed = cloud.sealBuffer(zlib.gzipSync(Buffer.concat([len, manifest, tar.packFolder(dir, MAX_RAW, skip)])));
   if (!sealed) return cloud.logLine(`backup ${profileId}: no account key — log out and in once`);
@@ -104,6 +111,8 @@ async function restoreIfNewer(profileId, dir) {
     const raw = zlib.gunzipSync(cloud.openBuffer(await cloud.downloadBackup(profileId)));
     const mlen = raw.readUInt32BE(0);
     const manifest = JSON.parse(raw.subarray(4, 4 + mlen).toString("utf8"));
+    // Cookie encryption differs between Windows and macOS, so never cross over.
+    if ((manifest.platform || "win32") !== process.platform) throw new Error(`backup was made on ${manifest.platform || "win32"}`);
     const old = dir + ".old";
     fs.rmSync(old, { recursive: true, force: true });
     if (fs.existsSync(dir)) fs.renameSync(dir, old);
