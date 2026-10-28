@@ -153,7 +153,9 @@ function cloneForSync(value, fallback = {}) {
 }
 
 function stripLocalProxyFields(proxy) {
-  const clone = cloneForSync(proxy);
+  let clone = cloneForSync(proxy);
+  // Credentials leave this PC only as an E2E-encrypted blob (see cloud-sync.js).
+  try { clone = require("./cloud-sync").sealProxySecrets(clone); } catch (_) {}
   for (const field of LOCAL_ONLY_PROXY_FIELDS) delete clone[field];
   return clone;
 }
@@ -192,7 +194,10 @@ function saveProxyLibrary(lib) {
 }
 
 function mergeProxySecretsFromLocal(remoteProxy, localProxy) {
-  const merged = { ...(remoteProxy || {}) };
+  let fromCloud = {};
+  try { fromCloud = require("./cloud-sync").openProxySecrets(remoteProxy); } catch (_) {}
+  const merged = { ...(remoteProxy || {}), ...fromCloud };
+  delete merged.secretsEnc;
   if (localProxy && typeof localProxy === "object") {
     for (const field of LOCAL_ONLY_PROXY_FIELDS) {
       if (!merged[field] && localProxy[field]) merged[field] = localProxy[field];
@@ -1264,6 +1269,14 @@ function pickPlatformVersionForProfile(seed, osName) {
   return pickWeighted(profileSeededInt(seed, "platver"), pool.map((x) => [x.v, x.w]));
 }
 
+function platformVersionFitsOs(version, osName) {
+  const value = String(version || "");
+  const os = String(osName || "").toLowerCase();
+  if (os === "windows") return WIN_PLATFORM_VERSIONS.some((item) => item.v === value);
+  if (os === "macos") return MAC_PLATFORM_VERSIONS.some((item) => item.v === value);
+  return false;
+}
+
 function screenForOs(osName) {
   if (osName === "android") {
     const device = randomChoice(ANDROID_DEVICE_PROFILES);
@@ -1323,7 +1336,7 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
   const regenerateIdentity = Boolean(options.regenerateIdentity);
 
   if (regenerateIdentity || !fp.fingerprintSeed) {
-    fp.fingerprintSeed = crypto.randomBytes(8).toString("hex");
+    fp.fingerprintSeed = newFingerprintSeed();
   }
   if (regenerateIdentity || !fp.hardwareId) {
     fp.hardwareId = randomHardwareId(osName);
@@ -1357,7 +1370,7 @@ function normalizeProfileFingerprint(profile = {}, options = {}) {
       if (s && s.width && s.height) { fp.screen = "manual"; fp.screenWidth = s.width; fp.screenHeight = s.height; }
     }
     if (fp.cpuCoresValue === d.cpuCoresValue) { fp.cpuCores = "manual"; fp.cpuCoresValue = randomChoice([4, 4, 6, 8, 8, 12, 16]); }
-    if (fp.ramValue === d.ramValue) { fp.ram = "manual"; fp.ramValue = randomChoice([8, 8, 16, 16, 32]); }
+    if (fp.ramValue === d.ramValue) { fp.ram = "manual"; fp.ramValue = 8; }
     if (Number(fp.devicePixelRatio) === d.devicePixelRatio) { fp.devicePixelRatio = randomChoice([1, 1, 1.25, 1.5]); }
   }
   if (regenerateIdentity && fp.deviceName === "manual") {
@@ -1428,14 +1441,20 @@ function buildCountryIdentity(countryCode = "us", options = {}) {
     (deviceClass !== "mobile" && (explicitOs === "windows" || explicitOs === "macos" || explicitOs === "linux"))
   );
   const osName = osMatchesClass ? explicitOs : osForCountry(code, deviceClass);
-  const browser = browserForOs(osName, options.browserApp || options.browser || "random");
+  const patchedEngine = String(options.engine || "").toLowerCase() === "patched-chromium";
+  // Keep the browser the user picked. Patched Chromium sends Edge as Edge and
+  // sends Chrome, Brave, and Privacy Shield as Chrome 148.
+  const requestedBrowser = options.browserApp || options.browser || (patchedEngine ? "chrome" : "random");
+  const browser = browserForOs(osName, requestedBrowser);
   const screen = screenForOs(osName);
   const mobileDevice = (osName === "android" || osName === "ios") ? screen.device : null;
   const webgl = mobileDevice
     ? { vendor: mobileDevice.gpuVendor, renderer: mobileDevice.gpuRenderer }
     : randomWebglForOs(osName);
   const cores = mobileDevice ? mobileDevice.cores : randomChoice([2, 4, 4, 6, 8, 8, 12, 16]);
-  const ram = mobileDevice ? mobileDevice.ram : randomChoice([4, 8, 8, 16, 16, 32]);
+  // Patched Chromium reports navigator.deviceMemory from the seed, and a new
+  // seed is chosen so that value is 8. The form stores 8 to match it.
+  const ram = mobileDevice ? mobileDevice.ram : 8;
   const dpr = mobileDevice ? mobileDevice.dpr : randomChoice([1, 1, 1.25, 1.5, 2]);
   const connectionType = mobileDevice ? randomChoice(["cellular", "cellular", "wifi"]) : randomChoice(["wifi", "wifi", "ethernet"]);
   const sensors = mobileDevice ? mobileSensorProfile() : null;
@@ -1458,7 +1477,7 @@ function buildCountryIdentity(countryCode = "us", options = {}) {
     ispOrg: provider[2],
     os: osName,
     browser,
-    browserVersion: versionForBrowser(browser, osName),
+    browserVersion: patchedEngine ? PATCHED_CHROMIUM_FULL_VERSION : versionForBrowser(browser, osName),
     screenWidth: screen.width,
     screenHeight: screen.height,
     cpuCores: cores,
@@ -1567,6 +1586,9 @@ function buildCountryProfileData(countryCode = "us", idx = 1, options = {}) {
     blockStorage: false,
     blockCookies: false,
     browserVersion: identity.browserVersion,
+    // A new generate is a new device. The patched browser keys canvas, audio,
+    // and the graphics card off this seed, so two profiles must not share it.
+    fingerprintSeed: newFingerprintSeed(),
     city: identity.city,
     state: identity.state,
     ispName: identity.ispName,
@@ -1684,6 +1706,28 @@ function buildProfileUA(os, version, browser, fingerprint = {}) {
 // America/New_York — which lets Fiverr/Instagram cluster all your profiles
 // together as "same person". Seed each value from the profile's fingerprintSeed
 // so it's stable across launches but unique per profile.
+// Same integer real-browser-manager passes as --fingerprint=.
+function fingerprintSeedInteger(src) {
+  const text = String(src || "seed");
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return (h % 2147483646) + 1;
+}
+
+// Chrome 148 picks navigator.deviceMemory from that integer:
+// divisible by 3 → 8, remainder 1 → 16, remainder 2 → 32.
+// 16 and 32 are values real Chrome never reports. New seeds stay on 8.
+function newFingerprintSeed() {
+  for (let i = 0; i < 64; i++) {
+    const seed = crypto.randomBytes(8).toString("hex");
+    if (fingerprintSeedInteger(seed) % 3 === 0) return seed;
+  }
+  throw new Error("Could not choose a fingerprint seed");
+}
+
 function profileSeededInt(seedStr, salt) {
   const s = String(seedStr || "default") + ":" + String(salt || "");
   let h = 2166136261 >>> 0;
@@ -1770,6 +1814,14 @@ function pickTimezoneForCountry(seed, countryCode) {
 function pickLanguageForCountry(seed, countryCode) {
   const list = LANG_BY_COUNTRY[String(countryCode || "").toLowerCase()] || LANG_BY_COUNTRY.us;
   return list[profileSeededInt(seed, "lang") % list.length];
+}
+function timezoneFitsCountry(countryCode, timezone) {
+  const list = TZ_BY_COUNTRY[String(countryCode || "").toLowerCase()] || [];
+  return list.includes(String(timezone || ""));
+}
+function languageFitsCountry(countryCode, language) {
+  const list = LANG_BY_COUNTRY[String(countryCode || "").toLowerCase()] || [];
+  return list.includes(String(language || ""));
 }
 
 function buildConfigFromProfile(profile) {
@@ -1897,7 +1949,9 @@ function buildConfigFromProfile(profile) {
 
   if (fp.userAgent === "manual" && fp.userAgentValue) {
     cfg.userAgent = fp.userAgentValue;
-    cfg._uaVersion = (fp.userAgentValue.match(/(?:Chrome|Edg|Firefox|Version)\/(\d+)/) || [])[1] || String(fp.browserVersion || "150").split(".")[0];
+    const manualFull = (fp.userAgentValue.match(/(?:Chrome|Edg|Firefox|Version)\/(\d+(?:\.\d+){0,3})/) || [])[1] || "";
+    cfg._uaFullVersion = manualFull;
+    cfg._uaVersion = manualFull.split(".")[0] || String(fp.browserVersion || "150").split(".")[0];
   } else {
     // "auto" (or empty) → the current real-world Chrome for this OS, so the UA
     // matches what real users run (being a year behind is itself a bot tell).
@@ -1907,8 +1961,12 @@ function buildConfigFromProfile(profile) {
     // version so no profile advertises a Chrome/Brave that's months behind.
     // Only an explicit full-version "custom" string (contains a dot, e.g.
     // "150.0.7871.46") is treated as a deliberate pin and kept as-is.
+    // Patched Chromium is the exception: the binary reduces every profile to
+    // Chrome/148.0.0.0, so the hint must name 148.0.7778.215 even if a pin says 150.
     let bv = fp.browserVersion;
-    if (!bv || bv === "auto" || !String(bv).includes(".")) {
+    if (String(profile.engine || "").toLowerCase() === "patched-chromium") {
+      bv = PATCHED_CHROMIUM_FULL_VERSION;
+    } else if (!bv || bv === "auto" || !String(bv).includes(".")) {
       // Seeded per-profile spread across recent real Chrome releases (stable per
       // profile), capped at the engine's real version so we never claim a build
       // newer than the engine actually is (patched-chromium is Chrome 148).
@@ -1919,12 +1977,16 @@ function buildConfigFromProfile(profile) {
     cfg.platform = built.platform;
     cfg._uaOS = built.os;
     cfg._uaVersion = built.version;
+    cfg._uaFullVersion = String(bv).includes(".") ? String(bv) : `${bv}.0.0.0`;
     // Desktop Sec-CH-UA-Platform-Version: seeded per profile when not manually set
     // (the frozen UA string stays 10_15_7 / Windows 10.0 — only this hint varies).
+    const osForVersion = profile.os || "windows";
+    const storedVersion = fp.platformVersion && fp.platformVersion !== "" ? String(fp.platformVersion) : "";
+    // A saved Windows version must not stay after the profile is switched to
+    // macOS or Linux. Linux has no client-hint platform version in this table.
     cfg._platformVersion = built.platformVersion
-      || (fp.platformVersion && fp.platformVersion !== "" ? fp.platformVersion : "")
-      || (!_isMobileDef ? pickPlatformVersionForProfile(_seedDef, profile.os || "windows") : "")
-      || cfg._platformVersion;
+      || (platformVersionFitsOs(storedVersion, osForVersion) ? storedVersion : "")
+      || (!_isMobileDef ? pickPlatformVersionForProfile(_seedDef, osForVersion) : "");
     cfg._mobile = Boolean(built.mobile);
     cfg._mobileModel = built.model || cfg._mobileModel;
   }
@@ -1960,12 +2022,12 @@ function buildConfigFromProfile(profile) {
     cfg.language = fp.languageValue;
     cfg.languages = [fp.languageValue, fp.languageValue.split("-")[0]].filter(Boolean);
   } else if (fp.language === "auto" && px.detectedCountryCode) {
-    const langMap = { us:"en-US", gb:"en-GB", ca:"en-CA", au:"en-AU", de:"de-DE", nl:"nl-NL", fr:"fr-FR", ch:"de-DE", se:"sv-SE", jp:"ja-JP", sg:"en-SG", br:"pt-BR", in:"hi-IN", ae:"ar-AE", ru:"ru-RU", tr:"tr-TR", ng:"en-US", it:"it-IT", es:"es-ES", pt:"pt-PT", kr:"ko-KR", cn:"zh-CN" };
-    const auto = langMap[String(px.detectedCountryCode).toLowerCase()];
-    if (auto) {
-      cfg.language = auto;
-      cfg.languages = [auto, auto.split("-")[0]].filter(Boolean);
-    }
+    // Same country table as the timezone. The old short map turned a Swiss
+    // exit into de-DE and an Indian exit into hi-IN only.
+    const auto = pickLanguageForCountry(_seedDef, px.detectedCountryCode);
+    const primary = String(auto || "").split("-")[0];
+    cfg.language = auto;
+    cfg.languages = primary && primary !== auto ? [auto, primary] : [auto];
   }
 
   if (fp.geolocation === "manual") {
@@ -2004,23 +2066,32 @@ function buildConfigFromProfile(profile) {
 
 function getEngineCapabilities() {
   return {
-    actualEngine: "Electron Chromium",
-    actualEngineId: "electron-chromium",
+    actualEngine: "Patched Chromium, Stealthfox, Electron, or installed Chrome/Brave",
+    actualEngineId: "multi-engine",
+    runtimeLabel: "Patched Chromium, Stealthfox, Electron, or installed Chrome/Brave",
+    nativeEnginesLabel: "Patched Chromium, Stealthfox, Chrome, Brave",
+    identityLabel: "Privacy Shield, Chrome, Brave, Edge",
     profileIsolation: true,
     perProfileSessionPartition: true,
     bundledBrowserRuntime: true,
     storageIsolation: ["cookies", "cache", "localStorage", "IndexedDB", "serviceWorkers", "authCache"],
-    nativeEngines: ["chromium", "real-chrome", "real-brave", "patched-chromium"],
-    identityTemplates: ["privacy", "chrome", "brave", "edge", "firefox", "safari"],
-    chromiumCppPatches: false,
+    nativeEngines: ["patched-chromium", "stealthfox", "chromium", "real-chrome", "real-brave"],
+    identityTemplates: ["privacy", "chrome", "brave", "edge"],
+    chromiumCppPatches: true,
     aiDailyFingerprints: false,
-    firefoxGeckoRuntime: false,
+    localIdentityGenerator: true,
+    firefoxGeckoRuntime: true,
+    fingerprintService: {
+      included: true,
+      label: "Patched Chromium and Stealthfox",
+      detail: "Patched Chromium applies each profile seed in the browser engine. Stealthfox applies a stable Firefox fingerprint. A Gemini API key saved on this PC can generate a device for the operating system you picked."
+    },
     notes: [
-      "Profile windows can run on Privacy Shield's bundled Electron Chromium runtime or launch installed Chrome/Brave with isolated user-data directories.",
-      "Firefox and Safari selections are identity templates, not separate Gecko/WebKit runtimes.",
-      "Real Chrome/Brave mode uses the installed browser network stack but does not run the Electron preload fingerprint layer.",
-      "Fingerprint data is generated locally from coherent templates, not from a daily AI-tested real-device service.",
-      "No Chromium/Blink C++ patches are included in this Electron build."
+      "Patched Chromium applies the profile seed in the browser engine: canvas, audio, graphics card, CPU count, operating system, and browser brand.",
+      "Stealthfox applies a stable Firefox fingerprint in the browser engine, with its own storage folder per profile.",
+      "Real Brave can load the fingerprint extension. Real Chrome launches the installed browser and does not spoof canvas, WebGL, or audio.",
+      "The in-app Electron window does not use the Patched Chromium seed.",
+      "Identities are generated on this PC from the profile seed and the proxy or VPN exit. A Gemini API key saved on this PC can generate a device for the operating system you picked. There is no remote daily device feed."
     ]
   };
 }
@@ -2040,7 +2111,7 @@ function getTransportFingerprintAudit(profile = {}) {
         state: "patched-chromium",
         supported: true,
         label: "Patched Chromium (per-seed device)",
-        message: "Bundled patched Chromium: canvas/audio/font/timezone/CPU/RAM are randomized per profile at the C++ level (stable per profile, different across profiles), with the WebGL GPU string + geolocation layered on. This is the strongest per-profile hardware identity."
+        message: "Patched Chromium loads the operating system you picked. macOS, Windows, and Linux report different devices and different graphics cards, and none of those cards is this PC's card. Edge is sent as Edge. Chrome, Brave, and Privacy Shield are sent as Chrome 148, because that is this browser. Do Not Track and cookie blocking apply when they are turned on. Stealth turns off canvas, audio, and text-measurement noise and still hides this PC's graphics card. Geolocation stays blocked. This PC's screen and installed fonts stay this PC's. The WebGL name in the form is not sent. A typed user-agent is not sent."
       };
     }
     const isBrave = String(engine || "").toLowerCase() === "real-brave";
@@ -2123,15 +2194,19 @@ function validateProfileConsistency(profile = {}) {
     else addPass("Desktop OS uses desktop device class.");
     if ((Number(fp.maxTouchPoints) || 0) > 0) addWarn("Desktop profile has touch points enabled.");
   }
-  if (isRealBrowserEngine(selectedEngine) && (osName === "android" || osName === "ios")) {
+  if ((selectedEngine === "real-chrome" || selectedEngine === "real-brave") && (osName === "android" || osName === "ios")) {
     addIssue("Real Chrome/Brave mode launches a desktop browser; use Windows, macOS, or Linux for this engine.");
+  }
+  if (isPatchedChromiumEngine(selectedEngine) && (osName === "android" || osName === "ios")) {
+    addPass("Android and iOS use the Windows or macOS device family in Patched Chromium, because this browser has no phone build.");
   }
 
   if (browser === "safari" && osName !== "macos") {
     addIssue("Safari identity should only be used with macOS.");
   }
   if (browser === "firefox") {
-    addWarn("Firefox is currently an identity template only; the launched runtime is still Electron Chromium.");
+    if (selectedEngine === "stealthfox") addPass("Stealthfox launches Firefox for this profile.");
+    else addWarn("Firefox is an identity template on this engine. Choose Stealthfox to launch Firefox.");
   }
   if (browser === "safari") {
     addWarn("Safari is currently an identity template only; the launched runtime is still Electron Chromium.");
@@ -2151,7 +2226,7 @@ function validateProfileConsistency(profile = {}) {
   if (transport.state === "unsupported") addIssue(transport.message);
   else if (transport.state === "patched-chromium") {
     addPass(transport.message);
-    addPass("Per-profile fingerprint is engine-level (covers Web Workers and fonts), so profiles on one PC are not linkable by device signature.");
+    addPass("Canvas, audio, and the graphics card come from this profile's seed, including inside workers.");
   }
   else if (transport.state === "real-browser-spoofed") {
     addPass(transport.message);
@@ -2197,11 +2272,14 @@ function validateProfileConsistency(profile = {}) {
   }
 
   if (fp.timezone === "manual" && fp.timezoneValue) addPass(`Timezone is set to ${fp.timezoneValue}.`);
-  else addWarn("Timezone is not manually pinned for this profile.");
+  else if (fp.timezone === "auto") addPass("Timezone is Auto, so it follows the proxy or VPN exit.");
+  else addWarn("Timezone is not set.");
   if (fp.language === "manual" && fp.languageValue) addPass(`Language is set to ${fp.languageValue}.`);
-  else addWarn("Language is not manually pinned for this profile.");
+  else if (fp.language === "auto") addPass("Language is Auto, so it follows the proxy or VPN exit country.");
+  else addWarn("Language is not set.");
   if (fp.geolocation === "manual") addPass("Geolocation is manually pinned.");
-  else addWarn("Geolocation is not manually pinned for this profile.");
+  else if (fp.geolocation === "auto") addPass("Geolocation is Auto, so it follows the proxy or VPN exit.");
+  else addWarn("Geolocation is not set.");
 
   const fontProfile = fp.fontProfile || osName;
   const effectiveFonts = resolvedFontListForProfile(fp, osName);
@@ -2246,12 +2324,19 @@ function validateProfileConsistency(profile = {}) {
     addWarn("WebGL vendor or renderer is missing.");
   }
 
+  const serviceAudit = require("./fingerprint-service").auditProfileFingerprintService({ ...profile, engine: selectedEngine, os: osName, fingerprint: fp, proxy: px });
+  for (const message of serviceAudit.passes) addPass(message);
+  for (const message of serviceAudit.warnings) addWarn(message);
+  for (const message of serviceAudit.issues) addIssue(message);
+
   const summary = {
     storage: sessionPartition,
     screen: screenWidth > 0 && screenHeight > 0 ? `${screenWidth}x${screenHeight} @ ${dpr} DPR` : "missing",
     fonts: fp.fonts === "blocked" ? "blocked" : `${fontProfile}, ${effectiveFonts.length} fonts`,
     gpu: gpuVendor && gpuRenderer ? `${gpuVendor} / ${gpuRenderer}` : "missing",
-    transport: transport.label
+    transport: transport.label,
+    fingerprintService: serviceAudit.label,
+    fingerprintServiceOk: serviceAudit.ok
   };
 
   return {
@@ -2322,6 +2407,13 @@ module.exports = {
   buildConfigFromProfile,
   buildCountryIdentity,
   buildCountryProfileData,
+  fingerprintSeedInteger,
+  newFingerprintSeed,
+  pickLanguageForCountry,
+  timezoneFitsCountry,
+  languageFitsCountry,
+  platformVersionFitsOs,
+  gpuLooksCompatibleWithOs,
   getEngineCapabilities,
   validateProfileConsistency,
   getOpenProfiles,

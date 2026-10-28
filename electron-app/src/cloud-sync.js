@@ -7,13 +7,15 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { app } = require("electron");
+const crypto = require("crypto");
+const { app, safeStorage } = require("electron");
 
 const SUPABASE_URL = "https://pnhzsteoouhngjdgsfeh.supabase.co";
 const SUPABASE_KEY = "sb_publishable_8xJbMF4kr6yTALY-XJua-Q_XFT0iKe2";
 
 const BASE_DIR     = path.join(app.getPath("userData"), "privacy-shield");
 const SESSION_FILE = path.join(BASE_DIR, "supabase-session.json");
+const PROXY_KEY_FILE = path.join(BASE_DIR, "proxy-sync-key.bin");
 
 // Write to BOTH OneDrive Desktop AND userData. OneDrive Files-On-Demand
 // can silently swallow appendFileSync writes; userData is the reliable copy.
@@ -55,12 +57,97 @@ function cloneJson(value, fallback) {
 }
 
 function sanitizeProxyForCloud(proxy) {
-  const clone = cloneJson(proxy, {});
+  const clone = sealProxySecrets(cloneJson(proxy, {}));
   delete clone.username;
   delete clone.password;
   delete clone.passwordEnc;
   delete clone.rotationUrl;
   return clone;
+}
+
+// Proxy credentials sync end-to-end encrypted: the key comes from the account
+// password (scrypt, salted by user id), so only someone who knows the password
+// can read them. Supabase only ever sees the ciphertext in `secretsEnc`.
+const PROXY_SECRET_FIELDS = ["username", "password", "rotationUrl"];
+
+function saveProxyKey(password, userId) {
+  try {
+    const key = crypto.scryptSync(String(password), "ps-proxy-sync:" + userId, 32);
+    ensureDir(BASE_DIR);
+    const data = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(key.toString("base64")) : key;
+    fs.writeFileSync(PROXY_KEY_FILE, data);
+  } catch (err) { logLine("proxy key save failed: " + err.message); }
+}
+
+function loadProxyKey() {
+  try {
+    const raw = fs.readFileSync(PROXY_KEY_FILE);
+    return raw.length === 32 ? raw : Buffer.from(safeStorage.decryptString(raw), "base64");
+  } catch (_) { return null; }
+}
+
+// AES-256-GCM with the account key: iv(12) | tag(16) | ciphertext. null = no key.
+function sealBuffer(buf) {
+  const key = loadProxyKey();
+  if (!key) return null;
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([c.update(buf), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), ct]);
+}
+
+// Throws on wrong account password or tampering.
+function openBuffer(buf) {
+  const key = loadProxyKey();
+  if (!key) throw new Error("no sync key — log in again");
+  const d = crypto.createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12));
+  d.setAuthTag(buf.subarray(12, 28));
+  return Buffer.concat([d.update(buf.subarray(28)), d.final()]);
+}
+
+function sealProxySecrets(proxy) {
+  if (!proxy || typeof proxy !== "object") return proxy;
+  const secrets = {};
+  for (const f of PROXY_SECRET_FIELDS) if (proxy[f]) secrets[f] = String(proxy[f]);
+  const sealed = Object.keys(secrets).length && sealBuffer(Buffer.from(JSON.stringify(secrets), "utf8"));
+  return sealed ? { ...proxy, secretsEnc: sealed.toString("base64") } : proxy;
+}
+
+// Returns {username,password,rotationUrl} or {} (no blob / wrong password / tampered).
+function openProxySecrets(proxy) {
+  const blob = proxy && proxy.secretsEnc;
+  if (!blob) return {};
+  try { return JSON.parse(openBuffer(Buffer.from(String(blob), "base64")).toString("utf8")); }
+  catch (_) { return {}; }
+}
+
+// ── Browser-data backups (Supabase Storage, bucket profile-backups/<uid>/) ──
+
+const BACKUP_BUCKET = "profile-backups";
+
+async function backupInfo(profileId) {
+  const userId = getCurrentUserId();
+  if (!cloudReady() || !userId) return null;
+  const { data, error } = await supabase.storage.from(BACKUP_BUCKET).list(userId, { search: profileId + ".bin" });
+  if (error) throw new Error(error.message);
+  const hit = (data || []).find((o) => o.name === profileId + ".bin");
+  return hit ? { updatedAt: hit.updated_at || hit.created_at || "" } : null;
+}
+
+async function uploadBackup(profileId, buf) {
+  const userId = getCurrentUserId();
+  if (!cloudReady() || !userId) throw new Error("not logged in");
+  const { error } = await supabase.storage.from(BACKUP_BUCKET)
+    .upload(`${userId}/${profileId}.bin`, buf, { upsert: true, contentType: "application/octet-stream" });
+  if (error) throw new Error(error.message);
+}
+
+async function downloadBackup(profileId) {
+  const userId = getCurrentUserId();
+  if (!cloudReady() || !userId) throw new Error("not logged in");
+  const { data, error } = await supabase.storage.from(BACKUP_BUCKET).download(`${userId}/${profileId}.bin`);
+  if (error) throw new Error(error.message);
+  return Buffer.from(await data.arrayBuffer());
 }
 
 function sanitizeProfileForCloud(profile) {
@@ -153,6 +240,7 @@ async function login(email, password) {
   try {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { ok: false, error: error.message };
+    saveProxyKey(password, data.user.id);
     return { ok: true, user: { id: data.user.id, email: data.user.email } };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
@@ -162,6 +250,7 @@ async function login(email, password) {
 async function logout() {
   if (cloudReady()) { try { await supabase.auth.signOut(); } catch (_) {} }
   try { fs.unlinkSync(SESSION_FILE); } catch (_) {}
+  try { fs.unlinkSync(PROXY_KEY_FILE); } catch (_) {}
 }
 
 async function getSession() {
@@ -177,14 +266,38 @@ async function getSession() {
   } catch (_) { return null; }
 }
 
-// The signed-in user's current Supabase access token (auto-refreshed by the
-// client). The cloud runner verifies it to know whose profiles a request is for.
+// The signed-in user's current Supabase access token. The cloud runner verifies
+// it to know whose profiles a request is for. Team members never type a token.
+function readStoredAccessToken() {
+  const sess = readJson(SESSION_FILE, {});
+  for (const key of Object.keys(sess)) {
+    try {
+      const val = typeof sess[key] === "string" ? JSON.parse(sess[key]) : sess[key];
+      const s = val && (val.currentSession || val);
+      if (s && s.access_token && (!s.expires_at || s.expires_at * 1000 > Date.now() + 15000)) return s.access_token;
+    } catch (_) {}
+  }
+  return "";
+}
+
+async function refreshAccessToken() {
+  if (!cloudReady()) return readStoredAccessToken();
+  try {
+    const { data } = await supabase.auth.refreshSession();
+    return (data && data.session && data.session.access_token) || readStoredAccessToken();
+  } catch (_) { return readStoredAccessToken(); }
+}
+
 async function getAccessToken() {
-  if (!cloudReady()) return "";
+  if (!cloudReady()) return readStoredAccessToken();
   try {
     const { data } = await supabase.auth.getSession();
-    return (data && data.session && data.session.access_token) || "";
-  } catch (_) { return ""; }
+    const session = data && data.session;
+    const exp = session && session.expires_at ? session.expires_at * 1000 : 0;
+    if (session && session.access_token && exp > Date.now() + 120000) return session.access_token;
+    const fresh = await refreshAccessToken();
+    return fresh || (session && session.access_token) || "";
+  } catch (_) { return readStoredAccessToken(); }
 }
 
 function getCurrentUserId() {
@@ -363,8 +476,11 @@ async function fullSync(localProfiles, localProxies) {
 }
 
 module.exports = {
-  register, login, logout, getSession, getCurrentUserId, getAccessToken,
+  register, login, logout, getSession, getCurrentUserId, getAccessToken, refreshAccessToken,
   pullProfiles, pushProfile, pushAllProfiles, deleteProfileRemote,
   pullProxies, pushAllProxies, deleteProxyRemote,
+  sealProxySecrets, openProxySecrets, sealBuffer, openBuffer,
+  backupInfo, uploadBackup, downloadBackup, logLine, cloudReady,
+  hasSyncKey: () => fs.existsSync(PROXY_KEY_FILE),
   fullSync
 };

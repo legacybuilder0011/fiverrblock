@@ -1,0 +1,9 @@
+Run on the affected teammate PC. Keep Privacy Shield OPEN.
+
+1. Extract this ZIP.
+2. Double-click RUN-LAUNCH-CHECK.cmd (no administrator needed).
+3. When it says NOW, click Start once on the failing Patched Chromium profile in Privacy Shield.
+4. Wait for Done (up to 3 minutes). Blank test windows may open and close.
+5. Send Privacy-Shield-Launch-Report.txt from the Desktop.
+
+The check observes the app launch and runs temporary blank profiles. It does not modify saved profiles or their engine/proxy settings. It retains only known startup options for the comparisons, replaces destinations with an unused localhost proxy, and opens no saved websites. It never loads user extensions. Raw command lines and option values stay in memory and are not included in the report. The report contains switch names, process/window counts, timings, and filtered engine errors. Only diagnostic-created processes and temporary files are cleaned up. The .cmd launcher uses a process-scoped PowerShell execution policy.

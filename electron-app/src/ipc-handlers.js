@@ -11,6 +11,7 @@ const vpsProxy = require("./vps-proxy-manager");
 const proxyBridge = require("./local-proxy-bridge");
 const extensionManager = require("./extension-manager");
 const webstore = require("./webstore-install");
+const { freshCloudView, noteCloudViewShown, nextCloudView } = require("./cloud-viewer-health");
 
 // Write to BOTH OneDrive Desktop and userData. OneDrive Files-On-Demand
 // can silently swallow appendFileSync writes, so userData is the reliable
@@ -96,9 +97,9 @@ function readCloudSettings() {
   } catch (_) { return { url: "", token: "" }; }
 }
 // Who the cloud server should treat this request as: the signed-in Privacy
-// Shield account (each user only ever sees their own cloud profiles). A saved
-// team token is only a fallback (admin / not signed in). Server address
-// defaults to the team server so members never have to type it.
+// Shield account (each user only ever sees their own cloud profiles). The
+// server address is built in. A saved team token on this PC is only a silent
+// fallback for an admin who is not signed in. Members are never asked for it.
 const DEFAULT_CLOUD_URL = "https://ps-cloud.2-25-126-125.sslip.io";
 async function cloudCreds() {
   const saved = readCloudSettings();
@@ -113,7 +114,8 @@ function writeCloudSettings({ url, token }) {
   const tokenEnc = token ? safeStorage.encryptString(token).toString("base64") : "";
   fs.writeFileSync(cloudSettingsPath(), JSON.stringify({ url, tokenEnc }), "utf8");
 }
-async function cloudApi(s, route, body) {
+const CLOUD_SIGN_IN_AGAIN = "Sign out of Privacy Shield and sign in again, then open Cloud.";
+async function cloudApi(s, route, body, retried) {
   try {
     const res = await net.fetch(s.url + route, {
       method: body ? "POST" : "GET",
@@ -121,7 +123,12 @@ async function cloudApi(s, route, body) {
       body: body ? JSON.stringify(body) : undefined
     });
     const j = await res.json().catch(() => ({}));
-    if (res.status === 401) return { ok: false, needsSettings: true, error: "Cloud server rejected the team token." };
+    if (res.status === 401 && s.viaAccount && !retried) {
+      let fresh = "";
+      try { fresh = await require("./cloud-sync").refreshAccessToken(); } catch (_) {}
+      if (fresh && fresh !== s.token) { s.token = fresh; return cloudApi(s, route, body, true); }
+    }
+    if (res.status === 401) return { ok: false, error: CLOUD_SIGN_IN_AGAIN };
     return res.ok ? j : { ok: false, error: j.error || `Cloud server error ${res.status}` };
   } catch (err) {
     return { ok: false, error: "Can't reach the cloud server: " + (err.message || err) };
@@ -250,14 +257,21 @@ function openCloudViewer(s, profile) {
   const existing = cloudViewers.get(profile.id);
   if (existing && !existing.isDestroyed()) { bringToFront(existing); return; }
   const id = encodeURIComponent(profile.id);
+  const baseTitle = `☁ ${profile.name || "Profile"} — cloud`;
   const win = new BrowserWindow({
-    width: 1400, height: 860, title: `☁ ${profile.name || "Profile"} — cloud`,
+    width: 1400, height: 860, title: baseTitle, backgroundColor: "#111111",
     autoHideMenuBar: false, show: false,
     // Plain viewer: its own partition (holds only the runner cookie), no fingerprint
     // preload, no Node — the real browsing happens on the server.
     webPreferences: { partition: "persist:ps-cloud-viewer", contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false,
       preload: path.join(__dirname, "cloud-viewer-preload.js") }
   });
+  // The picture and the mouse travel over WebRTC to the cloud server. Forcing
+  // this window onto TCP makes movement, clicks, and actions wait behind the
+  // video. Profile windows keep their own stricter policy.
+  try { win.webContents.session.setWebRTCIPHandlingPolicy("default_public_interface_only"); } catch (err) {
+    logError(`cloud viewer webrtc policy failed: ${err && (err.message || err)}`);
+  }
   // Own taskbar button per cloud profile: Windows groups windows by AppUserModelID,
   // so without this every cloud window stacked inside the Privacy Shield button.
   if (process.platform === "win32") {
@@ -282,7 +296,7 @@ function openCloudViewer(s, profile) {
     { label: "📎 Upload from PC", accelerator: "CmdOrCtrl+U", click: () => uploadFromPc(win, profile) },
     { label: "📁 Upload folder from PC", click: () => uploadFromPc(win, profile, true) },
     { label: "📱 Phone alerts", click: () => setupPhoneAlerts(win) },
-    { label: "Reconnect", accelerator: "F5", click: () => win.webContents.reload() }
+    { label: "Reconnect", accelerator: "F5", click: () => reconnectViewer("menu") }
   ]));
   // A file dropped outside the drop handler must never navigate the viewer away.
   win.webContents.on("will-navigate", (e, u) => { if (String(u).startsWith("file:")) e.preventDefault(); });
@@ -316,30 +330,115 @@ function openCloudViewer(s, profile) {
       if (t && t !== lastFromCloud) { lastFromCloud = t; clipboard.writeText(t); }
     }).catch(() => {});
   }, 1000);
-  // Stream watchdog: on a flaky connection the WebRTC peer drops and the viewer
-  // keeps showing a frozen last frame. If no new video frame arrives for ~6s
-  // (and the window isn't minimized), reload the viewer to reconnect.
-  let lastFrames = -1, stalledSince = 0, lastReload = 0;
-  const watchdog = setInterval(() => {
-    if (win.isDestroyed()) return clearInterval(watchdog);
-    if (win.isMinimized()) { stalledSince = 0; return; }
-    win.webContents.executeJavaScript(`(() => { const v = document.querySelector("video");
-      return v && v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : -1; })()`).then((frames) => {
-      if (frames < 0) { stalledSince = 0; return; } // no video element (VNC viewer / still loading)
-      const now = Date.now();
-      if (frames !== lastFrames) { lastFrames = frames; stalledSince = 0; return; }
-      if (!stalledSince) stalledSince = now;
-      if (now - stalledSince > 6000 && now - lastReload > 15000) {
-        lastReload = now; stalledSince = 0; lastFrames = -1;
-        logInfo(`cloud viewer stalled — reconnecting profile=${profile.id}`);
-        win.webContents.reload();
+  // The picture is only a video of the browser on the server. A dropped
+  // connection used to reload the current page, which comes back white and
+  // then stops trying, while the signed-in browser keeps running. Reopen the
+  // viewer URL instead. That does not restart the cloud browser.
+  const viewerUrl = () => `${s.url}/view/${id}/?t=${encodeURIComponent(s.token)}`;
+  let viewState = freshCloudView(Date.now());
+  let reconnecting = false;
+  let checking = false;
+  let reconnects = [];
+  let pendingNotice = "";
+  let lastStuckNotice = 0;
+  const setTitle = (extra) => { if (!win.isDestroyed()) win.setTitle(extra ? `${baseTitle} — ${extra}` : baseTitle); };
+  const showNotice = (text) => {
+    pendingNotice = text;
+    if (win.isDestroyed()) return;
+    win.webContents.executeJavaScript(`(() => { let n = document.getElementById("ps-cloud-notice");
+      if (!n) { n = document.createElement("div"); n.id = "ps-cloud-notice";
+        n.style.cssText = "position:fixed;left:12px;right:12px;top:12px;z-index:2147483647;background:#111;color:#fff;font:14px/1.45 Segoe UI,sans-serif;padding:12px 14px;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.45)";
+        (document.body || document.documentElement).appendChild(n); }
+      n.textContent = ${JSON.stringify(text)}; })()`).catch(() => {});
+  };
+  const clearNotice = () => {
+    pendingNotice = "";
+    setTitle("");
+    if (!win.isDestroyed()) win.webContents.executeJavaScript(`const n=document.getElementById("ps-cloud-notice"); if(n) n.remove();`).catch(() => {});
+  };
+  async function sessionNote(stuck) {
+    const listed = await cloudApi(s, "/api/list");
+    const box = listed && listed.ok && Array.isArray(listed.boxes) ? listed.boxes.find((b) => b.profileId === profile.id) : null;
+    if (!listed || listed.ok !== true) {
+      return stuck
+        ? "The screen did not come back. Closing this window does not log the account out. Click Reconnect, or open Cloud again."
+        : "Reconnecting the screen. Closing this window does not log the account out.";
+    }
+    if (box && !box.paused) {
+      return stuck
+        ? "The screen did not come back. The cloud browser is still running and this account stays signed in. Click Reconnect. Closing this window does not log the account out."
+        : "Reconnecting the screen. The cloud browser is still running, and this account stays signed in.";
+    }
+    if (box && box.paused) return "The connection dropped, so the cloud browser is paused. The account stays signed in and resumes when this PC is connected again.";
+    return stuck
+      ? "The cloud browser is not running. Open Cloud again from Privacy Shield. Closing this window does not log an account out."
+      : "The cloud browser is not running. Open Cloud again from Privacy Shield.";
+  }
+  async function reconnectViewer(reason) {
+    if (win.isDestroyed() || reconnecting) return;
+    const now = Date.now();
+    if (reason === "menu") reconnects = [];
+    reconnects = reconnects.filter((t) => now - t < 120000);
+    if (reconnects.length >= 3 && reason !== "menu") {
+      if (now - lastStuckNotice > 30000) {
+        lastStuckNotice = now;
+        setTitle("screen not back");
+        showNotice(await sessionNote(true));
       }
-    }).catch(() => {});
+      return;
+    }
+    reconnects.push(now);
+    reconnecting = true;
+    viewGen += 1;
+    viewState = freshCloudView(Date.now());
+    setTitle("reconnecting");
+    logInfo(`cloud viewer reconnect profile=${profile.id} reason=${reason}`);
+    const note = await sessionNote(false);
+    pendingNotice = note;
+    try { await win.loadURL(viewerUrl()); } catch (err) {
+      logInfo(`cloud viewer reconnect failed profile=${profile.id} ${err && (err.message || err)}`);
+    }
+    showNotice(note);
+    reconnecting = false;
+  }
+  win.webContents.on("did-finish-load", () => { if (pendingNotice) showNotice(pendingNotice); });
+  const probe = `(() => { const v = document.querySelector("video"); if (!v) return { hasVideo: false };
+    return { hasVideo: true, currentTime: v.currentTime || 0, width: v.videoWidth || 0,
+      frames: v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality().totalVideoFrames : -1 }; })()`;
+  // Windows pauses the video while the window is minimized. Play it again and
+  // ignore the frozen clock for a few seconds. Reopen the viewer only if the
+  // picture never moves after that. This does not restart the cloud browser.
+  let viewGen = 0;
+  const resumePicture = () => {
+    if (win.isDestroyed() || reconnecting) return;
+    viewGen += 1;
+    viewState = noteCloudViewShown(viewState, Date.now());
+    win.webContents.executeJavaScript(`(() => { const v = document.querySelector("video");
+      if (v && v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); } })()`).catch(() => {});
+    try { win.webContents.invalidate(); } catch (_) {}
+  };
+  let wasMinimized = false;
+  win.on("restore", resumePicture);
+  const watchdog = setInterval(() => {
+    if (win.isDestroyed()) return;
+    const minimized = win.isMinimized();
+    if (minimized) { wasMinimized = true; viewState = { ...viewState, stuckSince: 0 }; return; }
+    if (wasMinimized) { wasMinimized = false; if (!reconnecting) resumePicture(); }
+    if (checking || reconnecting) return;
+    const gen = viewGen;
+    checking = true;
+    win.webContents.executeJavaScript(probe).catch(() => ({ hasVideo: false })).then((snap) => {
+      if (win.isDestroyed() || gen !== viewGen || win.isMinimized()) return;
+      const result = nextCloudView(viewState, snap, Date.now());
+      viewState = result.state;
+      if (result.action === "healthy" && pendingNotice) clearNotice();
+      else if (result.action === "reconnect") return reconnectViewer(result.reason);
+    }).finally(() => { checking = false; });
   }, 2000);
   const wcId = win.webContents.id;
   win.on("closed", () => { clearInterval(copyPoll); clearInterval(watchdog); cloudViewers.delete(profile.id); viewerProfileByWc.delete(wcId); });
   // The runner sends /view/<id>/ to the right viewer (WebRTC neko or legacy VNC), logged in.
-  win.loadURL(`${s.url}/view/${id}/?t=${encodeURIComponent(s.token)}`);
+  win.loadURL(viewerUrl());
 }
 
 function saveProfileExtension(profile, entry) {
@@ -633,8 +732,32 @@ function registerIpcHandlers() {
     return { ok: true, profile };
   });
 
-  ipcMain.handle("PROFILE_COUNTRY_IDENTITY", async (_ev, { country = "us", index = 1, deviceClass = "desktop", browserApp = "random", os } = {}) => {
-    return { ok: true, data: store.buildCountryProfileData(country, index, { deviceClass, browserApp, os }) };
+  ipcMain.handle("PROFILE_COUNTRY_IDENTITY", async (_ev, { country = "us", index = 1, deviceClass = "desktop", browserApp = "random", os, engine } = {}) => {
+    return { ok: true, data: store.buildCountryProfileData(country, index, { deviceClass, browserApp, os, engine }) };
+  });
+
+  ipcMain.handle("GEMINI_KEY_STATUS", async () => {
+    try {
+      return { ok: true, hasKey: require("./gemini-fingerprint").hasKey() };
+    } catch (err) {
+      return { ok: false, hasKey: false, error: "The Gemini key could not be read." };
+    }
+  });
+
+  ipcMain.handle("GEMINI_KEY_SAVE", async (_ev, { key } = {}) => {
+    try {
+      return require("./gemini-fingerprint").saveKey(key);
+    } catch (err) {
+      return { ok: false, error: "The Gemini key could not be saved." };
+    }
+  });
+
+  ipcMain.handle("GEMINI_FINGERPRINT", async (_ev, profile) => {
+    try {
+      return await require("./gemini-fingerprint").generateFingerprint(profile || {});
+    } catch (err) {
+      return { ok: false, error: "Gemini could not build a fingerprint." };
+    }
   });
 
   ipcMain.handle("PROFILE_UPDATE", async (_ev, { id, data = {} } = {}) => {
@@ -688,7 +811,7 @@ function registerIpcHandlers() {
     let profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
     if (!profile) return { ok: false, error: "Profile not found" };
     const s = await cloudCreds();
-    if (!s.token) return { ok: false, needsSettings: true, error: "Sign in to your Privacy Shield account to use the cloud." };
+    if (!s.token) return { ok: false, error: CLOUD_SIGN_IN_AGAIN };
     // Already running in the cloud → just show it (it may be paused by the VPN lock).
     if (profile.cloudRunning) {
       const moved = profile.cloudLoginsMovedAt ? { ok: true } : await moveLoginsToCloud(s, profile);
@@ -736,7 +859,7 @@ function registerIpcHandlers() {
   });
   ipcMain.handle("PROFILE_STOP_CLOUD", async (_ev, { profileId } = {}) => {
     const s = await cloudCreds();
-    if (!s.token) return { ok: false, error: "Sign in to your Privacy Shield account to use the cloud." };
+    if (!s.token) return { ok: false, error: CLOUD_SIGN_IN_AGAIN };
     const r = await cloudApi(s, "/api/stop", { profileId });
     if (r.ok) {
       store.updateProfile(profileId, { cloudRunning: null, cloudStartedAt: null, cloudDevice: null });
@@ -1465,6 +1588,16 @@ function registerIpcHandlers() {
         };
       })
     };
+  });
+
+  // Mac traffic lights in a frameless macOS-profile window.
+  ipcMain.handle("BROWSER_WINDOW_ACTION", async (ev, { action } = {}) => {
+    const win = BrowserWindow.fromWebContents(ev.sender);
+    if (!win || win.isDestroyed()) return { ok: false };
+    if (action === "close") win.close();
+    else if (action === "minimize") win.minimize();
+    else if (action === "maximize") (win.isMaximized() ? win.unmaximize() : win.maximize());
+    return { ok: true };
   });
 
   ipcMain.handle("BROWSER_PROFILE_META", async (ev) => {
@@ -2227,6 +2360,10 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
       sandbox: false
     }
   };
+  // macOS profiles: no Windows title bar — tab-strip.html draws working Mac
+  // traffic lights and a draggable tab row instead (window chrome only; sites
+  // never see it).
+  if (!isMobileProfile && /^(macos|ios)$/i.test(String(profile.os || ""))) winOpts.frame = false;
   if (isMobileProfile) {
     // Width is always locked to the emulated phone width (412px etc.)
     // Height locks only if the full phone height fits on this screen; otherwise
@@ -3372,7 +3509,12 @@ function vpnGate(profile, current) {
 // active VPN-mode cloud profile. Only one profile per VPN IP.
 function vpnIpHolder(exceptId) {
   const profiles = store.getProfiles();
-  for (const id of profileWindows.keys()) {
+  const localIds = new Set([
+    ...[...profileWindows.entries()].filter(([, win]) => win && !win.isDestroyed()).map(([id]) => id),
+    ...realBrowser.runningIds(),
+    ...camoufox.runningIds()
+  ]);
+  for (const id of localIds) {
     const p = profiles.find((x) => x.id === id);
     if (p && id !== exceptId && ["vpn", "direct"].includes(networkModeOf(p))) return { name: p.name || "a profile", where: "open on this PC" };
   }

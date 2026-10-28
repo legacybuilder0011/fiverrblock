@@ -535,6 +535,9 @@ function createServer(upstream) {
   });
 
   server.on("connect", (req, clientSocket, head) => {
+    // Optional observer (cloud boxes use it to spot a bot-check page loading);
+    // sees only the "host:port" Chromium asks for, never any page content.
+    if (typeof module.exports.onConnect === "function") { try { module.exports.onConnect(req.url); } catch (_) {} }
     handleConnect(upstream, auth, req, clientSocket, head).catch((err) => {
       bridgeLog(`proxy bridge CONNECT threw host=${upstreamHost}:${upstreamPort} target=${req.url} error=${err && (err.stack || err)}`);
       sendClientFailure(clientSocket, 502, "Bridge upstream error");
@@ -586,4 +589,4 @@ function stopAll() {
   for (const id of Array.from(bridges.keys())) stopBridge(id);
 }
 
-module.exports = { getBridge, stopBridge, stopAll };
+module.exports = { getBridge, stopBridge, stopAll, onConnect: null };

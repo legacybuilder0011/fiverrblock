@@ -42,6 +42,16 @@ x11vnc -display :1 -localhost -forever -shared -nopw -quiet -rfbport 5900 &
 websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 
 mapfile -t fp_args < <(printf '%s\n' "${PS_ARGS:-}" | sed '/^$/d')
+seed=$(printf '%s\n' "${PS_ARGS:-}" | sed -n 's/^--fingerprint=\([0-9][0-9]*\).*/\1/p' | head -1)
+if node /opt/ps/cloud-fonts.js "${seed:-1}" > /tmp/ps-fonts.conf; then
+  export FONTCONFIG_FILE=/tmp/ps-fonts.conf
+fi
+case "${PS_ARGS:-}" in
+  *"--disable-spoofing=font"*) ;;
+  *) fp_args+=("--disable-spoofing=font") ;;
+esac
+# Block location and lock WebRTC in the profile, matching the local browser.
+node /opt/ps/cloud-privacy.js /data || true
 
 # Logins moved from the PC: load them once with a box-loopback-only DevTools port,
 # then delete the file. The normal browser below never has a debug port.

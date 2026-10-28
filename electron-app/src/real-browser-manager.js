@@ -6,7 +6,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const proxyBridge = require("./local-proxy-bridge");
+const profileBackup = require("./profile-backup");
 const fpExtension = require("./real-browser-fingerprint");
+const browserStartup = require("./browser-startup");
+const macChrome = require("./mac-browser-chrome");
+const { acceptLanguagesFromLang } = require("./accept-languages");
+const launches = new Map();
 
 // "patched-chromium" = our bundled fingerprint-chromium (patched ungoogled-chromium).
 // Per-profile device identity is driven by a --fingerprint seed at the C++ level
@@ -73,10 +78,7 @@ function patchedChromiumReady() {
 // device every launch; different profiles → different devices.
 function fingerprintSeedFor(profile) {
   const src = String((profile && profile.fingerprint && profile.fingerprint.fingerprintSeed) || (profile && profile.id) || "seed");
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < src.length; i++) { h ^= src.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
-  // Keep in [1, 2^31-1] so it's a positive int the flag parser accepts.
-  return (h % 2147483646) + 1;
+  return require("./profile-store").fingerprintSeedInteger(src);
 }
 
 function setChangeHandler(fn) {
@@ -101,6 +103,28 @@ function profileDataDir(profileId, engine) {
   const dir = path.join(dataRoot(), safeProfileId(profileId), browserNameForEngine(engine));
   fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+// Remember that this profile needed software GL to show a window. The spoofed
+// graphics name is not turned off. Clear-data removes the folder, so the next
+// launch tries the normal path again.
+function launchCompatPath(profileId) {
+  return path.join(dataRoot(), safeProfileId(profileId), "patched-launch.json");
+}
+
+function gpuSpoofDisabled(profileId) {
+  try {
+    const data = JSON.parse(fs.readFileSync(launchCompatPath(profileId), "utf8"));
+    return Boolean(data && data.disableGpuSpoof);
+  } catch (_) {
+    return false;
+  }
+}
+
+function rememberGpuSpoofDisabled(profileId) {
+  const file = launchCompatPath(profileId);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ disableGpuSpoof: true }) + "\n", "utf8");
 }
 
 // The per-profile fingerprint extension lives beside (not inside) the user-data
@@ -235,11 +259,10 @@ function startUrls(profile, customUrl) {
 
 function languageArg(profile) {
   const fp = (profile && profile.fingerprint) || {};
-  const px = (profile && profile.proxy) || {};
+  // Auto language is resolved in buildConfigFromProfile (en-US, en-GB, …).
+  // Do not invent "us-US" from the country code; that string is not a language.
   const manual = fp.language === "manual" && fp.languageValue ? String(fp.languageValue).trim() : "";
-  const auto = px.detectedCountryCode ? `${String(px.detectedCountryCode).toLowerCase()}-${String(px.detectedCountryCode).toUpperCase()}` : "";
-  const lang = manual || auto;
-  return lang && /^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(lang) ? lang : "";
+  return manual && /^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(manual) ? manual : "";
 }
 
 function sizeArgs(profile) {
@@ -274,21 +297,34 @@ function acceptLanguages(profile) {
   return acceptLanguagesFromLang(languageArg(profile));
 }
 
-function acceptLanguagesFromLang(lang) {
-  if (!lang) return "en-US,en";
-  const primary = lang.split("-")[0];
-  return primary && primary !== lang ? `${lang},${primary},en-US,en` : `${lang},en-US,en`;
+
+
+function purgeCookieStore(dataDir) {
+  const files = [
+    ["Default", "Cookies"],
+    ["Default", "Cookies-journal"],
+    ["Default", "Network", "Cookies"],
+    ["Default", "Network", "Cookies-journal"]
+  ];
+  for (const parts of files) {
+    try { fs.rmSync(path.join(dataDir, ...parts), { force: true }); } catch (_) {}
+  }
 }
 
 function writePrivacyPreferences(profile, dataDir) {
+  const fp = (profile && profile.fingerprint) || {};
+  const blockCookies = Boolean(fp.blockCookies);
   const defaultDir = path.join(dataDir, "Default");
   fs.mkdirSync(defaultDir, { recursive: true });
+  if (blockCookies) purgeCookieStore(dataDir);
   const prefPath = path.join(defaultDir, "Preferences");
   const existing = readJsonFile(prefPath, {});
   const prefs = mergeDeep(existing, {
     browser: {
       check_default_browser: false
     },
+    // Written both ways so turning Do Not Track off replaces an old true.
+    enable_do_not_track: Boolean(fp.doNotTrack),
     // Chrome's own password manager IS the login vault. Hard-disabling these meant
     // the "Save password?" bubble never appeared in any profile, so logins were
     // never stored and accounts were lost. Forced on (not merge-preserved) so the
@@ -296,12 +332,16 @@ function writePrivacyPreferences(profile, dataDir) {
     credentials_enable_service: true,
     profile: {
       password_manager_enabled: true,
+      // 1 allows cookies, 2 blocks them. An old 2 must be replaced when the
+      // profile is set back to allow, because a deep merge will not delete it.
+      block_third_party_cookies: blockCookies,
       default_content_setting_values: {
-        geolocation: 2
+        geolocation: 2,
+        cookies: blockCookies ? 2 : 1
       }
     },
     intl: {
-      accept_languages: acceptLanguages(profile)
+      accept_languages: acceptLanguagesFromLang((resolveConfig(profile) || {}).language || languageArg(profile))
     },
     webrtc: {
       ip_handling_policy: "disable_non_proxied_udp",
@@ -419,42 +459,105 @@ async function proxyArgs(profile, options = {}) {
   return { args, bridgeId };
 }
 
+function showMacChrome(profile, pid) {
+  try {
+    if (!isPatchedChromium(profile && profile.engine)) return;
+    if (!macChrome.wants(profile && profile.os) || !pid) return;
+    macChrome.attach(pid).catch(() => {});
+  } catch (_) {}
+}
+
 function cleanup(profileId, record) {
+  if (running.get(profileId) !== record) return;
   running.delete(profileId);
+  if (record && record.pid) {
+    try { macChrome.detach(record.pid); } catch (_) {}
+  }
   if (record && record.bridgeId) {
     try { proxyBridge.stopBridge(record.bridgeId); } catch (_) {}
   }
+  if (record && record.ready && record.dataDir) profileBackup.backupInBackground(profileId, record.dataDir);
   notifyChanged();
 }
 
+// The brand flag was measured on this binary. Edge sends Chrome/148.0.0.0 plus
+// Edg/148.0.7778.215. Brave sends a brave/ token that real Brave does not use,
+// so Brave and Privacy Shield stay Chrome. A raw --user-agent blanks client-hint
+// bitness, so a typed user-agent string is never passed.
+function patchedBrowserBrand(profile) {
+  const fp = (profile && profile.fingerprint) || {};
+  const picked = String(fp.browser || (profile && profile.browserApp) || "chrome").toLowerCase();
+  return picked === "edge" ? "Edge" : "Chrome";
+}
+
+function patchedPlatformVersion(profile, cfg) {
+  const os = String((profile && profile.os) || "windows").toLowerCase();
+  const family = os === "macos" || os === "ios" ? "macos" : os === "linux" ? "linux" : "windows";
+  const version = cfg && cfg._platformVersion ? String(cfg._platformVersion) : "";
+  if (!/^\d+\.\d+\.\d+$/.test(version) || family === "linux") return "";
+  const windowsVersions = new Set(["10.0.0", "14.0.0", "15.0.0"]);
+  const macVersions = new Set(["13.6.9", "14.5.0", "14.6.1", "15.1.1", "15.2.0"]);
+  if (family === "windows" && !windowsVersions.has(version)) return "";
+  if (family === "macos" && !macVersions.has(version)) return "";
+  return version;
+}
+
 // fingerprint-chromium flags that turn the resolved profile config into a per-seed
-// device identity at the C++ level. The GPU renderer STRING and geolocation are
-// layered on via the extension (patched-chromium supports --load-extension).
+// device identity at the C++ level. The fingerprint extension is not loaded:
+// it made Google sign-in reject the browser. Geolocation stays blocked in prefs.
 function patchedFingerprintArgs(profile, cfg) {
   const seed = fingerprintSeedFor(profile);
+  const fp = (profile && profile.fingerprint) || {};
   const osMap = { windows: "windows", macos: "macos", linux: "linux", android: "windows", ios: "macos" };
   const platform = osMap[(profile && profile.os) || "windows"] || "windows";
   const args = [
     `--fingerprint=${seed}`,
     `--fingerprint-platform=${platform}`
   ];
-  // Browser brand/version from the resolved UA version (fingerprint-chromium only
-  // brands Chrome/Edge/Opera/Vivaldi — Brave isn't available, so stay Chrome).
-  const brand = "Chrome";
-  args.push(`--fingerprint-brand=${brand}`);
-  if (cfg && cfg._uaVersion) args.push(`--fingerprint-brand-version=${cfg._uaVersion}`);
-  if (cfg && cfg._platformVersion) args.push(`--fingerprint-platform-version=${cfg._platformVersion}`);
+  args.push(`--fingerprint-brand=${patchedBrowserBrand(profile)}`);
+  // This binary always reduces the User-Agent to Chrome/148.0.0.0. A stored
+  // 146/150 pin, or a bare major, would make the client hint disagree with it.
+  // The full build is the same for every profile on purpose: it is this binary.
+  args.push(`--fingerprint-brand-version=${PATCHED_VERSION.split("-")[0]}`);
+  const platformVersion = patchedPlatformVersion(profile, cfg);
+  if (platformVersion) args.push(`--fingerprint-platform-version=${platformVersion}`);
   if (cfg && typeof cfg.hardwareConcurrency === "number") args.push(`--fingerprint-hardware-concurrency=${cfg.hardwareConcurrency}`);
   if (cfg && cfg.timezone && /^[A-Za-z]+\/[A-Za-z_+-]+/.test(cfg.timezone)) args.push(`--timezone=${cfg.timezone}`);
+  // The engine's own font spoof hides the same faces on every seed. GPU spoof
+  // stays on: disabling it shows this PC's graphics card. Stealth also turns
+  // off canvas, audio, and client-rect noise, which is what that mode saves.
+  const stealth = fp.spoofingLevel === "stealth" || Boolean(cfg && cfg._stealth);
+  args.push(`--disable-spoofing=${stealth ? "font,canvas,audio,clientrects" : "font"}`);
   return { args, seed };
 }
 
-async function launchProfile(profile, customUrl = "", options = {}) {
+function launchProfile(profile, customUrl = "", options = {}) {
+  const id = profile && profile.id;
+  if (launches.has(id)) return launches.get(id);
+  const launch = launchProfileOnce(profile, customUrl, options).finally(() => launches.delete(id));
+  launches.set(id, launch);
+  return launch;
+}
+
+function windowFailure(result) {
+  return { ok: false, reason: result.reason || "window-missing", detail: result.detail ||
+    (result.reason === "window-check-failed"
+      ? "Windows could not verify the browser window. Check whether security software blocks PowerShell, then try Start again."
+      : "Chromium started but did not open a visible window within 15 seconds. The stalled session was stopped. Try Start again; if it repeats, send support this message and your app version.") };
+}
+
+async function launchProfileOnce(profile, customUrl = "", options = {}) {
   if (!profile || !profile.id) return { ok: false, reason: "no-profile", detail: "Profile not found." };
   const engine = isRealBrowserEngine(profile.engine) ? profile.engine : "real-chrome";
   const channel = (profile.fingerprint && profile.fingerprint.browserChannel) || "stable";
   const existing = running.get(profile.id);
   if (isRunningRecord(existing)) {
+    const restored = await browserStartup.restoreWindow(existing.pid);
+    if (!restored.ok) {
+      await closeProfile(profile.id);
+      return windowFailure(restored);
+    }
+    showMacChrome(profile, existing.pid);
     return { ok: true, reused: true, pid: existing.pid, engine };
   }
 
@@ -484,9 +587,14 @@ async function launchProfile(profile, customUrl = "", options = {}) {
   const cfg = resolveConfig(profile);
 
   const dir = profileDataDir(profile.id, engine);
+  await profileBackup.restoreIfNewer(profile.id, dir);
   writePrivacyPreferences(profile, dir);
 
   const patched = isPatchedChromium(engine);
+  // GPU name spoofing stays on whenever --fingerprint is set. On a virtual
+  // display the GPU process can still fail to show a window, so the retry uses
+  // software GL only. A profile that already needed that skips the first start.
+  const disableGpuSpoof = Boolean(options.disableGpuSpoof) || (patched && gpuSpoofDisabled(profile.id));
 
   // Generate the per-profile fingerprint extension. For patched-chromium the C++
   // engine already handles canvas/audio/font/navigator/timezone per seed, so the
@@ -545,6 +653,12 @@ async function launchProfile(profile, customUrl = "", options = {}) {
     patchedSeed = fpArgs.seed;
     args.push(...fpArgs.args);
     args.push("--extension-mime-request-handling=always-prompt-for-install");
+    if (disableGpuSpoof) {
+      // Software GL gets a window up on a virtual display. The spoofed graphics
+      // name stays on: --fingerprint still supplies it, and --disable-spoofing=gpu
+      // would show this PC's real graphics card.
+      args.push("--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader");
+    }
     if (lang) { args.push(`--lang=${lang}`); args.push(`--accept-lang=${acceptLanguagesFromLang(lang)}`); }
   } else {
     // real-chrome / real-brave are GENUINE browsers: they derive User-Agent Client
@@ -588,6 +702,22 @@ async function launchProfile(profile, customUrl = "", options = {}) {
   running.set(profile.id, record);
   child.once("exit", () => cleanup(profile.id, record));
   child.once("error", () => cleanup(profile.id, record));
+  const startup = await browserStartup.waitForWindow(child);
+  if (!startup.ok) {
+    if (running.get(profile.id) === record) await closeProfile(profile.id);
+    // One retry, only when the process stayed up and never showed a window.
+    // An early exit is a different failure and is not launched again.
+    if (patched && !disableGpuSpoof && startup.reason === "window-missing") {
+      return launchProfileOnce(profile, customUrl, Object.assign({}, options, { disableGpuSpoof: true }));
+    }
+    return windowFailure(startup);
+  }
+  if (!isRunningRecord(record)) return windowFailure({ reason: "launch-failed", detail: "Browser closed during startup. Try Start again." });
+  if (disableGpuSpoof) {
+    try { rememberGpuSpoofDisabled(profile.id); } catch (_) {}
+  }
+  record.ready = true;
+  showMacChrome(profile, child.pid);
   notifyChanged();
 
   return { ok: true, pid: child.pid, engine, channel: exe.channel, dataDir: dir, browser: browserNameForEngine(engine), fingerprint: extraExtDirs.length > 0, seed: patchedSeed || undefined };
@@ -629,7 +759,7 @@ function runningMap() {
   const out = {};
   for (const id of runningIds()) {
     const record = running.get(id);
-    out[id] = record ? `real:${record.pid}` : "real";
+    if (record && record.ready) out[id] = `real:${record.pid}`;
   }
   return out;
 }
@@ -778,7 +908,11 @@ async function exportProfileCookies(profile) {
 // Patched Chromium: the same seeded fingerprint + locale flags and screen size.
 // Storage, proxy, extensions and sandboxing are fixed by the cloud box itself.
 function cloudLaunchSpec(profile, cfg) {
-  const args = patchedFingerprintArgs(profile, cfg).args;
+  // The live runner rejects any flag its allowlist does not name. Font control
+  // is applied by the cloud image itself, so it is not sent from the PC.
+  // The live runner rejects every --disable-spoofing value, including a combined
+  // stealth list. Font control is applied by the cloud image itself.
+  const args = patchedFingerprintArgs(profile, cfg).args.filter((arg) => !String(arg).startsWith("--disable-spoofing="));
   const lang = (cfg && cfg.language) || languageArg(profile);
   if (lang) args.push(`--lang=${lang}`, `--accept-lang=${acceptLanguagesFromLang(lang)}`);
   const fp = (profile && profile.fingerprint) || {};
@@ -790,6 +924,7 @@ function cloudLaunchSpec(profile, cfg) {
 }
 
 module.exports = {
+  patchedFingerprintArgs,
   cloudLaunchSpec,
   exportProfileCookies,
   isRealBrowserEngine,

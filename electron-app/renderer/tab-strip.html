@@ -110,6 +110,25 @@
   #window-dots span:nth-child(1) { background: #ff5f57; }
   #window-dots span:nth-child(2) { background: #ffbd2e; }
   #window-dots span:nth-child(3) { background: #28c840; }
+  /* macOS profiles: frameless window with real Mac traffic lights at the start
+     of the tab row (like Chrome/Safari on a Mac) and a draggable tab bar. */
+  #mac-lights { display: none; align-items: center; gap: 8px; padding: 0 14px 0 12px; align-self: center; }
+  #mac-lights button { width: 12px; height: 12px; border-radius: 50%; border: 0.5px solid rgba(0,0,0,.18); cursor: default;
+    font: 700 9px/12px -apple-system, Arial, sans-serif; color: transparent; display: flex; align-items: center; justify-content: center; }
+  #mac-lights button[data-win="close"] { background: #ff5f57; }
+  #mac-lights button[data-win="minimize"] { background: #febc2e; }
+  #mac-lights button[data-win="maximize"] { background: #28c840; }
+  #mac-lights:hover button { color: rgba(0,0,0,.55); }
+  #mac-lights:hover button[data-win="close"]::after { content: "×"; }
+  #mac-lights:hover button[data-win="minimize"]::after { content: "–"; }
+  #mac-lights:hover button[data-win="maximize"]::after { content: "+"; }
+  body.os-macos:not(.device-mobile) #mac-lights { display: flex; }
+  body.os-macos:not(.device-mobile) #window-dots { display: none; }
+  body.os-macos:not(.device-mobile) { font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  body.os-macos:not(.device-mobile) #tabs-row { -webkit-app-region: drag; height: 40px; padding-left: 0; }
+  body.os-macos:not(.device-mobile) #tabs-row .tab,
+  body.os-macos:not(.device-mobile) #new-tab,
+  body.os-macos:not(.device-mobile) #mac-lights { -webkit-app-region: no-drag; }
   #brand-chip {
     display: inline-flex;
     align-items: center;
@@ -355,6 +374,7 @@
 </head>
 <body>
 <div id="tabs-row">
+  <div id="mac-lights"><button data-win="close" title="Close"></button><button data-win="minimize" title="Minimize"></button><button data-win="maximize" title="Zoom"></button></div>
   <button id="new-tab" title="New tab (Ctrl+T)">+</button>
 </div>
 <div id="url-row">

@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mac browser</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    user-select: none;
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    color: #202124;
+  }
+  button, input { font-family: inherit; }
+  button { border: 0; background: transparent; color: #5f6368; cursor: pointer; }
+  #shell {
+    position: absolute;
+    left: var(--shadow, 22px);
+    top: var(--shadow, 22px);
+    right: var(--shadow, 22px);
+    bottom: var(--shadow, 22px);
+    display: flex;
+    flex-direction: column;
+    border-radius: 12px;
+    overflow: hidden;
+    background: transparent;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .28), 0 2px 8px rgba(0, 0, 0, .16);
+  }
+  body.zoomed #shell, body.zoomed #top { border-radius: 0; box-shadow: none; }
+  #top {
+    height: var(--chrome, 88px);
+    flex: 0 0 var(--chrome, 88px);
+    display: flex;
+    flex-direction: column;
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+    overflow: hidden;
+    background: #fff;
+    border-bottom: 1px solid #e4e4e8;
+  }
+  #well { flex: 1; background: transparent; }
+  #tabs {
+    flex: 0 0 46%;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px 0 12px;
+    background: #e7e7ec;
+  }
+  #lights { display: flex; align-items: center; gap: 7px; margin-right: 6px; flex: 0 0 auto; }
+  .light {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(80, 20, 20, .85);
+    font-size: 9px;
+    line-height: 1;
+    font-weight: 700;
+  }
+  .light span { opacity: 0; }
+  .light:hover span { opacity: 1; }
+  .light.close { background: #ff5f57; }
+  .light.min { background: #febc2e; }
+  .light.zoom { background: #28c840; }
+  #pins { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .pin {
+    width: 28px;
+    height: 26px;
+    border-radius: 7px;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #3c3c3c;
+  }
+  #live-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; }
+  .tab {
+    height: 28px;
+    max-width: 180px;
+    padding: 0 8px 0 12px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #5f6368;
+    background: transparent;
+    cursor: pointer;
+  }
+  .tab.active {
+    background: #fff;
+    color: #202124;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .08);
+  }
+  .tab-title {
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tab-x {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    color: #5f6368;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .tab-x:hover { background: #e8e8ed; color: #202124; }
+  #plus, #chevron {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    font-size: 18px;
+    line-height: 1;
+    flex: 0 0 auto;
+  }
+  #plus:hover, #chevron:hover, .pin:hover { background: #dedee4; }
+  .pin:hover { background: #f7f7f8; }
+  #spacer { flex: 1; height: 100%; }
+  #toolbar {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 8px 0 6px;
+    background: #fff;
+  }
+  .nav {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    color: #5c5c5c;
+  }
+  .nav:hover { background: #f1f3f4; }
+  #box {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    max-height: 70%;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin: 0 6px;
+    padding: 0 4px 0 14px;
+    background: #f2f2f5;
+    border-radius: 999px;
+  }
+  #url {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: #202124;
+    font-size: 13px;
+  }
+  #url::placeholder { color: #9aa0a6; }
+  .box-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #6e6e73;
+    flex: 0 0 auto;
+  }
+  .box-btn:hover { background: #e6e6eb; }
+  svg { width: 16px; height: 16px; display: block; }
+  .pin svg { width: 14px; height: 14px; }
+</style>
+</head>
+<body>
+<div id="shell">
+  <div id="top">
+  <div id="tabs">
+    <div id="lights">
+      <button class="light close" data-action="close" aria-label="Close" title="Close"><span>&#215;</span></button>
+      <button class="light min" data-action="min" aria-label="Minimize" title="Minimize"><span>&#8722;</span></button>
+      <button class="light zoom" data-action="zoom" aria-label="Zoom" title="Zoom"><span>+</span></button>
+    </div>
+    <div id="pins" aria-hidden="true">
+      <div class="pin" title="Apps"><svg viewBox="0 0 16 16"><path fill="currentColor" d="M1 1h6v6H1zm8 0h6v6H9zM1 9h6v6H1zm8 0h6v6H9z"/></svg></div>
+      <div class="pin" title="Favorites"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20s-7-4.4-7-9a4 4 0 0 1 7-2 4 4 0 0 1 7 2c0 4.6-7 9-7 9z"/></svg></div>
+      <div class="pin" title="Mail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18v12H3z"/><path d="M3 7l9 7 9-7"/></svg></div>
+    </div>
+    <div id="live-tabs"></div>
+    <button id="plus" data-action="newtab" aria-label="New tab" title="New tab">+</button>
+    <div id="spacer"></div>
+    <button id="chevron" aria-label="Tab list" title="Tab list"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
+  </div>
+  <div id="toolbar">
+    <button class="nav" data-action="back" aria-label="Back" title="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 6l-6 6 6 6"/></svg></button>
+    <button class="nav" data-action="fwd" aria-label="Forward" title="Forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg></button>
+    <button class="nav" data-action="reload" aria-label="Reload" title="Reload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4v6h-6"/></svg></button>
+    <div id="box">
+      <button class="box-btn" data-action="home" aria-label="Home" title="Home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11l8-7 8 7"/><path d="M6 10v9h12v-9"/></svg></button>
+      <input id="url" type="text" placeholder="Enter search or web adress" spellcheck="false" aria-label="Address" />
+      <button class="box-btn" aria-label="Site information" title="Site information"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg></button>
+      <button class="box-btn" aria-label="Shield" title="Shield"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg></button>
+      <button class="box-btn" data-action="star" aria-label="Bookmark" title="Bookmark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l2.6 5.6L21 9.2l-4.5 4.2 1.2 6.1L12 16.8 6.3 19.5 7.5 13.4 3 9.2l6.4-.6z"/></svg></button>
+    </div>
+    <button class="nav" data-action="menu" aria-label="Menu" title="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  </div>
+  </div>
+  <div id="well"></div>
+</div>
+<script>
+(function () {
+  const live = document.getElementById("live-tabs");
+  const url = document.getElementById("url");
+  let tabs = [{ id: 1, title: "New tab" }];
+  let active = 1;
+  let seq = 1;
+
+  function paint() {
+    live.replaceChildren();
+    tabs.forEach(function (tab, index) {
+      const row = document.createElement("div");
+      row.className = "tab" + (tab.id === active ? " active" : "");
+      row.addEventListener("click", function () {
+        active = tab.id;
+        paint();
+        if (window.macChrome) window.macChrome.tab(index + 1);
+      });
+      const title = document.createElement("span");
+      title.className = "tab-title";
+      title.textContent = tab.title || "New tab";
+      const close = document.createElement("button");
+      close.className = "tab-x";
+      close.type = "button";
+      close.setAttribute("aria-label", "Close tab");
+      close.textContent = "\u00d7";
+      close.addEventListener("click", function (event) {
+        event.stopPropagation();
+        if (window.macChrome) window.macChrome.action("closetab");
+        if (tabs.length === 1) {
+          tabs[0].title = "New tab";
+          active = tabs[0].id;
+        } else {
+          tabs = tabs.filter(function (item) { return item.id !== tab.id; });
+          if (active === tab.id) active = tabs[Math.max(0, index - 1)].id;
+        }
+        paint();
+      });
+      row.append(title, close);
+      live.append(row);
+    });
+  }
+
+  function addTab() {
+    seq += 1;
+    tabs.push({ id: seq, title: "New tab" });
+    active = seq;
+    paint();
+    if (window.macChrome) window.macChrome.action("newtab");
+  }
+
+  document.getElementById("plus").addEventListener("click", function (event) {
+    event.stopPropagation();
+    addTab();
+  });
+
+  document.body.addEventListener("click", function (event) {
+    const button = event.target.closest("[data-action]");
+    if (!button || button.id === "plus") return;
+    const action = button.getAttribute("data-action");
+    if (action === "home") {
+      url.value = "";
+      const current = tabs.find(function (tab) { return tab.id === active; });
+      if (current) current.title = "New tab";
+      paint();
+      if (window.macChrome) window.macChrome.go("about:blank");
+      return;
+    }
+    if (window.macChrome) window.macChrome.action(action);
+  });
+
+  url.addEventListener("keydown", function (event) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const value = url.value.trim();
+    if (!value || !window.macChrome) return;
+    url.blur();
+    window.macChrome.go(value);
+    const current = tabs.find(function (tab) { return tab.id === active; });
+    if (current) {
+      current.title = value.replace(/^https?:\/\//i, "").split("/")[0] || "New tab";
+      paint();
+    }
+  });
+
+  window.addEventListener("keydown", function (event) {
+    if (!event.ctrlKey) return;
+    const key = event.key.toLowerCase();
+    if (key === "l") {
+      event.preventDefault();
+      url.focus();
+      url.select();
+    } else if (key === "t") {
+      event.preventDefault();
+      addTab();
+    }
+  });
+
+  function bindDrag(el) {
+    let dragging = false;
+    let x = 0;
+    let y = 0;
+    el.addEventListener("pointerdown", function (event) {
+      if (event.button !== 0) return;
+      if (event.target.closest("button, input, .tab")) return;
+      dragging = true;
+      x = event.screenX;
+      y = event.screenY;
+      el.setPointerCapture(event.pointerId);
+    });
+    el.addEventListener("pointermove", function (event) {
+      if (!dragging || !window.macChrome) return;
+      const dx = event.screenX - x;
+      const dy = event.screenY - y;
+      x = event.screenX;
+      y = event.screenY;
+      if (dx || dy) window.macChrome.nudge(dx, dy);
+    });
+    function stop() { dragging = false; }
+    el.addEventListener("pointerup", stop);
+    el.addEventListener("pointercancel", stop);
+  }
+  bindDrag(document.getElementById("tabs"));
+  bindDrag(document.getElementById("toolbar"));
+  let overChrome = false;
+  window.addEventListener("mousemove", function (event) {
+    const on = Boolean(event.target && event.target.closest && event.target.closest("#top"));
+    if (on === overChrome || !window.macChrome) return;
+    overChrome = on;
+    window.macChrome.hit(on);
+  });
+  paint();
+})();
+</script>
+</body>
+</html>

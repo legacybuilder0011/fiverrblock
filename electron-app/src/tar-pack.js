@@ -33,10 +33,12 @@ function header(name, size, type, mtime) {
 }
 
 // Pack `dir` so the archive's top entry is its folder name. Stops past maxBytes.
-function packFolder(dir, maxBytes) {
+// `skip(rel)` drops a file or folder (rel uses "/", e.g. "patched/Default/Cache").
+function packFolder(dir, maxBytes, skip = () => false) {
   const parts = []; let total = 0;
-  const add = (buf) => { total += buf.length; if (total > maxBytes) throw new Error("folder is larger than 200 MB"); parts.push(buf); };
+  const add = (buf) => { total += buf.length; if (total > maxBytes) throw new Error(`folder is larger than ${Math.round(maxBytes / 1048576)} MB`); parts.push(buf); };
   const walk = (abs, rel) => {
+    if (skip(rel)) return;
     const st = fs.lstatSync(abs);
     if (st.isSymbolicLink()) return;
     if (st.isDirectory()) {
@@ -55,4 +57,26 @@ function packFolder(dir, maxBytes) {
   return Buffer.concat(parts);
 }
 
-module.exports = { packFolder };
+// Unpack a packFolder() archive into destDir. Entries that would land outside
+// destDir are refused.
+function unpackTo(tar, destDir) {
+  const root = path.resolve(destDir);
+  for (let off = 0; off + 512 <= tar.length;) {
+    const h = tar.subarray(off, off + 512);
+    if (h.every((b) => b === 0)) break;
+    const str = (a, b) => h.toString("utf8", a, b).replace(/\0.*$/s, "");
+    const name = (str(345, 500) ? str(345, 500) + "/" : "") + str(0, 100);
+    const size = parseInt(str(124, 136).trim() || "0", 8);
+    const type = str(156, 157);
+    const out = path.resolve(root, name);
+    if (out !== root && !out.startsWith(root + path.sep)) throw new Error(`unsafe path in archive: ${name}`);
+    if (type === "5") fs.mkdirSync(out, { recursive: true });
+    else if (type === "0" || type === "") {
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, tar.subarray(off + 512, off + 512 + size));
+    }
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+}
+
+module.exports = { packFolder, unpackTo };

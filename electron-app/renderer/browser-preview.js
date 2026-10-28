@@ -322,11 +322,19 @@
           result = {
             ok: true,
             capabilities: {
-              actualEngine: "Browser preview",
-              nativeEngines: ["chromium-preview", "real-chrome", "real-brave"],
-              chromiumCppPatches: false,
+              actualEngine: "Patched Chromium, Stealthfox, Electron, or installed Chrome/Brave",
+              runtimeLabel: "Patched Chromium, Stealthfox, Electron, or installed Chrome/Brave",
+              nativeEnginesLabel: "Patched Chromium, Stealthfox, Chrome, Brave",
+              identityLabel: "Privacy Shield, Chrome, Brave, Edge",
+              nativeEngines: ["patched-chromium", "stealthfox", "chromium", "real-chrome", "real-brave"],
+              chromiumCppPatches: true,
               aiDailyFingerprints: false,
-              firefoxGeckoRuntime: false
+              localIdentityGenerator: true,
+              firefoxGeckoRuntime: true,
+              fingerprintService: {
+                included: true,
+                label: "Patched Chromium and Stealthfox"
+              }
             }
           };
           break;
@@ -381,8 +389,14 @@
           if (!gpu.trim()) warnings.push({ level: "warn", message: "WebGL vendor or renderer is missing." });
           else if (profile.os === "android" && !/(adreno|mali|qualcomm|arm)/.test(gpu)) warnings.push({ level: "warn", message: "GPU renderer does not look typical for Android." });
           else passes.push({ level: "pass", message: "GPU renderer is compatible with the selected OS." });
-          if ((fp.browser || profile.browserApp) === "firefox") warnings.push({ level: "warn", message: "Firefox is an identity template only in this build." });
+          const engineName = String(profile.engine || "chromium").toLowerCase();
+          if ((fp.browser || profile.browserApp) === "firefox" && engineName !== "stealthfox") warnings.push({ level: "warn", message: "Firefox is an identity template on this engine. Choose Stealthfox to launch Firefox." });
           if ((fp.browser || profile.browserApp) === "safari") warnings.push({ level: "warn", message: "Safari is an identity template only in this build." });
+          const fingerprintService = engineName === "patched-chromium"
+            ? "On for this profile: Patched Chromium"
+            : engineName === "stealthfox"
+              ? "On for this profile: Stealthfox"
+              : "Available on Patched Chromium and Stealthfox";
           passes.push({ level: "pass", message: "Preview audit completed." });
           result = {
             ok: true,
@@ -395,7 +409,9 @@
                 screen: screenWidth && screenHeight ? `${screenWidth}x${screenHeight} @ ${dpr} DPR` : "missing",
                 fonts: fp.fonts === "blocked" ? "blocked" : `${fp.fontProfile || profile.os || "windows"}, ${fonts.length} fonts`,
                 gpu: fp.webglVendor && fp.webglRenderer ? `${fp.webglVendor} / ${fp.webglRenderer}` : "missing",
-                transport: transportSummary
+                transport: transportSummary,
+                fingerprintService,
+                fingerprintServiceOk: true
               },
               issues,
               warnings,
@@ -413,6 +429,15 @@
         case "PROFILE_CREATE":
           result = { ok: true, profile: createProfile(state, data.data || {}) };
           save(state);
+          break;
+        case "GEMINI_KEY_STATUS":
+          result = { ok: true, hasKey: false };
+          break;
+        case "GEMINI_KEY_SAVE":
+          result = { ok: false, error: "Save the Gemini key in the installed app." };
+          break;
+        case "GEMINI_FINGERPRINT":
+          result = { ok: false, error: "Gemini runs in the installed app." };
           break;
         case "PROFILE_COUNTRY_IDENTITY":
           result = { ok: true, data: randomProfileData(String(data.country || "us").toLowerCase(), Number(data.index) || 1, { deviceClass: data.deviceClass, browserApp: data.browserApp || "random" }) };

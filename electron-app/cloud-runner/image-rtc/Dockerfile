@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY chromium /opt/chromium
 COPY winfonts /usr/share/fonts/windows
 COPY image/vendor/chromium-web-store /opt/cws
-COPY image/local-proxy-bridge.js image/start-bridge.js image/import-cookies.js image-rtc/run-browser.sh /opt/ps/
+COPY image/local-proxy-bridge.js image/start-bridge.js image/import-cookies.js image/cloud-fonts.js image/cloud-privacy.js image-rtc/run-browser.sh /opt/ps/
 # Windows-like font resolution: only the Windows fonts, no Linux alias rules.
 COPY image/fonts.conf /etc/fonts/fonts.conf
 RUN rm -rf /etc/fonts/conf.d/*

@@ -136,6 +136,7 @@ async function init() {
   renderCloudPhones();
 
   await loadProfiles();
+  await loadEngineCapabilities();
   bindSidebarEvents();
   bindFormEvents();
   bindSessionEvents();
@@ -737,7 +738,9 @@ async function generateCoherentIdentity() {
   const btn = $("btnGenIdentity");
   if (btn) { btn.disabled = true; btn.textContent = "Generating…"; }
   try {
-    const res = await msg("PROFILE_COUNTRY_IDENTITY", { country, os, deviceClass, browserApp });
+    const res = await msg("PROFILE_COUNTRY_IDENTITY", {
+      country, os, deviceClass, browserApp, engine: $("fp-engine")?.value || ""
+    });
     if (!res || !res.ok || !res.data) { toast("Could not generate identity"); return; }
     const d = res.data;
     // Location fields follow the ACTUAL VPN/proxy exit (set to Auto) so the
@@ -764,6 +767,48 @@ async function generateCoherentIdentity() {
     toast("Fresh coherent identity generated — review and Save");
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "🎲 Generate coherent identity"; }
+  }
+}
+
+async function saveGeminiKey() {
+  const input = $("geminiApiKey");
+  const r = await msg("GEMINI_KEY_SAVE", { key: input ? input.value : "" });
+  if (input) input.value = "";
+  if (!r || !r.ok) return toast((r && r.error) || "Could not save the Gemini key");
+  toast(r.hasKey ? "Gemini key saved" : "Gemini key removed");
+  await loadEngineCapabilities();
+}
+
+async function generateAiFingerprint() {
+  const btn = $("btnGenAiFingerprint");
+  if (btn) { btn.disabled = true; btn.textContent = "Asking Gemini…"; }
+  try {
+    const draft = collectForm();
+    const res = await msg("GEMINI_FINGERPRINT", {
+      os: draft.os,
+      browserApp: draft.browserApp,
+      engine: draft.engine,
+      fingerprint: { browser: draft.fingerprint.browser, countryCode: draft.fingerprint.countryCode || "us" }
+    });
+    if (!res || !res.ok || !res.data) {
+      toast((res && res.error) || "Gemini could not build a fingerprint");
+      return;
+    }
+    const d = res.data;
+    populateForm({
+      name: $("fp-name")?.value || "",
+      status: $("fp-status")?.value || "new",
+      os: $("fp-os")?.value || d.os,
+      browserApp: $("fp-browserApp")?.value || d.browserApp,
+      engine: $("fp-engine")?.value || "patched-chromium",
+      windowMode: $("fp-windowMode")?.value || "normal",
+      tags: ($("fp-tags")?.value || "").split(",").map((s) => s.trim()).filter(Boolean),
+      notes: $("fp-notes")?.value || "",
+      fingerprint: d.fingerprint
+    });
+    toast("AI fingerprint ready — review and Save. Websites see the operating system. This window stays Windows.");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Generate AI fingerprint"; }
   }
 }
 
@@ -932,16 +977,20 @@ function updateEngineHint() {
     if (isStealth) {
       note.innerHTML = "🦊 This profile's engine is <b>Stealthfox (Firefox)</b> - clicking Start opens patched Firefox, <b>not</b> Chrome/Brave/Edge. The Browser and Version options below apply only to the Chromium engine and are ignored by Stealthfox. Proxy, screen, timezone, language, and geolocation still apply.";
     } else if (engine === "patched-chromium") {
-      note.innerHTML = "This profile's engine is <b>Patched Chromium</b> - a bundled, patched browser (not your installed Chrome/Brave). Each profile gets a distinct hardware identity randomized at the engine level from a per-profile seed: canvas, WebGL/GPU, audio, fonts, timezone, CPU cores and RAM all differ between profiles and stay stable per profile. Two profiles look like two different physical PCs. First use downloads the engine (~190MB).";
+      note.innerHTML = "This profile's engine is <b>Patched Chromium</b>. A Mac or iPhone profile opens as a Mac browser window: rounded frame, traffic lights on the tab row, tabs, and the address bar, with the page inside that window. Websites still see the macOS device, including its graphics card. Linux and Windows keep this PC's window frame. Edge is sent as Edge. Chrome, Brave, and Privacy Shield are sent as Chrome 148. Android and iOS use the Windows or macOS device family, because this browser has no phone build. Each profile keeps its own canvas, audio, and graphics card. Do Not Track and cookie blocking apply when you turn them on. This PC's screen and installed fonts stay this PC's, and a typed user-agent is not sent. First use downloads the engine (~190MB).";
     } else if (engine === "real-brave") {
-      note.innerHTML = "This profile's engine is <b>Real Brave</b> - clicking Start opens installed Brave with a separate data folder for this profile. A per-profile extension applies canvas/WebGL/audio/screen/timezone/geolocation spoofing inside the real browser (no CDP), and proxy + user-agent are set at launch. This is the strongest real-browser mode.";
+      note.innerHTML = "This profile's engine is <b>Real Brave</b>. Start opens installed Brave with this profile's own data folder. The extension applies canvas, WebGL, audio, screen, timezone, and geolocation. The browser stays Brave on this PC's operating system. A typed user-agent is not sent, because it would disagree with Brave's client hints. Use Patched Chromium for a macOS, Linux, or Edge identity.";
     } else if (engine === "real-chrome") {
-      note.innerHTML = "This profile's engine is <b>Real Chrome</b> - clicking Start opens installed Chrome with a separate data folder. Real transport, proxy, user-agent, timezone and WebRTC/DNS controls apply, but current Chrome blocks command-line extensions, so the canvas/WebGL/audio JS spoof does <b>not</b> run. For full fingerprint spoofing in a real browser, use <b>Real Brave</b>.";
+      note.innerHTML = "This profile's engine is <b>Real Chrome</b>. Start opens installed Chrome with this profile's own data folder. Proxy, timezone, and WebRTC controls apply. Current Chrome blocks command-line extensions, so canvas, WebGL, and audio spoofing do not run, and the user-agent stays this PC's Chrome. Use <b>Real Brave</b> for spoofing inside an installed browser, or <b>Patched Chromium</b> for a macOS, Linux, or Edge identity.";
     }
   }
   const browserRow = $("fp-browser")?.closest(".pm-row");
   const verRow = $("browserVersionRow");
-  [browserRow, verRow].forEach((r) => { if (r) r.style.opacity = (isStealth || isReal) ? "0.45" : "1"; });
+  // Patched Chromium sends Edge when Edge is picked, so that row stays active.
+  // The version stays locked to this browser's Chrome 148 build.
+  const lockBrowser = isStealth || engine === "real-chrome" || engine === "real-brave";
+  if (browserRow) browserRow.style.opacity = lockBrowser ? "0.45" : "1";
+  if (verRow) verRow.style.opacity = (isStealth || isReal) ? "0.45" : "1";
 }
 
 // Locked "view" vs "edit" mode. Once a profile is saved it stays LOCKED — every
@@ -1113,6 +1162,23 @@ async function auditCurrentProfile() {
   renderProfileAudit(r.audit);
 }
 
+async function loadEngineCapabilities() {
+  const r = await msg("ENGINE_CAPABILITIES");
+  const caps = r && r.capabilities;
+  if (!caps) return;
+  const set = (id, text) => { const el = $(id); if (el && text) el.textContent = text; };
+  set("engineRuntimeValue", caps.runtimeLabel || caps.actualEngine);
+  set("engineNativeValue", caps.nativeEnginesLabel);
+  set("engineIdentityValue", caps.identityLabel);
+  const gemini = await msg("GEMINI_KEY_STATUS");
+  const base = (caps.fingerprintService && caps.fingerprintService.label) || "Patched Chromium and Stealthfox";
+  set("engineServiceValue", gemini && gemini.hasKey ? base + ". Gemini key saved." : base + ". Add a Gemini API key.");
+  const status = $("geminiStatus");
+  if (status) status.textContent = gemini && gemini.hasKey
+    ? "Gemini key saved on this PC. Generate an AI fingerprint, review it, then Save."
+    : "Add your Gemini API key. Generate builds a device for the operating system you picked. The key stays on this PC.";
+}
+
 function renderProfileAudit(audit) {
   const box = $("profileAuditResult");
   if (!box || !audit) return;
@@ -1120,6 +1186,9 @@ function renderProfileAudit(audit) {
   box.className = "pm-audit-result " + level;
   const rows = [];
   rows.push(`<span class="pm-audit-line ${audit.ok ? "pass" : "warn"}">Score: ${Number(audit.score) || 0}/100. Runtime: ${escHtml(audit.profile?.actualRuntime || "Electron Chromium")}.</span>`);
+  if (audit.summary && audit.summary.fingerprintService) {
+    rows.push(`<span class="pm-audit-line ${audit.summary.fingerprintServiceOk ? "pass" : "warn"}">Fingerprint service: ${escHtml(audit.summary.fingerprintService)}.</span>`);
+  }
   if (audit.summary) {
     rows.push(`<span class="pm-audit-line pass">Storage: ${escHtml(audit.summary.storage || audit.profile?.sessionPartition || "profile partition")}.</span>`);
     rows.push(`<span class="pm-audit-line pass">Screen: ${escHtml(audit.summary.screen || "missing")}.</span>`);
@@ -1877,6 +1946,8 @@ function bindSidebarEvents() {
 
 function bindFormEvents() {
   $("btnGenIdentity")?.addEventListener("click", generateCoherentIdentity);
+  $("btnSaveGeminiKey")?.addEventListener("click", saveGeminiKey);
+  $("btnGenAiFingerprint")?.addEventListener("click", generateAiFingerprint);
   $("btnSave").addEventListener("click", saveCurrentProfile);
   $("btnEdit")?.addEventListener("click", () => setEditMode(true));
   $("fp-engine")?.addEventListener("change", updateEngineHint);
@@ -2191,11 +2262,7 @@ async function startInCloud(profileId) {
 
 async function startInCloudOnce(profileId) {
   toast("Starting in the cloud…");
-  let r = await msg("PROFILE_START_CLOUD", { profileId });
-  if (!r.ok && r.needsSettings) {
-    if (!(await showCloudSettings())) return;
-    r = await msg("PROFILE_START_CLOUD", { profileId });
-  }
+  const r = await msg("PROFILE_START_CLOUD", { profileId });
   if (!r.ok) { alert("Cloud start failed\n\n" + (r.error || "unknown error")); return; }
   if (r.loginsWarning) alert("The cloud profile is running, but:\n\n" + r.loginsWarning);
   if (r.loginsMoved) toast(`Moved ${r.loginsMoved} saved logins/cookies to the cloud profile — don't use this account locally at the same time`);
@@ -2211,35 +2278,6 @@ async function stopInCloud(profileId) {
   if (!r.ok) { alert("Cloud stop failed\n\n" + (r.error || "unknown error")); return; }
   toast("Stopped in the cloud");
   await loadProfiles(); renderList();
-}
-
-function showCloudSettings() {
-  return new Promise(async (resolve) => {
-    const cur = await msg("CLOUD_GET_SETTINGS", {});
-    const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(4,6,10,.72);";
-    overlay.innerHTML =
-      '<div style="width:440px;max-width:92vw;background:#11151c;border:1px solid #2a3340;border-radius:14px;padding:20px;color:#e7edf5;">' +
-        '<div style="font-size:16px;font-weight:700;margin-bottom:12px;">☁ Cloud server</div>' +
-        '<label style="font-size:12px;color:#aab6c4;">Server address</label>' +
-        '<input id="cloudUrl" class="pm-inp" style="width:100%;margin:4px 0 10px" placeholder="https://ps-cloud.example.com" />' +
-        '<label style="font-size:12px;color:#aab6c4;">Team token</label>' +
-        '<input id="cloudToken" type="password" class="pm-inp" style="width:100%;margin:4px 0 14px" />' +
-        '<div id="cloudErr" style="color:#f3b1b1;font-size:12px;min-height:16px;margin-bottom:8px"></div>' +
-        '<div style="display:flex;gap:10px;justify-content:flex-end;">' +
-          '<button id="cloudCancel" class="pm-btn-sm">Cancel</button><button id="cloudSave" class="pm-btn-sm primary">Save</button>' +
-        '</div></div>';
-    document.body.appendChild(overlay);
-    overlay.querySelector("#cloudUrl").value = cur.url || "";
-    overlay.querySelector("#cloudToken").placeholder = cur.hasToken ? "(saved — leave blank to keep)" : "";
-    const done = (v) => { overlay.remove(); resolve(v); };
-    overlay.querySelector("#cloudCancel").onclick = () => done(false);
-    overlay.querySelector("#cloudSave").onclick = async () => {
-      const r = await msg("CLOUD_SET_SETTINGS", { url: overlay.querySelector("#cloudUrl").value, token: overlay.querySelector("#cloudToken").value });
-      if (!r.ok) { overlay.querySelector("#cloudErr").textContent = r.error || "Could not save"; return; }
-      done(true);
-    };
-  });
 }
 
 function showVpnLocationConfirm(r) {

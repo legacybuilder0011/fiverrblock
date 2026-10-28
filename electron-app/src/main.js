@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, Menu, Tray, nativeImage, dialog, protocol } = require("electron");
+const { app, BrowserWindow, Menu, Tray, nativeImage, dialog, protocol, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { ensureAppProtocol } = require("./app-protocol");
@@ -49,8 +49,9 @@ function logError(err) { logWrite("", String(err?.stack || err)); }
 function logInfo(msg) { logWrite("[info] ", msg); }
 let appReady = false;
 
-// Keep WebRTC from bypassing the selected profile network path with direct UDP.
-app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp");
+// Hide local network names in WebRTC. The IP policy is set per session:
+// profile windows block raw UDP, and the cloud viewer must be allowed to use
+// UDP or its video and mouse fall back to a slow TCP connection.
 app.commandLine.appendSwitch("enable-features", "WebRtcHideLocalIpsWithMdns");
 app.setName("Privacy Shield Browser");
 if (process.platform === "win32") app.setAppUserModelId("com.privacyshield.browser");
@@ -107,6 +108,7 @@ app.on("second-instance", () => {
 
 app.whenReady().then(async () => {
   appReady = true;
+  try { session.defaultSession.setWebRTCIPHandlingPolicy("disable_non_proxied_udp"); } catch (err) { logError(err); }
 
   // Protocol handlers are scoped to an Electron session. Profile browser
   // sessions register the same handler when they are configured.
@@ -147,7 +149,12 @@ app.whenReady().then(async () => {
 
 function openLoginOrMain() {
   const session = authStore.getSession();
-  if (session && session.userId) {
+  // The local "logged in" file can outlive the Supabase login (a refused token
+  // refresh wipes it), which silently stopped all sync. Also make users who
+  // logged in before 1.18.35 sign in once so the sync key gets created.
+  const cloud = require("./cloud-sync");
+  const cloudOk = !cloud.cloudReady() || (cloud.getCurrentUserId() === (session && session.userId) && cloud.hasSyncKey());
+  if (session && session.userId && cloudOk) {
     createMainWindow();
     restoreOpenProfiles();
   } else {

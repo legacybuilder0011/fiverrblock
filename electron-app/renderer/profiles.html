@@ -199,24 +199,34 @@
           <div class="pm-engine-grid">
             <div>
               <span class="pm-engine-label">Runtime</span>
-              <span class="pm-engine-value">Bundled Chromium or installed real browser</span>
+              <span class="pm-engine-value" id="engineRuntimeValue">Patched Chromium, Stealthfox, Electron, or installed Chrome/Brave</span>
             </div>
             <div>
               <span class="pm-engine-label">Native engines</span>
-              <span class="pm-engine-value">Chrome, Brave, Stealthfox</span>
+              <span class="pm-engine-value" id="engineNativeValue">Patched Chromium, Stealthfox, Chrome, Brave</span>
             </div>
             <div>
               <span class="pm-engine-label">Browser identities</span>
-              <span class="pm-engine-value">Chrome, Brave, Edge identities plus real Chrome/Brave engines</span>
+              <span class="pm-engine-value" id="engineIdentityValue">Privacy Shield, Chrome, Brave, Edge</span>
             </div>
             <div>
               <span class="pm-engine-label">C++ / AI fingerprint service</span>
-              <span class="pm-engine-value">Not included</span>
+              <span class="pm-engine-value" id="engineServiceValue">Patched Chromium and Stealthfox</span>
             </div>
           </div>
           <div id="profileAuditResult" class="pm-audit-result">
             Save or select a profile, then run the audit to check isolated storage, OS, browser, mobile, screen, fonts, GPU, language, timezone, and runtime consistency.
           </div>
+          <div class="pm-section-title" style="margin-top:12px">AI fingerprint (Gemini)</div>
+          <div class="pm-row">
+            <label class="pm-label">API key</label>
+            <input type="password" id="geminiApiKey" class="pm-input" placeholder="Paste your Gemini API key" autocomplete="off" data-always-enabled="1" />
+          </div>
+          <div class="pm-row">
+            <button type="button" id="btnSaveGeminiKey" class="pm-btn pm-btn-sm" data-always-enabled="1">Save Gemini key</button>
+            <button type="button" id="btnGenAiFingerprint" class="pm-btn pm-btn-sm">Generate AI fingerprint</button>
+          </div>
+          <div class="pm-hint" id="geminiStatus">Add your Gemini API key. Generate builds a device for the operating system you picked. The key stays on this PC.</div>
         </div>
 
         <div class="pm-section">

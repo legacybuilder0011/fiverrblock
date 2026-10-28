@@ -22,8 +22,8 @@ Privacy Shield Browser is a branded Electron browser shell built on Chromium. It
 - It does not patch Chromium/Blink to falsify `navigator.webdriver`.
 - It does not remove headless or automation command-line switches.
 - It does not install Chrome Web Store extensions directly; use unpacked extension folders.
-- It does not include C++-level Chromium engine patches or an AI-generated daily fingerprint service.
-- It does not ship a Firefox/Gecko engine. Firefox and Safari profile choices are browser identity templates only; active profile windows run on Electron's bundled Chromium.
+- Patched Chromium applies a per-profile fingerprint seed in the browser engine: canvas, audio, graphics card, CPU count, operating system, and browser brand. Stealthfox applies a stable Firefox fingerprint. Identities are generated on this PC from the profile seed and the proxy or VPN exit. A Gemini API key saved on this PC can generate a device for the operating system you picked. There is no remote daily device feed.
+- Stealthfox is the Firefox engine. Safari remains an identity template. The in-app window uses Electron Chromium when that engine is selected. Real Chrome and Real Brave launch the installed browsers.
 - It does not provide residential proxies.
 - It does not create or host real Android cloud phones by itself. Real phones must come from an external provider; Privacy Shield stores the records and opens the provider console.
 - It does not guarantee that websites cannot correlate accounts. Network reputation, login behavior, payment details, reused content, and site-side risk systems are outside the browser container.

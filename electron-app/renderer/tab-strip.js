@@ -30,6 +30,12 @@ let browserMeta = null;
 let suppressUrlSync = false;
 let downloadStatusTimer = null;
 
+// Mac traffic lights (frameless macOS-profile window).
+document.getElementById("mac-lights")?.addEventListener("click", (e) => {
+  const action = e.target && e.target.dataset && e.target.dataset.win;
+  if (action) api.invoke("BROWSER_WINDOW_ACTION", { action });
+});
+
 function render() {
   // Wipe everything except the new-tab button
   Array.from(tabsRow.querySelectorAll(".tab")).forEach((t) => t.remove());

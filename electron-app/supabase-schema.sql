@@ -62,3 +62,14 @@ create policy "own proxies delete" on public.proxies for delete using (auth.uid(
 
 drop policy if exists "own open_profiles all" on public.open_profiles;
 create policy "own open_profiles all" on public.open_profiles for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- Browser-data backups (logins/passwords/history), end-to-end encrypted by the app.
+-- Each user can only touch files under their own <user id>/ folder.
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('profile-backups', 'profile-backups', false, 52428800)
+on conflict (id) do nothing;
+
+drop policy if exists "own profile backups" on storage.objects;
+create policy "own profile backups" on storage.objects for all to authenticated
+  using (bucket_id = 'profile-backups' and (storage.foldername(name))[1] = auth.uid()::text)
+  with check (bucket_id = 'profile-backups' and (storage.foldername(name))[1] = auth.uid()::text);

@@ -9,6 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
+const { cloudDesktopScreen } = require("./cloud-desktop-screen");
 
 const ROOT = "/opt/ps-cloud";
 const PORT = 8320;
@@ -21,7 +22,7 @@ const PROFILES_DIR = path.join(ROOT, "profiles");
 
 // Only fingerprint/locale flags may come from the client; everything that touches
 // storage, extensions, proxy or sandboxing is fixed by the box.
-const ALLOWED_ARG = /^--(fingerprint(-[a-z-]+)?|lang|accept-lang|timezone)=[^\s]{1,200}$/;
+const ALLOWED_ARG = /^--(fingerprint(-[a-z-]+)?|lang|accept-lang|timezone)=[^\s]{1,200}$|^--disable-spoofing=font$/;
 
 const docker = (args) => new Promise((resolve) => {
   execFile("docker", args, { timeout: 120000 }, (err, stdout, stderr) =>
@@ -81,16 +82,36 @@ async function identify(req) {
 // Owner label of a box: null = no such box, "" = created before accounts.
 async function boxOwner(id) {
   const r = await docker(["inspect", "-f", "{{index .Config.Labels \"ps.owner\"}}", boxName(id)]);
-  return r.ok ? (r.out || "") : null;
+  if (r.ok) return r.out || "";
+  if (/No such (object|container)/i.test(r.err)) return null;
+  throw new Error("Could not verify cloud profile ownership");
 }
-// Admin → any box. A user → their own boxes, a not-yet-existing one (to start
-// it), and unlabelled pre-accounts boxes (ponytail: those predate per-user
-// ownership and get the label on their next start).
-async function canAccess(who, id) {
-  if (!who) return false;
+// Persist ownership across container removal. Legacy boxes must be assigned
+// by an administrator; opening a URL must never grant ownership.
+const CLAIMS_FILE = path.join(ROOT, "runner", "claims.json");
+function loadClaims() { try { return JSON.parse(fs.readFileSync(CLAIMS_FILE, "utf8")); } catch (_) { return {}; } }
+function claimBox(id, who) {
+  const c = loadClaims();
+  if (!c[id]) {
+    c[id] = who;
+    const tmp = CLAIMS_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(c), { mode: 0o600 });
+    fs.renameSync(tmp, CLAIMS_FILE);
+  }
+  return c[id] === who;
+}
+
+async function canAccess(who, id, allowNew = false) {
+  if (!who || !safeId(id)) return false;
   if (who === "admin") return true;
   const owner = await boxOwner(id);
-  return owner === null || owner === "" || owner === who;
+  if (owner) {
+    if (owner !== who) return false;
+    return claimBox(id, who);
+  }
+  const claimed = loadClaims()[id];
+  if (claimed) return claimed === who;
+  return allowNew && owner === null && !fs.existsSync(path.join(PROFILES_DIR, id));
 }
 
 function send(res, code, obj) {
@@ -128,9 +149,13 @@ async function start(body, who) {
   const args = Array.isArray(body.args) ? body.args.map(String) : [];
   const bad = args.find((a) => !ALLOWED_ARG.test(a));
   if (bad) return { code: 400, body: { ok: false, error: `Flag not allowed: ${bad.slice(0, 60)}` } };
-  const w = Math.max(800, Math.min(3840, Number(body.width) || 1920));
-  const h = Math.max(600, Math.min(2160, Number(body.height) || 1080));
+  const desk = cloudDesktopScreen(body.width, body.height);
+  const w = desk.width;
+  const h = desk.height;
   const url = /^https?:\/\/[^\s]{1,2000}$/.test(String(body.url || "")) ? String(body.url) : "";
+
+  // Reserve before the first asynchronous operation, including simultaneous starts.
+  if (who !== "admin" && !claimBox(id, who)) return { code: 403, body: { ok: false, error: "This cloud profile belongs to another account." } };
 
   const running = await docker(["inspect", "-f", "{{.State.Running}}", boxName(id)]);
   if (running.ok && running.out === "true") {
@@ -167,8 +192,7 @@ async function start(body, who) {
     const rtcPort = await freeRtcPort();
     if (!rtcPort) return { code: 503, body: { ok: false, error: "No free video ports on this server" } };
     const pw = crypto.randomBytes(12).toString("hex");
-    // ponytail: neko's Xorg only has fixed modes — snap to the nearest common one.
-    const screen = w >= 1900 ? "1920x1080" : w >= 1500 ? "1600x900" : "1280x720";
+    const screen = desk.screen;
     streamArgs = [
       "-p", "127.0.0.1::8080", "-p", `${rtcPort}:${rtcPort}/udp`, "-p", `${rtcPort}:${rtcPort}/tcp`,
       "--shm-size", "1g",
@@ -180,6 +204,12 @@ async function start(body, who) {
       "-e", "NEKO_SESSION_IMPLICIT_HOSTING=true",
       "-e", `NEKO_WEBRTC_UDPMUX=${rtcPort}`, "-e", `NEKO_WEBRTC_TCPMUX=${rtcPort}`,
       "-e", "NEKO_WEBRTC_ICELITE=true", "-e", `NEKO_WEBRTC_NAT1TO1=${PUBLIC_IP}`,
+      // The client draws the cursor. Leaving it in the video makes the mouse
+      // follow the encoded picture, which is the slow one. The small VP8
+      // buffer keeps a click from waiting behind a multi-second encode queue.
+      "-e", "NEKO_CAPTURE_VIDEO_SHOW_POINTER=false",
+      "-e", "NEKO_CAPTURE_VIDEO_CODEC=vp8",
+      "-e", "NEKO_CAPTURE_VIDEO_PIPELINE=ximagesrc display-name={display} show-pointer=false use-damage=false ! video/x-raw,framerate=30/1 ! videoconvert ! queue max-size-buffers=1 leaky=downstream ! vp8enc name=encoder deadline=1 cpu-used=8 end-usage=cbr target-bitrate=2500000 threads=2 buffer-size=400 buffer-initial-size=200 buffer-optimal-size=300 keyframe-max-dist=30 min-quantizer=4 max-quantizer=45 undershoot=95 ! appsink name=appsink",
       RTC_IMAGE
     ];
   } else {
@@ -233,11 +263,12 @@ async function importCookies(body) {
 }
 
 async function list(who) {
+  const claims = loadClaims();
   const r = await docker(["ps", "--filter", "label=ps.profile", "--format", "{{.Label \"ps.profile\"}}\t{{.Status}}\t{{.Label \"ps.mode\"}}\t{{.Label \"ps.owner\"}}"]);
   const boxes = r.out ? r.out.split("\n").map((l) => {
     const [profileId, status, mode, owner] = l.split("\t");
     const relay = relays.get(profileId);
-    return { profileId, owner: owner || "", status, mode: mode || "proxy", paused: /Paused/.test(status), tunnels: relay ? relay.pool.length : 0 };
+    return { profileId, owner: owner || claims[profileId] || "", status, mode: mode || "proxy", paused: /Paused/.test(status), tunnels: relay ? relay.pool.length : 0 };
   }).filter((b) => who === "admin" || b.owner === who) : []; // each user sees only their own boxes
   return { code: 200, body: { ok: true, boxes } };
 }
@@ -265,6 +296,17 @@ function openRelay(id, gw, port) {
       const splice = (up) => {
         up._psActive = true;
         relay.active++;
+        // Observe only once forwarding is ready: a data listener on a queued
+        // socket would otherwise consume and lose the browser's CONNECT bytes.
+        let firstLine = "";
+        const observe = (d) => {
+          firstLine += d.toString("latin1", 0, Math.max(0, 1024 - firstLine.length));
+          if (!firstLine.includes("\n") && firstLine.length < 1024) return;
+          boxSock.removeListener("data", observe);
+          const m = /^CONNECT ([^\s:]+):\d+ HTTP\/1\.[01]\r?\n/.exec(firstLine);
+          if (m && CHECK_HOSTS.test(m[1])) relay.lastCheckAt = Date.now();
+        };
+        boxSock.on("data", observe);
         boxSock.pipe(up); up.pipe(boxSock);
         const done = () => { boxSock.destroy(); up.destroy(); };
         boxSock.on("close", done); up.on("close", done);
@@ -484,7 +526,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url === "/api/start") {
       const body = await readJson(req);
       if (!body) return send(res, 400, { ok: false, error: "bad json" });
-      if (!(await canAccess(who, safeId(body.profileId)))) return forbidden();
+      if (!(await canAccess(who, safeId(body.profileId), true))) return forbidden();
       const r = await start(body, who); return send(res, r.code, r.body);
     }
     if (req.method === "POST" && url === "/api/stop") {
@@ -509,7 +551,10 @@ const server = http.createServer(async (req, res) => {
       const all = loadAlerts();
       if (topic) all[who] = { topic }; else delete all[who];
       saveAlerts(all);
-      if (topic && body.test) await notifyPhone(topic, "✅ Privacy Shield alerts are on", "You'll get a message here when a cloud profile needs a Press & Hold.", null);
+      if (topic && body.test) {
+        const delivered = await notifyPhone(topic, "✅ Privacy Shield alerts are on", "You'll get a message here when a cloud profile needs a Press & Hold.", null);
+        if (!delivered) return send(res, 502, { ok: false, error: "Settings saved, but the notification service did not accept the test. Try again." });
+      }
       return send(res, 200, { ok: true });
     }
     if (req.method === "POST" && url.startsWith("/api/put?")) {
@@ -615,33 +660,54 @@ async function notifyPhone(topic, title, message, link) {
     // JSON publish: HTTP headers can't carry the emoji in titles.
     const r = await fetch("https://ntfy.sh/", {
       method: "POST",
+      signal: AbortSignal.timeout(10000),
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ topic, title, message, priority: 4, tags: ["warning"],
         ...(link ? { click: link, actions: [{ action: "view", label: "Solve now", url: link }] } : {}) })
     });
-    if (!r.ok) console.error("ntfy", r.status);
-  } catch (err) { console.error("ntfy", err.message); }
+    if (!r.ok) console.error("ntfy publish failed status=" + r.status);
+    return r.ok;
+  } catch (_) { console.error("ntfy publish failed (network or timeout)"); return false; }
 }
 
 const lastAlert = new Map(); // box id -> time (re-alert at most every 10 min)
+// A network hint, not proof that a challenge is visible.
+const CHECK_HOSTS = /(^|\.)(captcha\.px-(cdn|cloud)\.net|perimeterx\.net)$/i;
 async function challengeWatch() {
   const alerts = loadAlerts();
   if (!Object.keys(alerts).length) return;
+  const claims = loadClaims();
   const r = await docker(["ps", "--filter", "label=ps.profile", "--format", "{{.Label \"ps.profile\"}}\t{{.Label \"ps.owner\"}}\t{{.Label \"ps.stream\"}}\t{{.Label \"ps.name\"}}\t{{.Status}}"]);
   for (const line of (r.out ? r.out.split("\n") : [])) {
     const [id, owner, stream, name, status] = line.split("\t");
-    const topic = (alerts[owner] || {}).topic;
+    const effectiveOwner = owner || claims[id];
+    const topic = (alerts[effectiveOwner] || {}).topic;
     if (!topic || /Paused/.test(status)) continue;
     const display = stream === "rtc" ? ":99.0" : ":1";
     const t = await docker(["exec", "-u", stream === "rtc" ? "1000" : "1500", "-e", `DISPLAY=${display}`, boxName(id), "xdotool", "getactivewindow", "getwindowname"]);
-    if (!t.ok || !CHALLENGE.test(t.out)) continue;
+    const byTitle = t.ok && CHALLENGE.test(t.out);
+    let byNet = Date.now() - ((relays.get(id) || {}).lastCheckAt || 0) < 180e3;
+    if (!byNet) {
+      const log = await docker(["exec", boxName(id), "sh", "-c", "tail -3 /tmp/ps-checks.log 2>/dev/null"]);
+      const last = Math.max(0, ...(log.out || "").split("\n").map((l) => Number(l.split(" ")[0]) || 0));
+      byNet = Date.now() - last < 180e3;
+    }
+    if (!byTitle && !byNet) continue;
     if (Date.now() - (lastAlert.get(id) || 0) < 10 * 60e3) continue;
-    lastAlert.set(id, Date.now());
-    const link = `${PUBLIC_URL}/view/${id}/?p=${encodeURIComponent(signPass(owner, 2 * 3600e3))}`;
-    await notifyPhone(topic, `🛑 ${name || id} needs a Press & Hold`, `"${t.out.replace(/ - Chromium$/, "").slice(0, 80)}" — tap to open it on your phone and solve it.`, link);
-    console.log(`challenge alert box=${id} title=${t.out.slice(0, 60)}`);
+    const link = `${PUBLIC_URL}/view/${id}/?p=${encodeURIComponent(signPass(effectiveOwner, 2 * 3600e3))}`;
+    const accepted = await notifyPhone(topic, `🛑 ${name || id} ${byTitle ? "needs your attention" : "may need a human check"}`, "Tap to open this profile on your phone and check the page.", link);
+    if (accepted) {
+      lastAlert.set(id, Date.now());
+      console.log(`challenge alert accepted box=${id} signal=${byTitle ? "title" : "network"}`);
+    }
   }
 }
-setInterval(() => { challengeWatch().catch((e) => console.error("watch", e.message)); }, 30000);
+let watchBusy = false;
+setInterval(async () => {
+  if (watchBusy) return;
+  watchBusy = true;
+  try { await challengeWatch(); } catch (e) { console.error("watch", e.message); }
+  finally { watchBusy = false; }
+}, 30000);
 
 server.listen(PORT, "127.0.0.1", () => console.log(`ps-cloud runner on 127.0.0.1:${PORT}`));

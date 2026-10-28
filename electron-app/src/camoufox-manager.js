@@ -108,15 +108,22 @@ function mapOs(osName) {
   return "windows";
 }
 
-const LANG_BY_CC = { us: "en-US", gb: "en-GB", ca: "en-CA", au: "en-AU", de: "de-DE", nl: "nl-NL", fr: "fr-FR", ch: "de-DE", se: "sv-SE", jp: "ja-JP", sg: "en-SG", br: "pt-BR", in: "hi-IN", ae: "ar-AE", ru: "ru-RU", tr: "tr-TR", ng: "en-US", it: "it-IT", es: "es-ES", pt: "pt-PT", kr: "ko-KR", cn: "zh-CN" };
-
 function localeFor(profile) {
   const fp = profile.fingerprint || {};
   const px = profile.proxy || {};
   if (fp.language === "manual" && fp.languageValue) return fp.languageValue;
-  if (fp.language && fp.language !== "auto") return fp.language;
-  // "auto": derive from the resolved VPN/proxy country so the locale matches the exit.
-  if (px.detectedCountryCode && LANG_BY_CC[String(px.detectedCountryCode).toLowerCase()]) return LANG_BY_CC[String(px.detectedCountryCode).toLowerCase()];
+  if (fp.language && fp.language !== "auto" && fp.language !== "manual") return fp.language;
+  // Same country table as Patched Chromium. A Swiss exit is de-CH, fr-CH, or
+  // it-CH. An Indian exit is en-IN or hi-IN. The old short map forced de-DE and hi-IN.
+  const cc = px.detectedCountryCode || fp.countryCode;
+  if (cc) {
+    try {
+      const store = require("./profile-store");
+      if (typeof store.pickLanguageForCountry === "function") {
+        return store.pickLanguageForCountry(fp.fingerprintSeed || profile.id || "default", cc);
+      }
+    } catch (_) {}
+  }
   return "en-US";
 }
 
@@ -180,14 +187,9 @@ function profileToOptions(profile) {
     opts.geoip = true; // last resort: let Camoufox detect via the proxy
   }
 
-  // Screen + window sizing. The ACTUAL window must fill the real display's work
-  // area (so it opens usable and maximizes to full screen), and navigator.screen
-  // must be >= the window — a window larger than the reported screen is both an
-  // impossible tell AND makes the OS clamp the window to "half". So report the
-  // real display as navigator.screen and open the window to the work area.
-  // Screen size is low-entropy and realistically shared by same-monitor profiles;
-  // per-profile uniqueness comes from canvas/GPU/audio/fonts, not screen size.
-  let dispScreen = null, dispWindow = null;
+  // Screen comes from the profile. The window is clamped to this display so it
+  // still fits, and it is never larger than the screen the page is told about.
+  let dispScreen = null;
   try {
     const { screen: elScreen } = require("electron");
     const disp = elScreen && elScreen.getPrimaryDisplay ? elScreen.getPrimaryDisplay() : null;
@@ -195,11 +197,22 @@ function profileToOptions(profile) {
       const full = disp.size || {};
       const wa = disp.workAreaSize || full;
       if (full.width && full.height) dispScreen = { w: Math.round(full.width), h: Math.round(full.height), aw: Math.round(wa.width || full.width), ah: Math.round(wa.height || full.height) };
-      if (wa.width && wa.height) dispWindow = [Math.max(1000, Math.round(wa.width)), Math.max(680, Math.round(wa.height))];
     }
   } catch (_) {}
-  if (dispScreen) opts.screen = { minWidth: dispScreen.w, minHeight: dispScreen.h, maxWidth: dispScreen.w, maxHeight: dispScreen.h };
-  if (dispWindow) opts.window = dispWindow; // camoufox-js expects a [width, height] tuple
+  const wantedW = Number(fp.screenWidth);
+  const wantedH = Number(fp.screenHeight);
+  const hasWanted = Number.isFinite(wantedW) && Number.isFinite(wantedH) && wantedW >= 320 && wantedH >= 480;
+  const reported = hasWanted
+    ? { w: Math.round(Math.min(3840, wantedW)), h: Math.round(Math.min(2160, wantedH)) }
+    : (dispScreen ? { w: dispScreen.w, h: dispScreen.h } : null);
+  let windowSize = null;
+  if (reported) {
+    const outerW = dispScreen ? Math.min(reported.w, dispScreen.aw) : reported.w;
+    const outerH = dispScreen ? Math.min(reported.h, dispScreen.ah) : reported.h;
+    opts.screen = { minWidth: reported.w, minHeight: reported.h, maxWidth: reported.w, maxHeight: reported.h };
+    windowSize = [Math.max(320, outerW), Math.max(480, outerH)];
+    opts.window = windowSize;
+  }
 
   // Stable per-profile fingerprint (identical across sessions, unique per profile).
   const stableFp = getStableFingerprint(profile);
@@ -207,25 +220,26 @@ function profileToOptions(profile) {
     // CRITICAL: when a custom fingerprint is passed, camoufox-js IGNORES opts.window
     // (generateFingerprint — which applies the window tuple — only runs when NO
     // fingerprint is given). The actual on-screen window is sized from the
-    // fingerprint's own screen.outer/inner values. So write a full-work-area,
-    // internally-consistent geometry into the fingerprint's screen so Firefox
-    // opens filling the display instead of the generator's mismatched size.
-    if (dispScreen && stableFp.screen && typeof stableFp.screen === "object") {
+    // fingerprint's own screen.outer/inner values. Write the profile's screen
+    // there, and keep the window no larger than this display.
+    if (reported && stableFp.screen && typeof stableFp.screen === "object") {
       const s = stableFp.screen;
       const chrome = 88; // Firefox tab+toolbar height (approx) so inner < outer
-      s.width = dispScreen.w; s.height = dispScreen.h;                 // navigator.screen
-      s.availWidth = dispScreen.aw; s.availHeight = dispScreen.ah;
+      const outerW = windowSize ? windowSize[0] : reported.w;
+      const outerH = windowSize ? windowSize[1] : reported.h;
+      s.width = reported.w; s.height = reported.h;
+      s.availWidth = reported.w; s.availHeight = Math.max(400, reported.h - 40);
       s.availTop = 0; s.availLeft = 0;
-      s.outerWidth = dispScreen.aw; s.outerHeight = dispScreen.ah;     // the real window fills the work area
-      s.innerWidth = dispScreen.aw; s.innerHeight = Math.max(400, dispScreen.ah - chrome);
+      s.outerWidth = outerW; s.outerHeight = outerH;
+      s.innerWidth = outerW; s.innerHeight = Math.max(400, outerH - chrome);
       s.screenX = 0; s.screenY = 0;
       if ("pageXOffset" in s) s.pageXOffset = 0;
       if ("pageYOffset" in s) s.pageYOffset = 0;
-      if ("clientWidth" in s) s.clientWidth = dispScreen.aw;
-      if ("clientHeight" in s) s.clientHeight = Math.max(400, dispScreen.ah - chrome);
+      if ("clientWidth" in s) s.clientWidth = outerW;
+      if ("clientHeight" in s) s.clientHeight = Math.max(400, outerH - chrome);
     }
     opts.fingerprint = stableFp;
-    if (!dispScreen) delete opts.screen; // fall back to fingerprint screen only if no display info
+    if (!reported) delete opts.screen;
     // Camoufox otherwise re-randomizes the GPU, canvas AA offset and font spacing
     // on EVERY launch (separate from the fingerprint object). Pin all three per
     // profile so the WHOLE fingerprint — GPU, canvas, text — is identical across

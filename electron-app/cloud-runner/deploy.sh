@@ -12,11 +12,11 @@ cd "$(dirname "$0")/.."
 
 retry "${SSH[@]}" 'mkdir -p /opt/ps-cloud/image/vendor /opt/ps-cloud/image-rtc /opt/ps-cloud/runner /opt/ps-cloud/profiles'
 retry scp -q -o ConnectTimeout=15 -i "$KEY" cloud-runner/image/Dockerfile cloud-runner/image/entrypoint.sh cloud-runner/image/start-bridge.js \
-  cloud-runner/image/fonts.conf cloud-runner/image/openbox-rc.xml cloud-runner/image/import-cookies.js \
+  cloud-runner/image/fonts.conf cloud-runner/image/openbox-rc.xml cloud-runner/image/import-cookies.js cloud-runner/image/cloud-fonts.js cloud-runner/image/cloud-privacy.js \
   src/local-proxy-bridge.js "$HOST:/opt/ps-cloud/image/"
 retry scp -q -o ConnectTimeout=15 -i "$KEY" cloud-runner/image-rtc/Dockerfile cloud-runner/image-rtc/browser.conf cloud-runner/image-rtc/run-browser.sh "$HOST:/opt/ps-cloud/image-rtc/"
 retry scp -q -r -o ConnectTimeout=15 -i "$KEY" vendor/chromium-web-store "$HOST:/opt/ps-cloud/image/vendor/"
-retry scp -q -o ConnectTimeout=15 -i "$KEY" cloud-runner/runner/server.js "$HOST:/opt/ps-cloud/runner/"
+retry scp -q -o ConnectTimeout=15 -i "$KEY" cloud-runner/runner/server.js cloud-runner/runner/cloud-desktop-screen.js "$HOST:/opt/ps-cloud/runner/"
 
 retry "${SSH[@]}" 'cat > /opt/ps-cloud/deploy-remote.sh' <<'REMOTE'
 set -euo pipefail

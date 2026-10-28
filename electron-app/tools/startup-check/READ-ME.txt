@@ -1,0 +1,10 @@
+Privacy Shield startup check
+
+Run this on the TEAMMATE'S PC where New Profile 2 does not open.
+
+1. Extract this ZIP to a folder.
+2. Double-click RUN-STARTUP-CHECK.cmd. Do not run as administrator.
+3. Wait up to a minute. A temporary blank Chromium window may appear and close.
+4. Send Privacy-Shield-Startup-Report.txt from the Desktop back to support.
+
+This does not sign into accounts, open saved profiles, change proxies, or reset browser data. It launches the installed engine using a disposable profile with internet requests routed to an unused localhost port. The report contains Windows/engine versions, engine file presence/sizes, process/window counts, and filtered startup errors. It does not include browser history, cookies, passwords, proxy credentials, or full process command lines. The launcher uses a process-scoped PowerShell execution policy; it does not change the machine policy.
