@@ -53,7 +53,7 @@ proxy.on("connect", (req, sock, head) => {
 function profile(id) {
   return {
     id, name: "mac test", engine: "patched-chromium", os: "macos", browserApp: "chrome",
-    fingerprint: { seed: 4242, timezone: "America/Chicago", language: "en-US", hardwareConcurrency: 8 },
+    fingerprint: { seed: 4242, timezone: "manual", timezoneValue: "America/Chicago", language: "en-US", hardwareConcurrency: 8 },
     proxy: { enabled: true, networkMode: "proxy", scheme: "http", host: "127.0.0.1", port: proxy.address().port, username: "teamuser", password: "teampass" }
   };
 }
@@ -124,11 +124,6 @@ async function withPage(fn) {
   check("traffic went through the profile's proxy (with login)", tunnels > 0, `${tunnels} tunnels`);
 
   // ── account backup → restore → cookie survives ──
-  await withPage(async (page) => {
-    await page.goto("https://example.com/", { waitUntil: "load" });
-    await page.evaluate(() => { document.cookie = "ps_e2e=kept; max-age=86400; path=/; secure"; });
-    await page.waitForTimeout(1500);
-  });
   const store = {};
   fs.mkdirSync(path.join(tmp, "privacy-shield"), { recursive: true });
   fs.writeFileSync(path.join(tmp, "privacy-shield", "proxy-sync-key.bin"), crypto.scryptSync("pw", "ps-proxy-sync:u1", 32));
@@ -136,7 +131,17 @@ async function withPage(fn) {
   cloud.uploadBackup = async (id, buf) => { store[id] = { buf, at: "t" + Date.now() }; };
   cloud.backupInfo = async (id) => (store[id] ? { updatedAt: store[id].at } : null);
   cloud.downloadBackup = async (id) => store[id].buf;
-  await rbm.closeProfile("macprobe1"); // exit → backup in background
+  await withPage(async (page, ctx) => {
+    await page.goto("https://example.com/", { waitUntil: "load" });
+    await page.evaluate(() => { document.cookie = "ps_e2e=kept; max-age=86400; path=/; secure"; });
+    const set = (await ctx.cookies("https://example.com")).some((c) => c.name === "ps_e2e");
+    check("cookie set in first session", set, "");
+    // Quit like a user closing the window (graceful), so Chromium writes cookies to disk.
+    const cdp = await ctx.browser().newBrowserCDPSession();
+    await cdp.send("Browser.close").catch(() => {});
+  });
+  for (let i = 0; i < 30 && rbm.isProfileRunning("macprobe1"); i++) await new Promise((r) => setTimeout(r, 1000));
+  await rbm.closeProfile("macprobe1"); // no-op if already exited; exit → backup in background
   for (let i = 0; i < 60 && !store.macprobe1; i++) await new Promise((r) => setTimeout(r, 1000));
   check("backup uploaded on close", Boolean(store.macprobe1), store.macprobe1 ? `${Math.round(store.macprobe1.buf.length / 1024)} KB` : "nothing");
 
