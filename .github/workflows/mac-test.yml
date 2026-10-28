@@ -24,6 +24,7 @@ jobs:
       - name: Engine, identity, proxy, WebRTC, fonts, backup
         run: node test/mac-e2e.cjs
       - name: App starts and stays up
+        if: always()
         run: |
           npx electron . > app.log 2>&1 &
           APP=$!

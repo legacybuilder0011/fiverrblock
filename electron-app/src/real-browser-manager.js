@@ -824,6 +824,10 @@ function fetchPatchedChromium(onProgress) {
     if (process.platform !== "win32" && !IS_MAC) {
       return { ok: false, error: "The patched-chromium engine ships Windows and macOS builds only." };
     }
+    // The macOS build is Apple-chip only (Intel Macs fail with "bad CPU type").
+    if (IS_MAC && process.arch !== "arm64" && !app.runningUnderARM64Translation) {
+      return { ok: false, error: "Patched Chromium on Mac needs an Apple chip (M1 or newer). On this Intel Mac use the Built-in or Brave engine." };
+    }
     const https = require("https");
     const root = patchedChromiumRoot();
     fs.mkdirSync(root, { recursive: true });
