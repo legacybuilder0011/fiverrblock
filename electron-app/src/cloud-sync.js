@@ -150,6 +150,24 @@ async function downloadBackup(profileId) {
   return Buffer.from(await data.arrayBuffer());
 }
 
+// This PC's id (also used for VPN-mode cloud profiles).
+let _deviceId = null;
+function deviceId() {
+  if (_deviceId) return _deviceId;
+  const file = path.join(app.getPath("userData"), "device-id");
+  try { _deviceId = fs.readFileSync(file, "utf8").trim(); } catch (_) {}
+  if (!/^[a-f0-9]{32}$/.test(_deviceId || "")) { _deviceId = crypto.randomBytes(16).toString("hex"); fs.writeFileSync(file, _deviceId); }
+  return _deviceId;
+}
+
+// One PC at a time per profile. mode: open | force | beat | release (see profile_lock in supabase-schema.sql).
+async function profileLock(profileId, mode) {
+  if (!cloudReady() || !getCurrentUserId()) return null;
+  const { data, error } = await supabase.rpc("profile_lock", { p_profile: profileId, p_device: deviceId(), p_name: os.hostname(), p_mode: mode });
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 function sanitizeProfileForCloud(profile) {
   const clone = cloneJson(profile, {});
   delete clone.cookies;
@@ -480,7 +498,7 @@ module.exports = {
   pullProfiles, pushProfile, pushAllProfiles, deleteProfileRemote,
   pullProxies, pushAllProxies, deleteProxyRemote,
   sealProxySecrets, openProxySecrets, sealBuffer, openBuffer,
-  backupInfo, uploadBackup, downloadBackup, logLine, cloudReady,
+  backupInfo, uploadBackup, downloadBackup, logLine, cloudReady, deviceId, profileLock,
   hasSyncKey: () => fs.existsSync(PROXY_KEY_FILE),
   fullSync
 };

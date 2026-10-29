@@ -3480,14 +3480,7 @@ let cloudGateSig = null;
 // This PC's id. A VPN-mode cloud profile is served ONLY by the PC that started it
 // (profiles sync to teammates via Supabase; two PCs serving one profile would
 // split its traffic across two VPN IPs).
-let _deviceId = null;
-function thisDeviceId() {
-  if (_deviceId) return _deviceId;
-  const file = path.join(require("electron").app.getPath("userData"), "device-id");
-  try { _deviceId = fs.readFileSync(file, "utf8").trim(); } catch (_) {}
-  if (!/^[a-f0-9]{32}$/.test(_deviceId || "")) { _deviceId = require("crypto").randomBytes(16).toString("hex"); fs.writeFileSync(file, _deviceId); }
-  return _deviceId;
-}
+function thisDeviceId() { return require("./cloud-sync").deviceId(); }
 
 const networkModeOf = (p) => { const x = (p && p.proxy) || {}; return x.networkMode || (x.enabled ? "proxy" : "direct"); };
 const placeText = (n) => [n && n.city, n && n.state, n && (n.country || n.countryCode)].filter(Boolean).join(", ") || "unknown location";

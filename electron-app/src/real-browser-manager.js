@@ -7,6 +7,7 @@ const os = require("os");
 const path = require("path");
 const proxyBridge = require("./local-proxy-bridge");
 const profileBackup = require("./profile-backup");
+const profileLock = require("./profile-lock");
 const fpExtension = require("./real-browser-fingerprint");
 const browserStartup = require("./browser-startup");
 const macChrome = require("./mac-browser-chrome");
@@ -482,7 +483,10 @@ function cleanup(profileId, record) {
   if (record && record.bridgeId) {
     try { proxyBridge.stopBridge(record.bridgeId); } catch (_) {}
   }
-  if (record && record.ready && record.dataDir) profileBackup.backupInBackground(profileId, record.dataDir);
+  if (record) clearInterval(record.lockTimer);
+  // Release only after the backup is up, so a PC taking over gets the latest logins.
+  const saved = record && record.ready && record.dataDir ? profileBackup.backupInBackground(profileId, record.dataDir) : Promise.resolve();
+  saved.then(() => profileLock.release(profileId));
   notifyChanged();
 }
 
@@ -592,6 +596,13 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
   // Resolve the full spoof config once (same resolver the Electron engine uses).
   const cfg = resolveConfig(profile);
 
+  const lock = await profileLock.claim(profile);
+  if (!lock.ok) {
+    if (proxy.bridgeId) {
+      try { proxyBridge.stopBridge(proxy.bridgeId); } catch (_) {}
+    }
+    return lock;
+  }
   const dir = profileDataDir(profile.id, engine);
   await profileBackup.restoreIfNewer(profile.id, dir);
   writePrivacyPreferences(profile, dir);
@@ -704,10 +715,12 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
     if (proxy.bridgeId) {
       try { proxyBridge.stopBridge(proxy.bridgeId); } catch (_) {}
     }
+    profileLock.release(profile.id);
     return { ok: false, reason: "launch-failed", detail: String(err && (err.message || err)) };
   }
 
   const record = { child, pid: child.pid, engine, channel: exe.channel, dataDir: dir, bridgeId: proxy.bridgeId, seed: patchedSeed, startedAt: Date.now() };
+  record.lockTimer = profileLock.watch(profile.id, () => closeProfile(profile.id));
   running.set(profile.id, record);
   child.once("exit", () => cleanup(profile.id, record));
   child.once("error", () => cleanup(profile.id, record));

@@ -92,13 +92,14 @@ async function backup(profileId, dir) {
   cloud.logLine(`backup ${profileId}: uploaded ${Math.round(sealed.length / 1024)} KB`);
 }
 
-// Called when the browser exits. Never throws.
+// Called when the browser exits. Never throws; resolves when the upload is done.
 function backupInBackground(profileId, dir) {
   const prev = pending.get(profileId) || Promise.resolve();
   const job = prev.then(() => backup(profileId, dir))
     .catch((err) => cloud.logLine(`backup ${profileId} failed: ${err.message || err}`))
     .finally(() => { if (pending.get(profileId) === job) pending.delete(profileId); });
   pending.set(profileId, job);
+  return job;
 }
 
 // Called before launch. Falls back to the local copy on any error.
