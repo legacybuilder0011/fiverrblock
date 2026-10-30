@@ -1,0 +1,46 @@
+# Builds the Windows installer on GitHub's machine, attaches it to the release
+# (draft is fine), publishes it, then starts the Mac build. For when the PC's
+# internet is too unstable to upload the 167 MB installer.
+name: Windows build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v1.18.41"
+        required: true
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  win:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        working-directory: electron-app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Build (unsigned)
+        run: npx electron-builder --win --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Attach installer, then latest.yml last
+        run: |
+          gh release upload "$TAG" dist/Privacy-Shield-Browser-Setup-*.exe dist/Privacy-Shield-Browser-Setup-*.exe.blockmap --clobber
+          gh release upload "$TAG" dist/latest.yml --clobber
+      - name: Publish and start the Mac build
+        run: |
+          gh release edit "$TAG" --draft=false --latest
+          gh workflow run mac-build.yml -f tag="$TAG"
