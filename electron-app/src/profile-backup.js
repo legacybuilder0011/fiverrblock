@@ -10,7 +10,7 @@
 // user, so Chromium opens with the same logins.
 //
 // Real Google Chrome is skipped: it adds app-bound encryption tied to the PC.
-// ponytail: no "in use on another PC" lock — the last PC to close a profile wins.
+// One PC at a time is enforced by profile-lock.js.
 
 const fs = require("fs");
 const path = require("path");
@@ -92,11 +92,19 @@ async function backup(profileId, dir) {
   cloud.logLine(`backup ${profileId}: uploaded ${Math.round(sealed.length / 1024)} KB`);
 }
 
+// Page caches grew to GBs per PC (8.8 of 12.2 GB measured). Logins/cookies stay.
+function trimCaches(dir) {
+  for (const name of SKIP_IN_DEFAULT) {
+    try { fs.rmSync(path.join(dir, "Default", name), { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
 // Called when the browser exits. Never throws; resolves when the upload is done.
 function backupInBackground(profileId, dir) {
   const prev = pending.get(profileId) || Promise.resolve();
   const job = prev.then(() => backup(profileId, dir))
     .catch((err) => cloud.logLine(`backup ${profileId} failed: ${err.message || err}`))
+    .then(() => trimCaches(dir))
     .finally(() => { if (pending.get(profileId) === job) pending.delete(profileId); });
   pending.set(profileId, job);
   return job;

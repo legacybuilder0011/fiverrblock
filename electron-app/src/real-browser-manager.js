@@ -590,19 +590,18 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
     };
   }
 
+  const lock = await profileLock.claim(profile);
+  if (!lock.ok) return lock;
+
   const proxy = await proxyArgs(profile, options);
-  if (proxy.error) return { ok: false, reason: "proxy-unsupported", detail: proxy.error };
+  if (proxy.error) {
+    profileLock.release(profile.id);
+    return { ok: false, reason: "proxy-unsupported", detail: proxy.error };
+  }
 
   // Resolve the full spoof config once (same resolver the Electron engine uses).
   const cfg = resolveConfig(profile);
 
-  const lock = await profileLock.claim(profile);
-  if (!lock.ok) {
-    if (proxy.bridgeId) {
-      try { proxyBridge.stopBridge(proxy.bridgeId); } catch (_) {}
-    }
-    return lock;
-  }
   const dir = profileDataDir(profile.id, engine);
   await profileBackup.restoreIfNewer(profile.id, dir);
   writePrivacyPreferences(profile, dir);

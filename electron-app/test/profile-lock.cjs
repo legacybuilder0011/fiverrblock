@@ -1,5 +1,5 @@
 "use strict";
-// Open on another PC: Cancel refuses, Take over waits for release, cloud errors open anyway.
+// Open on another PC: Cancel refuses, Take over waits for release, internet blips retry.
 const assert = require("assert/strict");
 const Module = require("module");
 
@@ -40,7 +40,16 @@ const p = { id: "p1", name: "IG 1" };
   assert.deepEqual(await lock.claim(p), { ok: true });
   assert.deepEqual(calls, ["open", "force", "open"]);
 
-  replies = [new Error("offline")];
+  // offline: retried 4 times, then the user picks Cancel (0) or Open anyway (1)
+  answer = 0;
+  calls.length = 0;
+  replies = [new Error("offline"), new Error("offline"), new Error("offline"), new Error("offline")];
+  assert.equal((await lock.claim(p)).ok, false);
+  assert.equal(calls.length, 4);
+  answer = 1;
+  replies = [new Error("blip"), { ok: true }];
+  assert.deepEqual(await lock.claim(p), { ok: true }); // one blip, retry worked
+  replies = [new Error("x"), new Error("x"), new Error("x"), new Error("x")];
   assert.deepEqual(await lock.claim(p), { ok: true });
 
   replies = [null]; // logged out
