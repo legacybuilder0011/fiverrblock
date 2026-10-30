@@ -67,7 +67,7 @@ function watch(profileId, close) {
 }
 
 function release(profileId) {
-  cloud.profileLock(profileId, "release").catch(() => {});
+  return cloud.profileLock(profileId, "release").catch(() => {});
 }
 
 module.exports = { claim, watch, release };

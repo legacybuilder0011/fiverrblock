@@ -168,6 +168,40 @@ async function profileLock(profileId, mode) {
   return data;
 }
 
+// Switch account: each saved account keeps a copy of its Supabase session and
+// sync key. Switching copies them back over the live files, then the app restarts.
+const ACCOUNTS_DIR = path.join(BASE_DIR, "accounts");
+const slot = (userId, ext) => path.join(ACCOUNTS_DIR, String(userId).replace(/[^\w-]/g, "") + ext);
+
+function saveAccountSlot(userId, email) {
+  if (!fs.existsSync(PROXY_KEY_FILE) || getCurrentUserId() !== userId) return;
+  ensureDir(ACCOUNTS_DIR);
+  fs.copyFileSync(SESSION_FILE, slot(userId, ".session"));
+  fs.copyFileSync(PROXY_KEY_FILE, slot(userId, ".key"));
+  writeJson(slot(userId, ".json"), { userId, email });
+}
+
+function useAccountSlot(userId) {
+  const info = readJson(slot(userId, ".json"), null);
+  if (!info || !fs.existsSync(slot(userId, ".session")) || !fs.existsSync(slot(userId, ".key"))) return null;
+  // The app restarts next; a token refresh before then would overwrite the swapped-in session.
+  if (supabase) { try { supabase.auth.stopAutoRefresh(); } catch (_) {} }
+  fs.copyFileSync(slot(userId, ".session"), SESSION_FILE);
+  fs.copyFileSync(slot(userId, ".key"), PROXY_KEY_FILE);
+  return info;
+}
+
+function listAccountSlots() {
+  try {
+    return fs.readdirSync(ACCOUNTS_DIR).filter((f) => f.endsWith(".json"))
+      .map((f) => readJson(path.join(ACCOUNTS_DIR, f), null)).filter((a) => a && a.userId);
+  } catch (_) { return []; }
+}
+
+function dropAccountSlot(userId) {
+  for (const ext of [".json", ".session", ".key"]) { try { fs.unlinkSync(slot(userId, ext)); } catch (_) {} }
+}
+
 function sanitizeProfileForCloud(profile) {
   const clone = cloneJson(profile, {});
   delete clone.cookies;
@@ -499,6 +533,7 @@ module.exports = {
   pullProxies, pushAllProxies, deleteProxyRemote,
   sealProxySecrets, openProxySecrets, sealBuffer, openBuffer,
   backupInfo, uploadBackup, downloadBackup, logLine, cloudReady, deviceId, profileLock,
+  saveAccountSlot, useAccountSlot, listAccountSlots, dropAccountSlot,
   hasSyncKey: () => fs.existsSync(PROXY_KEY_FILE),
   fullSync
 };

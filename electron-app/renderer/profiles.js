@@ -1934,6 +1934,25 @@ function bindSidebarEvents() {
     }
   }).catch(() => {});
 
+  // Switch account: saved logins on this PC, plus "+ Add account".
+  const accountSwitch = $("accountSwitch");
+  msg("AUTH_ACCOUNTS").then((r) => {
+    const others = (r.accounts || []).filter((a) => !a.current);
+    accountSwitch.innerHTML = `<option value="">Switch</option>` +
+      others.map((a) => `<option value="${escHtml(a.userId)}">${escHtml(a.email)}</option>`).join("") +
+      `<option value="+add">+ Add account</option>`;
+  }).catch(() => {});
+  accountSwitch.addEventListener("change", async () => {
+    const value = accountSwitch.value;
+    accountSwitch.value = "";
+    if (!value) return;
+    const add = value === "+add";
+    if (!confirm(add ? "Add another account?\nOpen profiles will close first." : "Switch account?\nOpen profiles will close and the app restarts.")) return;
+    toast(add ? "Closing profiles…" : "Switching account…");
+    const res = await msg(add ? "AUTH_ADD_ACCOUNT" : "AUTH_SWITCH_ACCOUNT", { userId: value });
+    if (res && res.ok === false) toast(res.error || "Switch failed");
+  });
+
   $("btnLogout").addEventListener("click", async () => {
     if (!confirm("Sign out of your account?\nYour profiles will be saved.")) return;
     await msg("AUTH_DO_LOGOUT");

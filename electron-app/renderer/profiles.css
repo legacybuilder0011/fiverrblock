@@ -163,6 +163,16 @@ html, body {
   white-space: nowrap;
 }
 
+.pm-account-switch {
+  max-width: 96px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
 /* ===== PROFILE CARD ===== */
 .pm-card {
   display: flex;

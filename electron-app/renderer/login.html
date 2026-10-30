@@ -90,6 +90,14 @@
     }
     .success-msg.show { display: block; }
 
+    .saved { display: none; margin-bottom: 16px; }
+    .saved.show { display: block; }
+    .saved-btn {
+      width: 100%; margin-bottom: 6px; padding: 9px 12px; text-align: left;
+      background: #1e293b; color: #f1f5f9; border: 1px solid #334155; border-radius: 8px;
+      font-size: 13px; cursor: pointer;
+    }
+    .saved-btn:hover { border-color: #60a5fa; }
     .hint { font-size: 11px; color: #475569; margin-top: 14px; text-align: center; }
   </style>
 </head>
@@ -108,6 +116,9 @@
 
   <div id="msgError" class="error-msg"></div>
   <div id="msgSuccess" class="success-msg"></div>
+
+  <!-- Saved logins on this PC: one click, no password -->
+  <div id="savedAccounts" class="saved"><label>Saved accounts</label></div>
 
   <!-- Login form -->
   <div id="formLogin">
@@ -175,6 +186,23 @@ function setLoading(btnId, loading) {
   btn.disabled = loading;
   btn.textContent = loading ? 'Please wait…' : (btnId === 'btnLogin' ? 'Sign In' : 'Create Account');
 }
+
+window.electronAPI.invoke('AUTH_ACCOUNTS', {}).then((r) => {
+  const box = document.getElementById('savedAccounts');
+  for (const a of (r && r.accounts) || []) {
+    const btn = document.createElement('button');
+    btn.className = 'saved-btn';
+    btn.textContent = 'Continue as ' + a.email;
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = 'Opening…';
+      const res = await window.electronAPI.invoke('AUTH_SWITCH_ACCOUNT', { userId: a.userId });
+      if (res && res.ok === false) { showError(res.error || 'Switch failed.'); btn.disabled = false; btn.textContent = a.email; }
+    };
+    box.appendChild(btn);
+    box.classList.add('show');
+  }
+}).catch(() => {});
 
 async function doLogin() {
   clearMessages();

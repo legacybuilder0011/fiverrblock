@@ -474,6 +474,14 @@ function showMacChrome(profile, pid) {
   } catch (_) {}
 }
 
+const settling = new Set(); // backup + lock release still running after a close
+
+// Before switching account: close every profile and wait for its backup and release.
+async function closeAllAndSettle() {
+  await Promise.all(runningIds().map((id) => closeProfile(id)));
+  await Promise.all([...settling]);
+}
+
 function cleanup(profileId, record) {
   if (running.get(profileId) !== record) return;
   running.delete(profileId);
@@ -486,7 +494,9 @@ function cleanup(profileId, record) {
   if (record) clearInterval(record.lockTimer);
   // Release only after the backup is up, so a PC taking over gets the latest logins.
   const saved = record && record.ready && record.dataDir ? profileBackup.backupInBackground(profileId, record.dataDir) : Promise.resolve();
-  saved.then(() => profileLock.release(profileId));
+  const done = saved.then(() => profileLock.release(profileId));
+  settling.add(done);
+  done.finally(() => settling.delete(done));
   notifyChanged();
 }
 
@@ -962,6 +972,7 @@ function cloudLaunchSpec(profile, cfg) {
 }
 
 module.exports = {
+  closeAllAndSettle,
   patchedFingerprintArgs,
   cloudLaunchSpec,
   exportProfileCookies,

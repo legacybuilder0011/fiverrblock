@@ -51,11 +51,14 @@ async function login(email, password) {
 
   ensureDir(getUserDataDir(result.user.id));
   writeJson(SESSION_FILE, { userId: result.user.id, email: result.user.email, loginAt: Date.now() });
+  saveCurrentAccount();
 
   return { ok: true, user: result.user };
 }
 
 async function logout() {
+  const session = getSession();
+  if (session && session.userId) cloud.dropAccountSlot(session.userId);
   await cloud.logout();
   try { fs.unlinkSync(SESSION_FILE); } catch (_) {}
 }
@@ -70,4 +73,25 @@ function getCurrentUserDataDir() {
   return path.join(BASE_DIR, "default");
 }
 
-module.exports = { register, login, logout, getSession, getCurrentUserDataDir };
+// Saved logins for Switch account (tokens refresh, so save again before leaving).
+function saveCurrentAccount() {
+  const session = getSession();
+  if (session && session.userId) {
+    try { cloud.saveAccountSlot(session.userId, session.email); } catch (_) {}
+  }
+}
+
+function listAccounts() {
+  const session = getSession();
+  return cloud.listAccountSlots().map((a) => ({ userId: a.userId, email: a.email, current: Boolean(session && session.userId === a.userId) }));
+}
+
+function switchTo(userId) {
+  saveCurrentAccount();
+  const account = cloud.useAccountSlot(userId);
+  if (!account) return false;
+  writeJson(SESSION_FILE, { userId: account.userId, email: account.email, loginAt: Date.now() });
+  return true;
+}
+
+module.exports = { register, login, logout, getSession, getCurrentUserDataDir, saveCurrentAccount, listAccounts, switchTo };

@@ -126,6 +126,29 @@ app.whenReady().then(async () => {
     return { ok: true };
   });
 
+  // Switch account: close profiles (their backups finish under the current
+  // account), swap the saved login in, restart so everything loads fresh.
+  ipcMain.handle("AUTH_ACCOUNTS", async () => ({ ok: true, accounts: authStore.listAccounts() }));
+
+  ipcMain.handle("AUTH_SWITCH_ACCOUNT", async (_ev, { userId } = {}) => {
+    await require("./real-browser-manager").closeAllAndSettle();
+    if (!authStore.switchTo(userId)) return { ok: false, error: "Saved login not found. Sign in to that account once." };
+    app.relaunch();
+    app.quit();
+    return { ok: true };
+  });
+
+  ipcMain.handle("AUTH_ADD_ACCOUNT", async () => {
+    await require("./real-browser-manager").closeAllAndSettle();
+    authStore.saveCurrentAccount();
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed() && win !== loginWindow) win.destroy();
+    }
+    mainWindow = null;
+    createLoginWindow();
+    return { ok: true };
+  });
+
   ipcMain.handle("AUTH_DO_LOGOUT", async () => {
     const auth = require("./auth-store");
     auth.logout();
@@ -185,7 +208,7 @@ function createLoginWindow() {
   }
   loginWindow = new BrowserWindow({
     width: 440,
-    height: 560,
+    height: 660,
     resizable: false,
     title: "Privacy Shield — Sign In",
     backgroundColor: "#0f172a",

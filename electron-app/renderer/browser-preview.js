@@ -719,6 +719,11 @@
         case "AUTH_SESSION":
           result = { ok: true, session: { userId: "preview-user", email: "preview@privacy-shield.local" } };
           break;
+        case "AUTH_ACCOUNTS":
+          result = { ok: true, accounts: [{ userId: "preview-user", email: "preview@privacy-shield.local", current: true }, { userId: "team", email: "team@privacy-shield.local", current: false }] };
+          break;
+        case "AUTH_SWITCH_ACCOUNT":
+        case "AUTH_ADD_ACCOUNT":
         case "AUTH_DO_LOGOUT":
         case "AUTH_LOGOUT":
         case "CLOUD_SYNC_NOW":
