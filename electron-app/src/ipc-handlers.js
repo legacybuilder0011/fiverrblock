@@ -777,8 +777,58 @@ function registerIpcHandlers() {
     return { ok: true };
   });
 
+  // "Check this profile": opens it on a local test page and grades what sites see.
+  ipcMain.handle("PROFILE_CHECK", async (_ev, { profileId } = {}) => {
+    const profile = store.getProfiles().find((p) => p.id === profileId && !p.deletedAt);
+    if (!profile) return { ok: false, error: "Profile not found" };
+    const win = profileWindows.get(profileId);
+    if ((win && !win.isDestroyed()) || realBrowser.isProfileRunning(profileId) || camoufox.isProfileRunning(profileId)) {
+      return { ok: false, error: "Close this profile first, then click Check. The check opens it fresh on a test page." };
+    }
+    let remote = [];
+    try { remote = (await require("./cloud-sync").accountExitIps()) || []; } catch (_) {}
+    const others = store.getProfiles().filter((p) => !p.deletedAt && p.id !== profileId)
+      .map((p) => ({ id: p.id, name: p.name, fpHash: p.lastCheck && p.lastCheck.fpHash, ip: String((p.proxy && p.proxy.detectedIp) || "").trim() }))
+      .concat(remote.filter((r) => r.id !== profileId));
+    const result = await require("./profile-check").runCheck({
+      profile,
+      config: store.buildConfigFromProfile(profile),
+      others,
+      // The check reports a shared IP itself, so skip that prompt here.
+      open: (url) => openProfileWindow(profileId, url, { acceptSharedIp: true })
+    });
+    if (!result.ok) {
+      const o = result.opened || {};
+      if (o.needsOsConfirm || o.needsLocationConfirm) return { ok: false, error: "Click Start once and answer the question it asks, close the profile, then run Check again." };
+      return { ok: false, error: result.error || o.error || "The profile could not be opened." };
+    }
+    store.updateProfile(profileId, { lastCheck: { at: Date.now(), passed: result.passed, fpHash: result.fpHash } });
+    if (!result.passed) {
+      const failed = result.checks.filter((c) => c.ok === false).map((c) => c.name).join(", ");
+      require("./cloud-sync").reportFailure({ kind: "check", profile, reason: "Check failed: " + failed });
+    }
+    return result;
+  });
+
+  ipcMain.handle("BACKUP_USAGE", async () => {
+    try { return { ok: true, usage: await require("./cloud-sync").backupUsage() }; }
+    catch (err) { return { ok: false, error: err.message || String(err) }; }
+  });
+
   ipcMain.handle("PROFILE_PURGE_TRASH", async () => {
+    const ids = store.getProfiles().filter((p) => p.deletedAt).map((p) => p.id);
     const count = store.purgeDeletedProfiles();
+    // Deleting for good also frees the browser data on this PC and the cloud
+    // backup; both used to stay behind and fill the disk and the storage plan.
+    const cloud = require("./cloud-sync");
+    for (const id of ids) {
+      realBrowser.clearProfileData(id).catch(() => {});
+      try {
+        const dir = path.join(require("electron").app.getPath("userData"), "Partitions", sessionMgr.getPartitionForProfile(id).replace(/^persist:/, ""));
+        if (!profileWindows.has(id)) fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+      } catch (_) {}
+      cloud.deleteBackup(id).catch((err) => cloud.logLine(`delete backup ${id} failed: ${err.message || err}`));
+    }
     return { ok: true, count };
   });
 
@@ -1121,14 +1171,16 @@ function registerIpcHandlers() {
 
   // ── Window management ─────────────────────────────────────────────────────────
 
-  ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url, acceptNewLocation, acceptSharedIp } = {}) => {
+  ipcMain.handle("PROFILE_OPEN_WINDOW", async (_ev, { profileId, url, acceptNewLocation, acceptSharedIp, acceptOsMismatch } = {}) => {
     logError(`PROFILE_OPEN_WINDOW start profileId=${profileId} url=${url || "<none>"} acceptNewLocation=${Boolean(acceptNewLocation)} acceptSharedIp=${Boolean(acceptSharedIp)}`);
     try {
-      const result = await openProfileWindow(profileId, url, { acceptNewLocation: Boolean(acceptNewLocation), acceptSharedIp: Boolean(acceptSharedIp) });
+      const result = await openProfileWindow(profileId, url, { acceptNewLocation: Boolean(acceptNewLocation), acceptSharedIp: Boolean(acceptSharedIp), acceptOsMismatch: Boolean(acceptOsMismatch) });
       logError(`PROFILE_OPEN_WINDOW result ok=${result?.ok} err=${result?.error || ""}`);
+      reportStartFailure(profileId, result);
       return result;
     } catch (err) {
       logError(`PROFILE_OPEN_WINDOW threw: ${err.stack || err}`);
+      reportStartFailure(profileId, { ok: false, error: String(err.message || err) });
       return { ok: false, error: "Failed to open window: " + (err.message || err) };
     }
   });
@@ -1777,6 +1829,15 @@ function registerIpcHandlers() {
 
 // On login/register, pull any cloud data into the per-user local dir, then
 // push anything that exists locally only (first-time login on this PC).
+// Start failures go to the account's app_failures table so problems on any PC
+// are visible without asking. Questions the user answers are not failures.
+function reportStartFailure(profileId, result) {
+  if (!result || result.ok || result.needsLocationConfirm || result.needsIpConfirm || result.needsOsConfirm) return;
+  if (result.reason === "needs-engine-download" || result.reason === "in-use-elsewhere") return;
+  const profile = store.getProfiles().find((p) => p.id === profileId);
+  require("./cloud-sync").reportFailure({ kind: "start", profile, reason: [result.reason, result.error || result.detail].filter(Boolean).join(": ") });
+}
+
 async function postLoginSync() {
   try {
     const cloud = require("./cloud-sync");
@@ -2106,6 +2167,18 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   var profile = profiles.find((p) => p.id === profileId && !p.deletedAt);
   if (!profile) return { ok: false, error: "Profile not found" };
 
+  // Real Chrome was removed (it shows the PC's real time zone and hardware).
+  if (profile.engine === "real-chrome") {
+    profile = store.updateProfile(profile.id, { engine: realBrowser.patchedSupported() ? "patched-chromium" : "chromium" }) || profile;
+  }
+
+  // The engines show this computer's real fonts, so a Windows profile on a Mac
+  // (or the reverse) gives itself away. Ask before launching.
+  const hostOs = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "";
+  if (!options.acceptOsMismatch && hostOs && (profile.os === "windows" || profile.os === "macos") && profile.os !== hostOs) {
+    return { ok: false, needsOsConfirm: true, profileName: profile.name || "Profile", profileOs: profile.os, hostOs };
+  }
+
   // ── Required fields & consistency checks ─────────────────────────────────────
   let px = profile.proxy || {};
   const networkMode = px.networkMode || (px.enabled ? "proxy" : "direct");
@@ -2248,10 +2321,13 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   if (!options.acceptSharedIp) {
     const thisIp = String((profile.proxy && profile.proxy.detectedIp) || "").trim();
     if (thisIp) {
-      const clash = store.getProfiles().find((p) =>
-        p.id !== profileId && !p.deletedAt &&
-        String((p.proxy && p.proxy.detectedIp) || "").trim() === thisIp
-      );
+      // Teammates' PCs: the cloud has the IP each profile last launched on. Falls
+      // back to this PC's synced copy when offline.
+      let remote = [];
+      try { remote = (await require("./cloud-sync").accountExitIps()) || []; } catch (err) { logError(`team ip check: ${err.message || err}`); }
+      const local = store.getProfiles().filter((p) => !p.deletedAt)
+        .map((p) => ({ id: p.id, name: p.name, ip: String((p.proxy && p.proxy.detectedIp) || "").trim() }));
+      const clash = [...remote, ...local].find((p) => p.id !== profileId && p.ip === thisIp);
       if (clash) {
         const otherWin = profileWindows.get(clash.id);
         const otherOpen = Boolean((otherWin && !otherWin.isDestroyed()) || camoufox.isProfileRunning(clash.id) || realBrowser.isProfileRunning(clash.id));
@@ -2965,7 +3041,11 @@ async function bulkCreateProfiles(count, countryCode, assignProxies, networkMode
     const country = vpnNetwork?.countryCode || (countryCode === "random" || !countryCode
       ? COUNTRIES[Math.floor(Math.random() * COUNTRIES.length)]
       : countryCode);
-    const data = store.buildCountryProfileData(country, i + 1, { deviceClass: deviceClass || "desktop", browserApp: browserApp || "random" });
+    // Desktop profiles match this computer's OS (the engines show its real fonts).
+    const hostOs = process.platform === "darwin" ? "macos" : "windows";
+    const engine = realBrowser.patchedSupported() ? "patched-chromium" : "chromium";
+    const data = store.buildCountryProfileData(country, i + 1, { deviceClass: deviceClass || "desktop", browserApp: browserApp || "random", os: hostOs, engine });
+    data.engine = engine;
     let proxyMatch = null;
 
     if (mode === "vpn") {

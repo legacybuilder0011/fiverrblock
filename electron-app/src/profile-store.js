@@ -1240,13 +1240,14 @@ const WIN_PLATFORM_VERSIONS = [
 // engine is a real Chrome 148 binary, so it must never claim a newer version
 // (advertising features it doesn't have is itself a tell); claiming OLDER is safe.
 function engineMaxChromeMajor(engine) {
-  return String(engine || "").toLowerCase() === "patched-chromium" ? 148 : 9999;
+  return String(engine || "").toLowerCase() === "patched-chromium" ? parseInt(PATCHED_CHROMIUM_FULL_VERSION, 10) : 9999;
 }
 
 // The exact Chrome version of the bundled patched-chromium binary. Patched-engine
 // profiles report EXACTLY this (matching the real binary) rather than a spread —
 // there is only one binary, and claiming a version it isn't is the thing to avoid.
-// Keep in sync with real-browser-manager.PATCHED_VERSION.
+// real-browser-manager downloads this build. Not 150: it crashes tabs that read
+// canvas pixels (fingerprint-chromium issue #94) and has no macOS build.
 const PATCHED_CHROMIUM_FULL_VERSION = "148.0.7778.215";
 
 // Seeded, stable-per-profile Chrome full version, capped at the engine's real max.
@@ -2371,6 +2372,7 @@ function browserLabelForAudit(browser) {
 }
 
 module.exports = {
+  PATCHED_CHROMIUM_FULL_VERSION,
   getProfiles,
   saveProfiles,
   saveSyncedProfiles,

@@ -38,7 +38,7 @@ function auditPatched(profile) {
   if (!args.includes(`--fingerprint=${seed}`)) issues.push("Patched Chromium launch is missing this profile's seed.");
   if (!args.includes(`--fingerprint-platform=${family}`)) issues.push("Patched Chromium launch is missing the operating system.");
   if (!args.includes(`--fingerprint-brand=${brand}`)) issues.push("Patched Chromium launch is missing the browser brand.");
-  if (!args.includes("--fingerprint-brand-version=148.0.7778.215")) issues.push("Patched Chromium launch is missing the browser version.");
+  if (!args.includes(`--fingerprint-brand-version=${store.PATCHED_CHROMIUM_FULL_VERSION}`)) issues.push("Patched Chromium launch is missing the browser version.");
   if (args.some((arg) => String(arg).startsWith("--user-agent"))) issues.push("Patched Chromium launch includes a typed user-agent.");
   if (args.some((arg) => /--disable-spoofing=[^\s]*gpu/.test(String(arg)))) issues.push("Patched Chromium launch turns off the graphics-card spoof.");
   if (!args.includes(expectedDisable)) issues.push(stealth

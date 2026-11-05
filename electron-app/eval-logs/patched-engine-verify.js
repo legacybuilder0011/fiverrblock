@@ -28,9 +28,10 @@ function ensureBinary() {
   return realBrowser.patchedChromiumReady();
 }
 
+const ENGINE = ["real-brave", "real-chrome", "patched-chromium"].find((e) => process.argv.includes(e)) || "patched-chromium";
 function profile(id, seed, gpuVendor, gpuRenderer, tz, geo) {
   return {
-    id, name: id, os: "windows", browserApp: "chrome", engine: "patched-chromium",
+    id, name: id, os: "windows", browserApp: "chrome", engine: ENGINE,
     proxy: { networkMode: "direct", enabled: false },
     fingerprint: {
       browser: "chrome", fingerprintSeed: seed,
@@ -45,8 +46,11 @@ function profile(id, seed, gpuVendor, gpuRenderer, tz, geo) {
 const PA = profile("patched-A", "alpha-seed", "Google Inc. (AMD)", "ANGLE (AMD, AMD Radeon RX 6800 Direct3D11 vs_5_0 ps_5_0, D3D11)", "Europe/Berlin", [52.52, 13.405]);
 const PB = profile("patched-B", "beta-seed", "Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)", "America/New_York", [40.71, -74.0]);
 
+Object.assign(PA.fingerprint, { screen: "manual", screenWidth: 1536, screenHeight: 864, devicePixelRatio: 1.25 });
+Object.assign(PB.fingerprint, { screen: "manual", screenWidth: 2560, screenHeight: 1440, devicePixelRatio: 1 });
+
 const PAGE = `<!doctype html><meta charset=utf-8><title>fp</title><body>fp<script>
-(async function(){
+(async function(){try{
   var c=document.createElement("canvas");c.width=240;c.height=60;var x=c.getContext("2d");
   x.textBaseline="top";x.font="16px Arial";x.fillStyle="#f60";x.fillRect(10,10,120,30);
   x.fillStyle="#069";x.fillText("Patched❤PC",12,14);var canvas=c.toDataURL().slice(-44);
@@ -55,10 +59,10 @@ const PAGE = `<!doctype html><meta charset=utf-8><title>fp</title><body>fp<scrip
   var audio="na";try{var Off=window.OfflineAudioContext;var oc=new Off(1,44100,44100);var o=oc.createOscillator();
   o.type="triangle";o.frequency.value=10000;var cp=oc.createDynamicsCompressor();o.connect(cp);cp.connect(oc.destination);
   o.start(0);var b=await oc.startRendering();var d=b.getChannelData(0);var s=0;for(var i=4000;i<5000;i++)s+=Math.abs(d[i]);audio=s.toString();}catch(_){}
-  var geo=await new Promise(function(r){try{navigator.geolocation.getCurrentPosition(function(p){r(p.coords.latitude+","+p.coords.longitude);},function(){r("denied");},{timeout:2000});}catch(_){r("noapi");}});
+  var geo=await new Promise(function(r){setTimeout(function(){r("prompt-or-hang")},3000);try{navigator.geolocation.getCurrentPosition(function(p){r(p.coords.latitude+","+p.coords.longitude);},function(){r("denied");},{timeout:2000});}catch(_){r("noapi");}});
   navigator.sendBeacon("/report?run="+RUNLABEL,JSON.stringify({ua:navigator.userAgent,cores:navigator.hardwareConcurrency,mem:navigator.deviceMemory,
-    tz:Intl.DateTimeFormat().resolvedOptions().timeZone,canvas:canvas,glV:glV,glR:glR,audio:audio,geo:geo,webdriver:navigator.webdriver}));
-})();
+    tz:Intl.DateTimeFormat().resolvedOptions().timeZone,scr:screen.width+"x"+screen.height+"@"+devicePixelRatio+" avail="+screen.availWidth+"x"+screen.availHeight+" outer="+outerWidth+"x"+outerHeight+" mq1536="+matchMedia("(device-width:1536px)").matches,canvas:canvas,glV:glV,glR:glR,audio:audio,geo:geo,webdriver:navigator.webdriver}));
+}catch(e){navigator.sendBeacon("/report?run="+RUNLABEL,JSON.stringify({err:String(e&&e.stack||e)}))}})();
 </script></body>`;
 
 const results = {};
@@ -78,12 +82,12 @@ async function run(label, prof, port) {
 app.whenReady().then(async () => {
   if (!ensureBinary()) { console.log("BINARY NOT READY — abort"); return app.quit(); }
   console.log("patched binary:", realBrowser.patchedChromiumBinary());
-  const server = http.createServer((req, res) => {
+  const server = http.createServer((req, res) => { console.log("REQ", req.method, req.url);
     if (req.url.startsWith("/report")) { let b=""; req.on("data",c=>b+=c); req.on("end",()=>{ res.end("ok");
       const run=new URL(req.url,"http://x").searchParams.get("run"); try{results[run]=JSON.parse(b);}catch(_){}
       if(resolvers[run])resolvers[run](); }); return; }
     const label=new URL(req.url,"http://x").searchParams.get("run")||"";
-    res.setHeader("Content-Type","text/html; charset=utf-8"); res.end(PAGE.replace("RUNLABEL", JSON.stringify(label)));
+    res.setHeader("Content-Type","text/html; charset=utf-8"); res.end(PAGE.split("RUNLABEL").join(JSON.stringify(label)));
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const port = server.address().port;
@@ -94,8 +98,8 @@ app.whenReady().then(async () => {
   server.close();
 
   console.log("\n============ RESULTS ============");
-  for (const k of ["A1","A2","B1"]) { const r=results[k]; if(!r){console.log(k,"NO REPORT");continue;}
-    console.log(`[${k}] fp=${fpHash(r)} cores=${r.cores} mem=${r.mem} tz=${r.tz} glR=${r.glR} canvas=${r.canvas} audio=${r.audio} geo=${r.geo} wd=${r.webdriver}`); }
+  for (const k of ["A1","A2","B1"]) { const r=results[k]; if(!r){console.log(k,"NO REPORT");continue;} if(r.err){console.log(k,"PAGE ERROR",r.err);continue;}
+    console.log(`[${k}] ua=${(String(r.ua).match(/Chrome[/][0-9.]+/)||[""])[0]} fp=${fpHash(r)} cores=${r.cores} mem=${r.mem} tz=${r.tz} screen=${r.scr} glR=${r.glR} canvas=${r.canvas} audio=${r.audio} geo=${r.geo} wd=${r.webdriver}`); }
   console.log("\n============ VERDICT ============");
   const A1=results.A1,A2=results.A2,B1=results.B1;
   if(A1&&A2) console.log(`STABILITY (profile A twice): ${fpHash(A1)===fpHash(A2)?"PASS":"FAIL"} (${fpHash(A1)} vs ${fpHash(A2)})`);

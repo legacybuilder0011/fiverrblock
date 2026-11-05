@@ -47,7 +47,9 @@ function browserLabel(browser) {
 
 function normalizeEngineValue(engine) {
   const value = String(engine || "").toLowerCase();
-  return ["chromium", "stealthfox", "real-chrome", "real-brave", "patched-chromium"].includes(value) ? value : "chromium";
+  // Real Chrome was removed: it could not hide the PC's real time zone or hardware.
+  if (value === "real-chrome") return DEFAULT_ENGINE;
+  return ["chromium", "stealthfox", "real-brave", "patched-chromium"].includes(value) ? value : "chromium";
 }
 
 function engineLabel(engine) {
@@ -293,6 +295,7 @@ function startNewProfile() {
     name: "New Profile " + (profiles.length + 1),
     status: "new",
     os: HOST_OS,
+    engine: DEFAULT_ENGINE,
     browserApp: "chrome",
     windowMode: "normal",
     tags: [],
@@ -732,6 +735,9 @@ async function addUnpackedExtension() {
 // New identities match the computer the app runs on: a Windows identity on a
 // Mac leaks Mac fonts (and the reverse), so on a Mac desktop presets become macOS.
 const HOST_OS = /Mac/i.test(navigator.platform) ? "macos" : "windows";
+// New profiles start on Patched Chromium where it runs (Windows, Apple-chip Macs), else Built-in.
+let DEFAULT_ENGINE = "chromium";
+msg("PATCHED_ENGINE_STATUS").then((r) => { if (r && r.supported) DEFAULT_ENGINE = "patched-chromium"; }).catch(() => {});
 function hostMatchedOs(os) {
   return HOST_OS === "macos" && os === "windows" ? "macos" : os;
 }
@@ -1934,6 +1940,15 @@ function bindSidebarEvents() {
     }
   }).catch(() => {});
 
+  // Cloud backup space for this account (Supabase free plan: 1 GB total).
+  msg("BACKUP_USAGE").then((r) => {
+    const u = r && r.ok && r.usage;
+    if (!u) return;
+    const mb = u.bytes / 1048576;
+    $("backupUsage").textContent = `Backups: ${mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : Math.round(mb) + " MB"} (${u.profiles} profiles)`;
+    if (mb > 800) $("backupUsage").style.color = "#dc2626";
+  }).catch(() => {});
+
   // Switch account: saved logins on this PC, plus "+ Add account".
   const accountSwitch = $("accountSwitch");
   msg("AUTH_ACCOUNTS").then((r) => {
@@ -2133,11 +2148,33 @@ function closeBulkModal() {
 function bindSessionEvents() {
   $("btnOpenWindow")?.addEventListener("click", () => selectedId && openProfileWindow(selectedId));
 
+  // Check this profile: opens it on a local test page and shows what sites see.
+  $("btnCheckProfile")?.addEventListener("click", async () => {
+    if (!selectedId) { toast("Select a profile first"); return; }
+    const btn = $("btnCheckProfile"), box = $("checkResult");
+    btn.disabled = true; btn.textContent = "Checking…";
+    box.hidden = false; box.className = "pm-check-result"; box.textContent = "Opening the profile on a test page (about 30 seconds)…";
+    try {
+      const r = await msg("PROFILE_CHECK", { profileId: selectedId });
+      if (!r || !r.ok) { box.className = "pm-check-result fail"; box.textContent = "⚠ " + ((r && r.error) || "Check failed."); return; }
+      const icon = (ok) => (ok === true ? "✅" : ok === false ? "❌" : "ℹ️");
+      box.className = "pm-check-result " + (r.passed ? "pass" : "fail");
+      box.innerHTML = `<div class="row"><b>${r.passed ? "✅ Safe to log in" : "❌ Fix the items below before logging in"}</b></div>` +
+        r.checks.map((c) => `<div class="row"><b>${icon(c.ok)} ${escHtml(c.name)}</b><span class="muted">${escHtml(c.detail || "")}</span></div>`).join("");
+      await loadProfiles();
+      renderList();
+    } catch (err) {
+      box.className = "pm-check-result fail"; box.textContent = "⚠ " + (err.message || err);
+    } finally {
+      btn.disabled = false; btn.textContent = "Check this profile";
+    }
+  });
+
   // Test fingerprint — opens profile pointing to a fingerprint-detection site
   $("btnTestFingerprint")?.addEventListener("click", async () => {
     if (!selectedId) { toast("Select a profile first"); return; }
     toast("Opening fingerprint test…");
-    await msg("PROFILE_OPEN_WINDOW", { profileId: selectedId, url: "https://pixelscan.net/" });
+    await msg("PROFILE_OPEN_WINDOW", { profileId: selectedId, url: "https://pixelscan.net/", acceptOsMismatch: true });
   });
 
   // Bulk create modal
@@ -2495,7 +2532,28 @@ async function openProfileWindow(profileId) {
   }
 
   if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
-  let r = await msg("PROFILE_OPEN_WINDOW", { profileId });
+  const openOpts = { profileId };
+  let r = await msg("PROFILE_OPEN_WINDOW", openOpts);
+
+  // Profile OS differs from this computer: its real fonts would give the profile away.
+  if (r.needsOsConfirm) {
+    const osName = (o) => (o === "macos" ? "macOS" : "Windows");
+    const proceed = confirm(
+      "⚠ " + osName(r.profileOs) + " profile on a " + (r.hostOs === "macos" ? "Mac" : "Windows PC") + "\n\n" +
+      "\"" + (r.profileName || "This profile") + "\" is set up as " + osName(r.profileOs) + ", but this computer runs " + osName(r.hostOs) + ".\n" +
+      "Websites can see this computer's fonts, which don't match the profile, and the account can be linked.\n\n" +
+      "Best: open this profile on a " + osName(r.profileOs) + " computer, or change its OS to " + osName(r.hostOs) + ".\n\n" +
+      "Open it here anyway?"
+    );
+    if (!proceed) {
+      setLaunchError("Launch cancelled — this " + osName(r.profileOs) + " profile should run on a " + osName(r.profileOs) + " computer.");
+      if (btn) { btn.textContent = "Start"; btn.disabled = false; }
+      return;
+    }
+    openOpts.acceptOsMismatch = true;
+    if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
+    r = await msg("PROFILE_OPEN_WINDOW", openOpts);
+  }
 
   // VPN location lock: the profile's VPN is in a different place than last time.
   // Nothing has launched yet — make the user decide before the browser opens.
@@ -2503,7 +2561,7 @@ async function openProfileWindow(profileId) {
     const decision = await showVpnLocationConfirm(r);
     if (decision === "continue") {
       if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
-      r = await msg("PROFILE_OPEN_WINDOW", { profileId, acceptNewLocation: true });
+      r = await msg("PROFILE_OPEN_WINDOW", { ...openOpts, acceptNewLocation: true });
     } else {
       // "Change VPN now" / dismissed → do not launch. User switches their VPN
       // back to the last location, then clicks Start again.
@@ -2528,7 +2586,7 @@ async function openProfileWindow(profileId) {
     );
     if (proceed) {
       if (btn) { btn.textContent = "Starting…"; btn.disabled = true; }
-      r = await msg("PROFILE_OPEN_WINDOW", { profileId, acceptSharedIp: true });
+      r = await msg("PROFILE_OPEN_WINDOW", { ...openOpts, acceptSharedIp: true });
     } else {
       setLaunchError("Launch cancelled — this profile shares IP " + r.sharedIp + " with \"" + (r.otherProfileName || "another profile") + "\". Give it its own proxy in the Proxy tab, then click Start.");
       toast("Launch cancelled — shared IP");

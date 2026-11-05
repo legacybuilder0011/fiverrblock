@@ -207,6 +207,8 @@ function assertProfileSession(actualSession, profileId) {
 function proxyLaunchError(px) {
   px = px || {};
   const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
+  // Team rule: Direct = the real ISP IP, so it never launches. VPN mode has its own no-VPN guard.
+  if (mode === "direct") return "This profile has no proxy (Network is set to Direct), so it would open on your real IP. Set Network to Proxy in the Proxy tab, or VPN if you use a VPN app, then save. It was not opened.";
   if (mode !== "proxy") return "";
   if (!px.enabled) return "This profile is set to Proxy mode but the proxy is turned off. Turn the proxy on, or switch the profile to Direct/VPN. It was not opened, so your real IP was not exposed.";
   if (!px.host || !px.port) return "Proxy is enabled but host/port are missing. Fill them in the Proxy tab and click Test, then save.";

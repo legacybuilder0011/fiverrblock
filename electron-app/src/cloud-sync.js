@@ -134,18 +134,74 @@ async function backupInfo(profileId) {
   return hit ? { updatedAt: hit.updated_at || hit.created_at || "" } : null;
 }
 
-async function uploadBackup(profileId, buf) {
+async function uploadBackup(profileId, buf, suffix = "") {
   const userId = getCurrentUserId();
   if (!cloudReady() || !userId) throw new Error("not logged in");
   const { error } = await supabase.storage.from(BACKUP_BUCKET)
-    .upload(`${userId}/${profileId}.bin`, buf, { upsert: true, contentType: "application/octet-stream" });
+    .upload(`${userId}/${profileId}${suffix}.bin`, buf, { upsert: true, contentType: "application/octet-stream" });
   if (error) throw new Error(error.message);
 }
 
-async function downloadBackup(profileId) {
+// Failure report (see app_failures in supabase-schema.sql). Never throws. Paths,
+// IPs and emails are stripped; the same failure is sent at most every 30 min.
+const recentReports = new Map();
+function reportFailure({ kind, reason, profile } = {}) {
+  try {
+    const userId = getCurrentUserId();
+    if (!cloudReady() || !userId || !kind) return;
+    const clean = String(reason || "")
+      .split(os.homedir()).join("~")
+      .replace(/[A-Za-z]:\\Users\\[^\\\s"']+/gi, "~")
+      .replace(/\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b/g, "<ip>")
+      .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>")
+      .slice(0, 500);
+    const key = `${kind}|${profile && profile.id}|${clean}`;
+    if (Date.now() - (recentReports.get(key) || 0) < 30 * 60 * 1000) return;
+    recentReports.set(key, Date.now());
+    supabase.from("app_failures").insert({
+      user_id: userId, device_name: os.hostname(), app_version: app.getVersion(), platform: process.platform,
+      profile_id: (profile && profile.id) || null, profile_name: (profile && profile.name) || null,
+      engine: (profile && profile.engine) || null, kind, reason: clean
+    }).then(({ error }) => { if (error) logLine(`failure report not sent: ${error.message}`); }, () => {});
+  } catch (_) {}
+}
+
+// Cloud space this account's browser-data backups use (all parts counted).
+async function backupUsage() {
+  const userId = getCurrentUserId();
+  if (!cloudReady() || !userId) return null;
+  let bytes = 0, files = 0;
+  const profiles = new Set();
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await supabase.storage.from(BACKUP_BUCKET).list(userId, { limit: 1000, offset });
+    if (error) throw new Error(error.message);
+    for (const o of data || []) {
+      bytes += Number(o.metadata && o.metadata.size) || 0;
+      files++;
+      profiles.add(String(o.name).split(".")[0]);
+    }
+    if (!data || data.length < 1000) break;
+  }
+  return { bytes, files, profiles: profiles.size };
+}
+
+// Removes the backup and any parts (<id>.bin, <id>.partN.bin) of a deleted profile.
+async function deleteBackup(profileId) {
+  const userId = getCurrentUserId();
+  if (!cloudReady() || !userId || !profileId) return;
+  const { data, error } = await supabase.storage.from(BACKUP_BUCKET).list(userId, { search: profileId, limit: 1000 });
+  if (error) throw new Error(error.message);
+  const names = (data || []).map((o) => o.name).filter((n) => n === profileId + ".bin" || (n.startsWith(profileId + ".part") && n.endsWith(".bin")));
+  if (names.length) {
+    const { error: rmError } = await supabase.storage.from(BACKUP_BUCKET).remove(names.map((n) => `${userId}/${n}`));
+    if (rmError) throw new Error(rmError.message);
+  }
+}
+
+async function downloadBackup(profileId, suffix = "") {
   const userId = getCurrentUserId();
   if (!cloudReady() || !userId) throw new Error("not logged in");
-  const { data, error } = await supabase.storage.from(BACKUP_BUCKET).download(`${userId}/${profileId}.bin`);
+  const { data, error } = await supabase.storage.from(BACKUP_BUCKET).download(`${userId}/${profileId}${suffix}.bin`);
   if (error) throw new Error(error.message);
   return Buffer.from(await data.arrayBuffer());
 }
@@ -367,6 +423,19 @@ function getCurrentUserId() {
 
 // ── Data sync — profiles ─────────────────────────────────────────────────────
 
+// Latest exit IP of every profile in this account, straight from the cloud, so the
+// same-IP check at Start sees what teammates' PCs detected since this PC last synced.
+async function accountExitIps() {
+  const userId = getCurrentUserId();
+  if (!cloudReady() || !userId) return null;
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("profile_id, ip:data->proxy->>detectedIp, name:data->>name, deletedAt:data->>deletedAt")
+    .eq("user_id", userId);
+  if (error) throw new Error(error.message);
+  return (data || []).filter((r) => r.ip && !r.deletedAt).map((r) => ({ id: r.profile_id, ip: String(r.ip).trim(), name: r.name || "" }));
+}
+
 async function pullProfiles() {
   if (!cloudReady()) return { ok: false, error: "cloud not available", profiles: [] };
   try {
@@ -532,7 +601,7 @@ module.exports = {
   pullProfiles, pushProfile, pushAllProfiles, deleteProfileRemote,
   pullProxies, pushAllProxies, deleteProxyRemote,
   sealProxySecrets, openProxySecrets, sealBuffer, openBuffer,
-  backupInfo, uploadBackup, downloadBackup, logLine, cloudReady, deviceId, profileLock,
+  backupInfo, uploadBackup, downloadBackup, deleteBackup, accountExitIps, reportFailure, backupUsage, logLine, cloudReady, deviceId, profileLock,
   saveAccountSlot, useAccountSlot, listAccountSlots, dropAccountSlot,
   hasSyncKey: () => fs.existsSync(PROXY_KEY_FILE),
   fullSync

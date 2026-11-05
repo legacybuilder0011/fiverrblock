@@ -25,7 +25,7 @@ const { execFile } = require("child_process");
 
 // Google refuses/varies the CRX it serves by claimed browser version. The patched
 // engine really is Chrome 148, so ask as that by default.
-const DEFAULT_PRODVERSION = "148.0.0.0";
+const DEFAULT_PRODVERSION = parseInt(require("./profile-store").PATCHED_CHROMIUM_FULL_VERSION, 10) + ".0.0.0";
 const CRX_ENDPOINT = "https://clients2.google.com/service/update2/crx";
 
 // ── Store URL / ID parsing ────────────────────────────────────────────────────

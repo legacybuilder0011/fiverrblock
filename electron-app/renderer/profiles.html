@@ -108,6 +108,7 @@
 
     <div class="pm-account-bar">
       <span class="pm-account-email" id="accountEmail"></span>
+      <span class="pm-account-email" id="backupUsage" title="Cloud space used by this account's browser-data backups. Supabase's free plan holds 1 GB in total; Pro holds 100 GB."></span>
       <select class="pm-account-switch" id="accountSwitch" title="Switch account"></select>
       <button class="pm-btn-xs danger" id="btnLogout">Logout</button>
     </div>
@@ -167,7 +168,6 @@
           <select id="fp-engine" class="pm-sel-sm" title="Which browser engine launches when you click Start. Patched Chromium gives each profile a distinct engine-level hardware identity (recommended). Real Chrome/Brave use your installed browser; Electron JS/CDP spoofing applies only to bundled Chromium.">
             <option value="patched-chromium">Engine: Patched Chromium (per-profile PC)</option>
             <option value="chromium">Engine: Chromium (Chrome)</option>
-            <option value="real-chrome">Engine: Real Chrome</option>
             <option value="real-brave">Engine: Real Brave</option>
             <option value="stealthfox">Engine: Stealthfox (Firefox)</option>
           </select>
@@ -724,7 +724,7 @@
           <div class="pm-row">
             <label class="pm-label">Network source</label>
             <select id="px-networkMode" class="pm-sel">
-              <option value="direct">Direct connection</option>
+              <option value="direct">Direct (your real IP) — will not start</option>
               <option value="proxy">Proxy / VPS per profile</option>
               <option value="vpn">Current VPN on this computer</option>
             </select>
@@ -838,9 +838,11 @@
           <div class="pm-window-actions">
             <button class="pm-btn primary large" id="btnOpenWindow">Start</button>
             <button class="pm-btn-sm danger large" id="btnCloseWindow" hidden>Stop</button>
+            <button class="pm-btn-sm" id="btnCheckProfile" title="Opens the profile on a test page and checks IP, WebRTC, time zone, language and fingerprint (about 30 seconds)">Check this profile</button>
             <button class="pm-btn-sm" id="btnTestFingerprint">Test fingerprint</button>
             <button class="pm-btn-sm" id="btnSaveSession" hidden>Save session</button>
           </div>
+          <div id="checkResult" class="pm-check-result" hidden></div>
           <div class="pm-hint" id="windowHint">
             Click <b>Start</b> to launch a dedicated Privacy Shield Browser window for this profile. Your selected browser identity, proxy/VPN route, storage, and tabs are isolated to this profile.
           </div>
@@ -1281,7 +1283,7 @@
     </div>
     <div class="pm-row"><label class="pm-label">Network source</label>
       <select id="bulkProxies" class="pm-sel">
-        <option value="direct">No network override</option>
+        <option value="direct">None yet — add a proxy before Start</option>
         <option value="proxy">VPS/proxy per profile</option>
         <option value="vpn">Current VPN on this computer</option>
       </select>

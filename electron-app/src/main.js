@@ -272,7 +272,7 @@ async function restoreOpenProfiles() {
     if (profile && profile.session && profile.session.tabs && profile.session.tabs.length) {
       // Bypass the same-IP confirm on startup restore — these windows were open
       // (and their IP already accepted) in the previous session.
-      try { await openProfileWindow(id, undefined, { acceptSharedIp: true }); } catch (_) {}
+      try { await openProfileWindow(id, undefined, { acceptSharedIp: true, acceptOsMismatch: true }); } catch (_) {}
     }
   }
 }

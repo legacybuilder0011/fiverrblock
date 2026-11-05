@@ -2,12 +2,12 @@
 const { execFile } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-function restoreWindow(pid, waitMs = 15000, placeOnForeground = false) {
+function restoreWindow(pid, waitMs = 15000, placeOnForeground = false, appId = "") {
   if (process.platform !== "win32") return Promise.resolve({ ok: true });
   if (!Number.isSafeInteger(pid) || pid <= 0) return Promise.resolve({ ok: false, reason: "invalid-pid" });
   // Read via Electron's asar-aware fs; PowerShell cannot read an asar path.
   const script = fs.readFileSync(path.join(__dirname, "browser-window.ps1"), "utf8");
-  const place = placeOnForeground ? " -PlaceOnForeground" : "";
+  const place = (placeOnForeground ? " -PlaceOnForeground" : "") + (appId ? " -AppId '" + String(appId).replace(/[^A-Za-z0-9.]/g, "") + "'" : "");
   const command = "& {\n" + script + "\n} -BrowserPid " + pid + " -WaitMs " + Math.max(0, Math.min(15000, waitMs)) + place;
   const encoded = Buffer.from(command, "utf16le").toString("base64");
   const powershell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");

@@ -26,12 +26,12 @@ let changeHandler = null;
 
 // Which fingerprint-chromium release we ship / fetch. Keep in sync with the seeded
 // binary. Windows portable ZIP from the adryfish/fingerprint-chromium releases.
-const PATCHED_VERSION = "148.0.7778.215-1.1";
+const PATCHED_VERSION = require("./profile-store").PATCHED_CHROMIUM_FULL_VERSION + "-1.1";
 // Macs get the same release's macOS .dmg (copied out as Chromium.app).
 const IS_MAC = process.platform === "darwin";
 const PATCHED_DIRNAME = `ungoogled-chromium_${PATCHED_VERSION}_${IS_MAC ? "macos" : "windows_x64"}`;
 const PATCHED_ZIP = IS_MAC ? `ungoogled-chromium_${PATCHED_VERSION}_macos.dmg` : `ungoogled-chromium_${PATCHED_VERSION}_windows_x64.zip`;
-const PATCHED_URL = `https://github.com/adryfish/fingerprint-chromium/releases/download/148.0.7778.215/${PATCHED_ZIP}`;
+const PATCHED_URL = `https://github.com/adryfish/fingerprint-chromium/releases/download/${PATCHED_VERSION.split("-")[0]}/${PATCHED_ZIP}`;
 
 function isRealBrowserEngine(engine) {
   return REAL_BROWSER_ENGINES.has(String(engine || "").toLowerCase());
@@ -77,6 +77,40 @@ function patchedChromiumBinary() {
   try { exe = fs.readdirSync(macos).find((n) => !n.startsWith(".")) || exe; } catch (_) {}
   return path.join(macos, exe);
 }
+// Patch the engine's measureText bug (see measuretext-patch.js) once
+// per install. chrome.dll is locked while any patched profile runs, so it waits
+// for a launch with none open. ponytail: the ~2 s scan runs on the main thread,
+// once per engine install; move to a worker if that pause is ever noticed.
+function fixMeasureText() {
+  try { fixMeasureTextOnce(); } catch (err) {
+    require("./cloud-sync").reportFailure({ kind: "engine", reason: "measureText fix: " + (err.message || err) });
+  }
+}
+
+function fixMeasureTextOnce() {
+  if ((process.platform !== "win32" && !IS_MAC) || !patchedChromiumReady()) return;
+  const dir = path.join(patchedChromiumRoot(), PATCHED_DIRNAME);
+  const marker = path.join(dir, "measuretext-fix.json");
+  if (fs.existsSync(marker)) return;
+  for (const record of running.values()) if (isRunningRecord(record) && isPatchedChromium(record.engine)) return;
+  const patcher = require("./measuretext-patch");
+  let res;
+  if (IS_MAC) {
+    // Chromium.app/Contents/Frameworks/Chromium Framework.framework/Versions/<v>/Chromium Framework
+    const fw = path.join(dir, "Chromium.app", "Contents", "Frameworks", "Chromium Framework.framework");
+    const ver = fs.readdirSync(path.join(fw, "Versions")).find((n) => n !== "Current");
+    res = ver ? patcher.patchMacFramework(path.join(fw, "Versions", ver, "Chromium Framework"), fw) : { status: "not-found" };
+  } else {
+    res = patcher.patchFile(path.join(dir, "chrome.dll"));
+  }
+  const cloud = require("./cloud-sync");
+  cloud.logLine(`engine measureText fix: ${res.status}${res.error ? " " + res.error : ""}`);
+  if (res.status === "error" || res.status === "not-found") cloud.reportFailure({ kind: "engine", reason: `measureText fix ${res.status}: ${res.error || ""}` });
+  // Windows errors are usually a locked file, so try again next launch. A Mac
+  // signing failure will not fix itself; stop paying for the scan every Start.
+  if (res.status !== "error" || IS_MAC) fs.writeFileSync(marker, JSON.stringify({ ...res, at: new Date().toISOString() }));
+}
+
 function patchedChromiumReady() {
   try { return fs.existsSync(patchedChromiumBinary()); } catch (_) { return false; }
 }
@@ -344,7 +378,10 @@ function writePrivacyPreferences(profile, dataDir) {
       block_third_party_cookies: blockCookies,
       default_content_setting_values: {
         geolocation: 2,
-        cookies: blockCookies ? 2 : 1
+        cookies: blockCookies ? 2 : 1,
+        // Brave only: 1 turns off its own farbling, which re-randomised canvas and
+        // audio on every launch. The profile's seeded spoof stays, so it is stable.
+        fingerprintingV2: 1
       }
     },
     intl: {
@@ -476,10 +513,20 @@ function showMacChrome(profile, pid) {
 
 const settling = new Set(); // backup + lock release still running after a close
 
+// Backups that failed (busy files, dropped internet) or were cut off by a crash.
+const retryBackups = () => profileBackup.retryPending(dataRoot(), isProfileRunning).catch(() => {});
+setTimeout(retryBackups, 60 * 1000);
+setInterval(retryBackups, 20 * 60 * 1000);
+
 // Before switching account: close every profile and wait for its backup and release.
 async function closeAllAndSettle() {
   await Promise.all(runningIds().map((id) => closeProfile(id)));
   await Promise.all([...settling]);
+}
+
+// One taskbar button per profile instead of all profiles under one Brave/Chromium icon.
+function taskbarAppId(profile) {
+  return "PrivacyShield.Profile." + String((profile && profile.id) || "").replace(/[^A-Za-z0-9]/g, "");
 }
 
 function cleanup(profileId, record) {
@@ -572,7 +619,7 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
   const channel = (profile.fingerprint && profile.fingerprint.browserChannel) || "stable";
   const existing = running.get(profile.id);
   if (isRunningRecord(existing)) {
-    const restored = await browserStartup.restoreWindow(existing.pid);
+    const restored = await browserStartup.restoreWindow(existing.pid, 15000, false, taskbarAppId(profile));
     if (!restored.ok) {
       await closeProfile(profile.id);
       return windowFailure(restored);
@@ -599,6 +646,8 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
       candidates: exe.candidates
     };
   }
+
+  if (isPatchedChromium(engine)) fixMeasureText();
 
   const lock = await profileLock.claim(profile);
   if (!lock.ok) return lock;
@@ -733,7 +782,7 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
   running.set(profile.id, record);
   child.once("exit", () => cleanup(profile.id, record));
   child.once("error", () => cleanup(profile.id, record));
-  const startup = await browserStartup.waitForWindow(child);
+  const startup = await browserStartup.waitForWindow(child, (pid) => browserStartup.restoreWindow(pid, 15000, true, taskbarAppId(profile)));
   if (!startup.ok) {
     if (running.get(profile.id) === record) await closeProfile(profile.id);
     // One retry, only when the process stayed up and never showed a window.
@@ -823,9 +872,15 @@ async function clearProfileData(profileId) {
 
 // ── Patched-chromium engine binary management (fetch-on-first-run) ───────────
 
+// The patched engine ships for Windows and Apple-chip Macs only.
+function patchedSupported() {
+  return process.platform === "win32" || (IS_MAC && (process.arch === "arm64" || Boolean(app.runningUnderARM64Translation)));
+}
+
 function patchedStatus() {
   return {
     ok: true,
+    supported: patchedSupported(),
     ready: patchedChromiumReady(),
     version: PATCHED_VERSION,
     path: patchedChromiumBinary(),
@@ -902,6 +957,13 @@ function fetchPatchedChromium(onProgress) {
     if (!extracted || !patchedChromiumReady()) {
       return { ok: false, error: "Extraction failed or binary missing after unzip." };
     }
+    fixMeasureText();
+    // Older engine versions (~0.5 GB each) are no longer used once this one is in.
+    for (const name of fs.readdirSync(root)) {
+      if (name.startsWith("ungoogled-chromium_") && name !== PATCHED_DIRNAME) {
+        fs.promises.rm(path.join(root, name), { recursive: true, force: true }).catch(() => {});
+      }
+    }
     return { ok: true, path: patchedChromiumBinary() };
   })();
   return patchedFetchPromise;
@@ -973,6 +1035,7 @@ function cloudLaunchSpec(profile, cfg) {
 
 module.exports = {
   closeAllAndSettle,
+  patchedSupported,
   patchedFingerprintArgs,
   cloudLaunchSpec,
   exportProfileCookies,

@@ -173,6 +173,13 @@ html, body {
   padding: 2px 4px;
 }
 
+.pm-check-result { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); font-size: 12px; }
+.pm-check-result.pass { border-color: #16a34a; }
+.pm-check-result.fail { border-color: #dc2626; }
+.pm-check-result .row { display: flex; gap: 8px; padding: 3px 0; }
+.pm-check-result .row b { min-width: 210px; }
+.pm-check-result .muted { color: var(--muted); }
+
 /* ===== PROFILE CARD ===== */
 .pm-card {
   display: flex;

@@ -1,4 +1,4 @@
-param([int]$BrowserPid, [int]$WaitMs = 15000, [switch]$PlaceOnForeground)
+param([int]$BrowserPid, [int]$WaitMs = 15000, [switch]$PlaceOnForeground, [string]$AppId = "")
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -97,6 +97,26 @@ public static class PSBrowserWindow {
     int height = Math.Min(Math.Max(r.Bottom - r.Top, 300), Math.Max(300, info.Work.Bottom - info.Work.Top));
     SetWindowPos(h, IntPtr.Zero, info.Work.Left, info.Work.Top, w, height, 0x0044);
   }
+  // Own taskbar button per profile: Windows groups windows by AppUserModelID, so
+  // without this every profile of one browser stacked under a single button.
+  [StructLayout(LayoutKind.Sequential, Pack = 4)] public struct PropKey { public Guid FmtId; public uint Pid; }
+  [StructLayout(LayoutKind.Explicit, Size = 24)] public struct PropVar { [FieldOffset(0)] public ushort Vt; [FieldOffset(8)] public IntPtr Ptr; }
+  [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IPropStore {
+    void GetCount(out uint count); void GetAt(uint index, out PropKey key);
+    void GetValue(ref PropKey key, out PropVar value); void SetValue(ref PropKey key, ref PropVar value); void Commit();
+  }
+  [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr h, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropStore store);
+  public static void SetAppId(IntPtr h, string id) {
+    if (h == IntPtr.Zero || String.IsNullOrEmpty(id)) return;
+    var iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+    IPropStore store;
+    if (SHGetPropertyStoreForWindow(h, ref iid, out store) != 0 || store == null) return;
+    var key = new PropKey { FmtId = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), Pid = 5 };
+    var value = new PropVar { Vt = 31, Ptr = Marshal.StringToCoTaskMemUni(id) };
+    try { store.SetValue(ref key, ref value); store.Commit(); }
+    finally { Marshal.FreeCoTaskMem(value.Ptr); Marshal.ReleaseComObject(store); }
+  }
   public static void Restore(IntPtr h) { Restore(h, false); }
   public static void Restore(IntPtr h, bool placeOnForeground) {
     IntPtr foregroundMonitor = IntPtr.Zero;
@@ -134,6 +154,7 @@ do {
   $window = [PSBrowserWindow]::Find([uint32[]]$tree)
   if ($window -eq [IntPtr]::Zero) { $window = $browser.MainWindowHandle }
   if ($window -ne [IntPtr]::Zero) {
+    if ($AppId) { try { [PSBrowserWindow]::SetAppId($window, $AppId) } catch {} }
     [PSBrowserWindow]::Restore($window, [bool]$PlaceOnForeground)
     '{"ok":true}'
     exit 0

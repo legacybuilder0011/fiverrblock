@@ -170,6 +170,32 @@ const SPOOF_BODY = String.raw`"use strict";
       if (sc.pixelDepth) def(Screen.prototype, "pixelDepth", function () { return sc.pixelDepth; });
     }
   } catch (_) {}
+  var DPR = Number(CFG.devicePixelRatio) || 0;
+  try { if (DPR) def(window, "devicePixelRatio", function () { return DPR; }); } catch (_) {}
+
+  // matchMedia device-width/height/pixel-ratio queries answered from the spoofed
+  // screen, else they report the real one. ponytail: CSS @media in stylesheets
+  // still sees the real screen; only the patched engine can change that.
+  try {
+    if (CFG.screen && CFG.screen.width) {
+      var MQ_FEATURE = /\(\s*(-webkit-)?(min-|max-)?(-webkit-)?(device-width|device-height|device-pixel-ratio|resolution)\s*:\s*([\d.]+)\s*(px|dppx|dpi|x)?\s*\)/gi;
+      wrap(window, "matchMedia", function (orig) {
+        return function matchMedia(query) {
+          var q = String(query);
+          var rewritten = q.replace(MQ_FEATURE, function (_m, _w1, range, _w2, feature, num, unit) {
+            var f = feature.toLowerCase();
+            var actual = f === "device-width" ? CFG.screen.width : f === "device-height" ? CFG.screen.height : (DPR || window.devicePixelRatio);
+            var want = Number(num) / (String(unit).toLowerCase() === "dpi" ? 96 : 1);
+            var ok = range === "min-" ? actual >= want : range === "max-" ? actual <= want : Math.abs(actual - want) < 0.001;
+            return ok ? "(min-width: 0px)" : "(max-width: 0px)";
+          });
+          var mql = orig.call(this, rewritten);
+          if (rewritten !== q) { try { Object.defineProperty(mql, "media", { get: function () { return q; } }); } catch (_) {} }
+          return mql;
+        };
+      });
+    }
+  } catch (_) {}
 
   // ── Canvas (per-seed LSB / text-metric noise) ─────────────────────────────
   if (CFG.blockCanvas !== false) {
@@ -413,6 +439,7 @@ function extensionConfig(cfg, opts = {}) {
     language: cfg.language || "",
     languages: Array.isArray(cfg.languages) ? cfg.languages : [],
     screen: cfg.screen || null,
+    devicePixelRatio: Number(cfg._devicePixelRatio) || 0,
     blockCanvas: cfg.blockCanvas !== false,
     blockWebGL: cfg.blockWebGL !== false,
     blockAudio: cfg.blockAudio !== false,
