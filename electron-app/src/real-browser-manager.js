@@ -444,6 +444,16 @@ function webStoreHelperDir() {
   return fs.existsSync(path.join(dir, "manifest.json")) ? dir : "";
 }
 
+// Extensions every profile gets on every launch (vendor/, shipped with the app).
+// Scroll & Refresh: MV3, no network access, no web-accessible files, so pages
+// cannot tell it is there.
+const BUNDLED_EXTENSIONS = ["scroll-and-refresh"];
+function bundledExtensionDirs() {
+  return BUNDLED_EXTENSIONS
+    .map((name) => path.join(__dirname, "..", "vendor", name).replace(/app\.asar([\\/])/, "app.asar.unpacked$1"))
+    .filter((dir) => fs.existsSync(path.join(dir, "manifest.json")));
+}
+
 function dnsLeakGuardArgs(px, proxyBridgeActive) {
   const mode = px.networkMode || (px.enabled ? "proxy" : "direct");
   if (mode !== "proxy" || !px.enabled) return [];
@@ -697,6 +707,7 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
     const helper = webStoreHelperDir();
     if (helper) extraExtDirs.push(helper);
   }
+  extraExtDirs.push(...bundledExtensionDirs());
 
   // Language: prefer the resolved config's coherent locale, fall back to the
   // profile's manual/auto language.

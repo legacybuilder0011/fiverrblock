@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scroll &amp; Refresh</title>
+  <link rel="stylesheet" href="popup.css">
+  <script type="module" src="popup.js"></script>
+</head>
+<body>
+  <header><span class="logo" aria-hidden="true">↻</span><div><h1>Scroll &amp; Refresh</h1><p>A little movement. A fresh page.</p></div></header>
+  <main>
+    <div class="site"><span class="dot"></span><span id="site">Current tab</span><span class="tag"><span id="version">v1.4.1</span> · THIS TAB</span></div>
+    <div id="timer-panel">
+    <section class="timer" aria-label="Refresh status">
+      <div id="phase">READY WHEN YOU ARE</div>
+      <div id="countdown" role="timer">01:00</div>
+      <p id="hint">Set your pace below</p>
+      <div class="track"><div id="progress"></div></div>
+    </section>
+    <form id="form">
+      <div class="label-row"><h2>Refresh interval</h2><span>Up to 24 hours</span></div>
+      <div class="inputs">
+        <label><input id="minutes" name="minutes" type="number" min="0" max="1440" step="1" value="1" required><span>Minutes</span></label>
+        <span class="colon">:</span>
+        <label><input id="seconds" name="seconds" type="number" min="0" max="59" step="1" value="0" required><span>Seconds</span></label>
+      </div>
+      <div class="presets" aria-label="Quick intervals"><button type="button" data-seconds="30">30 sec</button><button type="button" data-seconds="60">1 min</button><button type="button" data-seconds="300">5 min</button><button type="button" data-seconds="600">10 min</button></div>
+      <div class="sequence"><span class="sequence-icon" aria-hidden="true">⇅</span><div><strong>Scroll before refreshing</strong><p>Varied pace · reading pauses · position restored</p></div><span class="check" aria-hidden="true">✓</span></div>
+      <p id="error" role="alert" hidden></p>
+      <div class="actions"><button id="start" type="submit" disabled>Start refreshing <span aria-hidden="true">↻</span></button><button id="stop" type="button" disabled>Stop</button></div>
+    </form>
+    <footer><span id="refreshes">0 refreshes</span><button id="pause" type="button" disabled>Pause</button><button id="routines" type="button">Routines ↗</button><button id="open-history" type="button">History →</button></footer>
+    <p class="note">Form edits pause refreshing until your work is saved.</p>
+    </div>
+    <section id="history-panel" hidden aria-label="Activity history">
+      <div class="history-top"><button id="back" type="button">← Timer</button><h2>Activity history</h2><button id="clear-history" type="button">Clear</button></div>
+      <p class="history-note">Last 100 events for this tab. No form contents recorded.</p>
+      <p id="history-empty">No activity yet.</p>
+      <ol id="history-list"></ol>
+    </section>
+  </main>
+</body>
+</html>

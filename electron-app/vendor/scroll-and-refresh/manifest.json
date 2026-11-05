@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Scroll & Refresh",
+  "version": "1.4.1",
+  "description": "Refresh timers and saved routines: select links, navigate, wait, scroll, and refresh with page controls and work protection.",
+  "minimum_chrome_version": "120",
+  "permissions": ["activeTab", "scripting", "storage", "alarms", "webNavigation"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "Scroll & Refresh" },
+  "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" }
+}

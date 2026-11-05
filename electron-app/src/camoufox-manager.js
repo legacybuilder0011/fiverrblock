@@ -143,6 +143,35 @@ function resolveLocation(profile) {
   return { tz, lat: Number.isFinite(lat) ? lat : null, lon: Number.isFinite(lon) ? lon : null };
 }
 
+// The bundled Chrome extensions (real-browser-manager BUNDLED_EXTENSIONS) as
+// Firefox add-ons: same files, manifest adjusted for Firefox (background scripts
+// instead of a service worker, plus a gecko id). Rebuilt when the version changes.
+const BUNDLED_EXTENSIONS = ["scroll-and-refresh"];
+function firefoxAddonDirs() {
+  if (!electronApp) return [];
+  const out = [];
+  for (const name of BUNDLED_EXTENSIONS) {
+    try {
+      const src = path.join(__dirname, "..", "vendor", name).replace(/app\.asar([\\/])/, "app.asar.unpacked$1");
+      const manifest = JSON.parse(fs.readFileSync(path.join(src, "manifest.json"), "utf8"));
+      const dest = path.join(electronApp.getPath("userData"), "firefox-addons", name);
+      let built = null;
+      try { built = JSON.parse(fs.readFileSync(path.join(dest, "manifest.json"), "utf8")); } catch (_) {}
+      if (!built || built.version !== manifest.version) {
+        fs.rmSync(dest, { recursive: true, force: true });
+        fs.cpSync(src, dest, { recursive: true });
+        const bg = manifest.background || {};
+        manifest.background = { scripts: [bg.service_worker || "background.js"], ...(bg.type ? { type: bg.type } : {}) };
+        manifest.browser_specific_settings = { gecko: { id: `${name}@privacyshield` } };
+        delete manifest.minimum_chrome_version;
+        fs.writeFileSync(path.join(dest, "manifest.json"), JSON.stringify(manifest, null, 2));
+      }
+      out.push(dest);
+    } catch (_) {}
+  }
+  return out;
+}
+
 // Map one saved profile to Camoufox launch options.
 function profileToOptions(profile) {
   const fp = profile.fingerprint || {};
@@ -158,6 +187,8 @@ function profileToOptions(profile) {
 
   const udd = profileUserDataDir(profile.id);
   if (udd) opts.user_data_dir = udd;
+  const addons = firefoxAddonDirs();
+  if (addons.length) opts.addons = addons;
 
   // Proxy + GeoIP: when a proxy is configured, route through it and let Camoufox
   // derive geo / timezone / locale from the proxy's exit IP so the whole identity

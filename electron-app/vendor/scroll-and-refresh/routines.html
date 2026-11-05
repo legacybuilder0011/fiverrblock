@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Routines · Scroll &amp; Refresh</title><link rel="stylesheet" href="routines.css"><script type="module" src="routines-ui.js"></script></head>
+<body>
+<header><div class="brand"><span class="logo">↻</span><div><strong>Scroll &amp; Refresh</strong><p>A little movement. Your sequence.</p></div></div><button id="show-page">↗ Show website</button></header>
+<main>
+  <aside class="library"><div class="eyebrow">YOUR LIBRARY</div><h1>Routines</h1><p class="muted">A few steps, in your order.</p><button id="new" class="primary">＋ New routine</button><nav id="library" aria-label="Saved routines"></nav><p id="library-empty" class="muted">Saved routines will appear here.</p></aside>
+  <section class="editor" aria-label="Routine editor">
+    <div class="eyebrow" id="site">THIS WEBSITE</div>
+    <div class="title-row"><h2>Build your sequence</h2><span class="pill" id="saved">Unsaved</span></div>
+    <p class="muted">Choose a target, arrange the steps, then try one cycle.</p>
+    <label>Routine name<input id="name" maxlength="80" placeholder="My morning check"></label>
+    <label>Starting page<input id="start-url" type="url" placeholder="https://…"></label>
+    <p class="help">Each run starts here. Navigation stays on this website.</p>
+    <div class="section-title"><h3>Steps</h3><span>Run from top to bottom</span></div>
+    <ol id="steps"></ol>
+    <div class="add-row" aria-label="Add a step"><button data-add="click">＋ Click</button><button data-add="navigate">＋ Navigate</button><button data-add="wait">＋ Wait</button><button data-add="scroll">＋ Scroll</button><button data-add="refresh">＋ Refresh</button></div>
+    <div class="options">
+      <label>Between cycles<div class="interval"><input id="minutes" type="number" min="0" max="1440" value="1" aria-label="Minutes"><span>min</span><input id="seconds" type="number" min="0" max="59" value="0" aria-label="Seconds"><span>sec</span></div></label>
+      <label>Final refresh destination<select id="destination"><option value="final">Refresh the final page</option><option value="start">Return to starting page, then refresh</option></select></label>
+    </div>
+    <p class="help">Keep Refresh as the final step. A new countdown begins after that refresh finishes.</p>
+    <div id="error" role="alert" hidden></div>
+    <div class="save-row"><button id="save" class="primary">Save routine</button><button id="delete" class="text-button">Delete saved routine</button></div>
+  </section>
+  <aside class="run-panel" aria-label="Run controls">
+    <div class="eyebrow">TRY IT, THEN REPEAT</div><h2>Ready when you are</h2>
+    <p class="muted">Preview performs one real cycle and stops. Selected targets are highlighted before each click.</p>
+    <button id="preview" class="outline-button">▷ Preview once</button><button id="start" class="primary">Start repeating ↻</button>
+    <div class="status-card"><span class="eyebrow" id="phase">READY</span><strong id="clock">—</strong><p id="status" role="status">Save a routine or try the steps above.</p><div class="controls"><button id="pause" disabled>Pause</button><button id="stop" disabled>Stop</button></div><button id="skip" hidden>Skip this step</button></div>
+    <p class="help">If verification appears, complete it on the website. The routine waits and resumes when the check clears.</p>
+    <p class="help">Links and tabs run automatically. Other buttons ask for confirmation before clicking; form submission controls are excluded.</p>
+    <h3>Recent activity</h3><ol id="activity"></ol>
+  </aside>
+</main></body></html>
