@@ -191,7 +191,13 @@ function openLoginOrMain() {
 // quit handler and silently killing the app on every logout.
 app.on("window-all-closed", () => { /* keep the app alive; tray manages it */ });
 
+// Set once a real quit starts (Quit menu, Cmd+Q, Mac shutdown/restart/log out,
+// an update). The main window's close handler hides instead of closing; during a
+// quit that veto cancelled the whole quit, so macOS reported "interrupted
+// shutdown" and the app could not be quit at all.
+let appQuitting = false;
 app.on("before-quit", () => {
+  appQuitting = true;
   try { require("./local-proxy-bridge").stopAll(); } catch (_) {}
   try { require("./tls-mitm-bridge").stopAll(); } catch (_) {}
 });
@@ -251,6 +257,7 @@ function createMainWindow() {
   // Hide to tray instead of destroying — keeps app alive and prevents
   // "all windows closed" from ever firing on Windows
   mainWindow.on("close", (e) => {
+    if (appQuitting) return;
     e.preventDefault();
     mainWindow.hide();
   });

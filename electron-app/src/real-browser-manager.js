@@ -398,7 +398,11 @@ function writePrivacyPreferences(profile, dataDir) {
     autofill: {
       profile_enabled: false,
       credit_card_enabled: false
-    }
+    },
+    // VPN extension mode: Chrome must not reopen last session's sites at startup,
+    // before the VPN guard's block rules are in place (5 = open the New Tab page).
+    // The connection page reopens the profile's pages once the VPN is confirmed.
+    ...(((profile && profile.proxy) || {}).networkMode === "extension" ? { session: { restore_on_startup: 5 } } : {})
   });
   fs.writeFileSync(prefPath, JSON.stringify(prefs, null, 2), "utf8");
 }
@@ -708,6 +712,7 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
     if (helper) extraExtDirs.push(helper);
   }
   extraExtDirs.push(...bundledExtensionDirs());
+  extraExtDirs.push(...(options.extraExtensionDirs || [])); // e.g. the VPN guard
 
   // Language: prefer the resolved config's coherent locale, fall back to the
   // profile's manual/auto language.

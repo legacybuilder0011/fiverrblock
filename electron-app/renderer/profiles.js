@@ -1261,6 +1261,7 @@ function updateConditionalRows() {
   const networkMode = $("px-networkMode")?.value || "proxy";
   const pxEnabled = $("px-enabled")?.value === "true";
   show("proxyFields", networkMode === "proxy" && pxEnabled);
+  show("vpnExtHint", networkMode === "extension");
 }
 
 // Current real-world versions — MUST mirror LATEST_CHROME_BY_OS / latestVersionFor
@@ -1590,6 +1591,11 @@ async function testProxy() {
       res.textContent = `VPN mode OK — IP: ${captured.network.ip}${captured.network.country ? " · " + captured.network.country : ""}`;
       res.className = "pm-proxy-result ok";
     }
+    return;
+  }
+  if (mode === "extension") {
+    res.textContent = "VPN extension mode — click Start: the profile opens a connection page and waits for the VPN.";
+    res.className = "pm-proxy-result ok";
     return;
   }
   if (mode === "direct") {
@@ -2057,7 +2063,7 @@ function bindFormEvents() {
   $("px-networkMode")?.addEventListener("change", () => {
     const mode = $("px-networkMode")?.value || "proxy";
     if (mode === "proxy") setVal("px-enabled", "true");
-    if (mode === "vpn" || mode === "direct") setVal("px-enabled", "false");
+    if (mode === "vpn" || mode === "direct" || mode === "extension") setVal("px-enabled", "false");
     updateConditionalRows();
     if (mode === "vpn") captureCurrentVpnLocation();
     startAutoIpDetect();

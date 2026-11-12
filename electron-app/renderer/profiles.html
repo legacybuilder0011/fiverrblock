@@ -727,7 +727,16 @@
               <option value="direct">Direct (your real IP) — will not start</option>
               <option value="proxy">Proxy / VPS per profile</option>
               <option value="vpn">Current VPN on this computer</option>
+              <option value="extension">VPN extension in this profile (ExpressVPN, NordVPN…)</option>
             </select>
+          </div>
+          <div id="vpnExtHint" class="pm-proxy-result" hidden style="margin-bottom:10px;line-height:1.5">
+            This profile uses its own VPN extension, so each profile can have its own country without a VPN on the whole PC.<br>
+            1. Engine must be <b>Patched Chromium</b> or <b>Real Brave</b>. 2. Add the VPN in the <b>Extensions</b> tab (paste its Chrome Web Store link).
+            3. Click <b>Start</b>, open the VPN extension, sign in once, pick a country and turn on its "connect on start" option.<br>
+            Websites stay blocked until the VPN is connected, and again if it drops, so the profile never shows your real IP.
+            Time zone and language follow the VPN country (restart the profile once after changing country).
+            Note: VPN apps limit how many devices connect at once, and many users share each VPN IP.
           </div>
           <div class="pm-btn-row" style="margin-bottom:10px">
             <button type="button" class="pm-btn-sm" id="btnCaptureVpn">Capture current VPN/IP</button>

@@ -423,6 +423,20 @@ function getCurrentUserId() {
 
 // ── Data sync — profiles ─────────────────────────────────────────────────────
 
+// Profiles open right now on any PC of this account: their lock was refreshed in
+// the last 90 s (open profiles beat every 20 s; see profile_locks).
+async function openProfileIds() {
+  const userId = getCurrentUserId();
+  if (!cloudReady() || !userId) return null;
+  const { data, error } = await supabase
+    .from("profile_locks")
+    .select("profile_id, device_name")
+    .eq("user_id", userId)
+    .gt("beat_at", new Date(Date.now() - 90000).toISOString());
+  if (error) throw new Error(error.message);
+  return new Map((data || []).map((r) => [r.profile_id, r.device_name || ""]));
+}
+
 // Latest exit IP of every profile in this account, straight from the cloud, so the
 // same-IP check at Start sees what teammates' PCs detected since this PC last synced.
 async function accountExitIps() {
@@ -601,7 +615,7 @@ module.exports = {
   pullProfiles, pushProfile, pushAllProfiles, deleteProfileRemote,
   pullProxies, pushAllProxies, deleteProxyRemote,
   sealProxySecrets, openProxySecrets, sealBuffer, openBuffer,
-  backupInfo, uploadBackup, downloadBackup, deleteBackup, accountExitIps, reportFailure, backupUsage, logLine, cloudReady, deviceId, profileLock,
+  backupInfo, uploadBackup, downloadBackup, deleteBackup, accountExitIps, openProfileIds, reportFailure, backupUsage, logLine, cloudReady, deviceId, profileLock,
   saveAccountSlot, useAccountSlot, listAccountSlots, dropAccountSlot,
   hasSyncKey: () => fs.existsSync(PROXY_KEY_FILE),
   fullSync

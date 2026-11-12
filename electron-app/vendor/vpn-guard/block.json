@@ -1,0 +1,68 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "regexFilter": "^(https?|wss?)://",
+      "excludedRequestDomains": [
+        "localhost",
+        "127.0.0.1",
+        "api.ipify.org",
+        "expressvpn.com",
+        "nordvpn.com",
+        "nordaccount.com",
+        "surfshark.com",
+        "protonvpn.com",
+        "proton.me",
+        "cyberghostvpn.com",
+        "windscribe.com",
+        "privateinternetaccess.com",
+        "ipvanish.com",
+        "tunnelbear.com",
+        "hotspotshield.com",
+        "hide.me",
+        "urban-vpn.com",
+        "browsec.com",
+        "zenmate.com",
+        "vyprvpn.com",
+        "purevpn.com"
+      ],
+      "resourceTypes": [
+        "main_frame",
+        "sub_frame",
+        "stylesheet",
+        "script",
+        "image",
+        "font",
+        "object",
+        "xmlhttprequest",
+        "ping",
+        "csp_report",
+        "media",
+        "websocket",
+        "webtransport",
+        "webbundle",
+        "other"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 3,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "ps-guard-canary",
+      "resourceTypes": [
+        "xmlhttprequest",
+        "other",
+        "main_frame",
+        "image"
+      ]
+    }
+  }
+]

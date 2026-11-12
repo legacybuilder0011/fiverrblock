@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "VPN Guard",
+  "version": "1.0.0",
+  "description": "Privacy Shield: blocks websites until this profile's VPN extension is connected, and again if it drops.",
+  "permissions": ["declarativeNetRequest", "alarms", "storage", "proxy"],
+  "background": { "service_worker": "background.js" },
+  "declarative_net_request": {
+    "rule_resources": [{ "id": "block", "enabled": true, "path": "block.json" }]
+  },
+  "action": { "default_title": "VPN Guard" }
+}

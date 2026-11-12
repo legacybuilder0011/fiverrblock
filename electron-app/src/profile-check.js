@@ -92,7 +92,7 @@ function grade(r, { profile, config, myIp, lan, others }) {
 
   const ipErr = !r.ip || String(r.ip).startsWith("ERR");
   if (ipErr) add("Website can reach the internet", false, "The profile could not load a website. The proxy may be down. " + (r.ip || ""));
-  else if (mode === "proxy") add("Your real IP is hidden", r.ip !== myIp, r.ip !== myIp ? `Websites see ${r.ip}.` : "Websites see this PC's real IP. Do not log in.");
+  else if (mode === "proxy" || mode === "extension") add("Your real IP is hidden", r.ip !== myIp, r.ip !== myIp ? `Websites see ${r.ip}.` : "Websites see this PC's real IP. Do not log in.");
   else add("Network", null, `VPN mode: websites see ${r.ip}. Make sure that is your VPN, not your home internet.`);
 
   if (!ipErr) {
@@ -101,7 +101,7 @@ function grade(r, { profile, config, myIp, lan, others }) {
   }
 
   const ice = (r.ice || []).join(" ").toLowerCase();
-  const webrtcLeak = (myIp && mode === "proxy" && ice.includes(myIp)) || lan.some((ip) => ice.includes(ip));
+  const webrtcLeak = (myIp && (mode === "proxy" || mode === "extension") && ice.includes(myIp)) || lan.some((ip) => ice.includes(ip));
   add("WebRTC hides your IP", !webrtcLeak, webrtcLeak ? "WebRTC shows this PC's real or home-network address." : "No real or home-network address exposed.");
 
   const wantTz = config && config.timezone;

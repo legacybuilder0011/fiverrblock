@@ -478,6 +478,7 @@ const RENDERER_PRELOAD    = path.join(__dirname, "renderer-preload.js");
 const cdpStealth = require("./cdp-stealth");
 const camoufox = require("./camoufox-manager");
 const realBrowser = require("./real-browser-manager");
+const browserVpn = require("./browser-vpn");
 const cloudTunnel = require("./cloud-tunnel");
 realBrowser.setChangeHandler(() => notifyManagerWindows("WINDOWS_CHANGED"));
 
@@ -875,6 +876,7 @@ function registerIpcHandlers() {
     if (mode === "proxy") {
       const proxyErr = sessionMgr.proxyLaunchError(px);
       if (proxyErr) return { ok: false, error: proxyErr };
+      if (px.networkMode === "extension") return { ok: false, error: "VPN extension mode runs on this PC only (Patched Chromium or Real Brave), not in the cloud." };
       // Same as local Start: "Auto" timezone/language/geo follow the proxy's exit.
       profile = await refreshProxyGeo(profile);
       body = { mode: "proxy", proxy: { scheme: px.scheme || "http", host: px.host, port: px.port, username: sessionMgr.expandProxyPlaceholders(px.username || "", profile), password: px.password || "" } };
@@ -930,6 +932,7 @@ function registerIpcHandlers() {
     if (!profile) return { ok: false, reason: "no-profile" };
     const proxyErr = sessionMgr.proxyLaunchError(profile.proxy);
     if (proxyErr) return { ok: false, reason: proxyErr };
+    if ((profile.proxy || {}).networkMode === "extension") return { ok: false, reason: "VPN extension mode works with the Patched Chromium and Real Brave engines, not Stealthfox." };
     try {
       // VPN/direct mode: the browser's location MUST match the ACTUAL exit IP, or
       // a site like Fiverr flags the mismatch (e.g. US timezone on a Nigerian IP →
@@ -1829,6 +1832,49 @@ function registerIpcHandlers() {
 
 // On login/register, pull any cloud data into the per-user local dir, then
 // push anything that exists locally only (first-time login on this PC).
+// Team IP check for VPN extension mode: another profile of this account that is
+// open right now (any PC) on the same exit IP. Open = cloud lock refreshed in the
+// last 90 s, or open on this PC. Offline or no cloud: no team check (null).
+const teamIpCache = new Map(); // ip -> { at, holder }
+async function teamProfileOnIp(profileId, ip) {
+  const hit = teamIpCache.get(ip);
+  if (hit && Date.now() - hit.at < 10000 && hit.for === profileId) return hit.holder;
+  const cloud = require("./cloud-sync");
+  let open, ips;
+  try { [open, ips] = await Promise.all([cloud.openProfileIds(), cloud.accountExitIps()]); } catch (_) { return null; }
+  open = open || new Map();
+  for (const id of [...profileWindows.keys(), ...realBrowser.runningIds(), ...camoufox.runningIds()]) if (!open.has(id)) open.set(id, "this PC");
+  const local = store.getProfiles().filter((p) => !p.deletedAt)
+    .map((p) => ({ id: p.id, name: p.name, ip: String((p.proxy && p.proxy.detectedIp) || "").trim() }));
+  const h = [...(ips || []), ...local].find((r) => r.id !== profileId && r.ip === ip && open.has(r.id));
+  const holder = h ? { name: h.name || "another profile", device: open.get(h.id) || "" } : null;
+  teamIpCache.set(ip, { at: Date.now(), for: profileId, holder });
+  return holder;
+}
+
+// The VPN extension connected: look up where its exit is and store it like a
+// captured VPN location, so Auto time zone / language / geolocation follow it.
+// needsRestart when the time zone the browser launched with no longer matches.
+async function recordBrowserVpnExit(profileId, ip, launchedTz) {
+  const data = await new Promise((resolve) => {
+    const req = net.request(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,query`);
+    let body = "";
+    req.on("response", (res) => { res.on("data", (c) => (body += c)); res.on("end", () => { try { resolve(JSON.parse(body)); } catch (_) { resolve(null); } }); });
+    req.on("error", () => resolve(null));
+    req.end();
+  });
+  const n = data && data.status === "success" ? normalizeNetworkCapture(data) : { ip };
+  const profile = store.getProfiles().find((p) => p.id === profileId);
+  if (!profile) return {};
+  store.updateProfile(profileId, { proxy: {
+    detectedIp: ip, detectedCountry: n.country, detectedCountryCode: n.countryCode, detectedCity: n.city, detectedState: n.state,
+    detectedTimezone: n.timezone, detectedLatitude: n.latitude, detectedLongitude: n.longitude, detectedAt: Date.now()
+  } });
+  const fp = profile.fingerprint || {};
+  const tzFollowsVpn = !fp.timezone || fp.timezone === "auto";
+  return { country: n.country, city: n.city, needsRestart: Boolean(tzFollowsVpn && n.timezone && launchedTz && n.timezone !== launchedTz) };
+}
+
 // Start failures go to the account's app_failures table so problems on any PC
 // are visible without asking. Questions the user answers are not failures.
 function reportStartFailure(profileId, result) {
@@ -2179,6 +2225,21 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
     return { ok: false, needsOsConfirm: true, profileName: profile.name || "Profile", profileOs: profile.os, hostOs };
   }
 
+  // "VPN extension in this profile": the profile's own VPN extension carries its
+  // traffic (see browser-vpn.js). Only the Chromium-based external engines run
+  // store extensions with the proxy API.
+  let vpnLaunch = null;
+  if ((profile.proxy && profile.proxy.networkMode) === "extension") {
+    if (!realBrowser.isRealBrowserEngine(profile.engine)) {
+      return { ok: false, error: "VPN extension mode works with the Patched Chromium and Real Brave engines. Change this profile's engine, save, then click Start." };
+    }
+    const name = browserVpn.vpnExtensionName(profile);
+    if (!name) return { ok: false, error: "This profile is set to use a VPN extension, but none is installed. Add one (for example ExpressVPN) in the Extensions tab, then click Start." };
+    const ip = await browserVpn.realIp();
+    if (!ip) return { ok: false, error: "Couldn't check this PC's internet connection. Make sure you're online, then click Start again." };
+    vpnLaunch = { name, ip };
+  }
+
   // ── Required fields & consistency checks ─────────────────────────────────────
   let px = profile.proxy || {};
   const networkMode = px.networkMode || (px.enabled ? "proxy" : "direct");
@@ -2347,8 +2408,24 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
   }
 
   if (realBrowser.isRealBrowserEngine(profile.engine)) {
-    const res = await realBrowser.launchProfile(profile, customUrl || "", {
-      expandProxyUsername: (value) => sessionMgr.expandProxyPlaceholders(value, profile)
+    let launchUrl = customUrl || "";
+    const extraExtensionDirs = [];
+    if (vpnLaunch) {
+      // Open the connection page first; the guard blocks every site until the
+      // VPN is on. The page continues to what the profile was going to open.
+      const next = (customUrl ? [customUrl] : ((profile.session && profile.session.tabs) || []).map((t) => t && t.url))
+        .filter((u) => /^https?:\/\//i.test(String(u || ""))).slice(0, 12);
+      const launchedTz = (store.buildConfigFromProfile(profile) || {}).timezone || "";
+      launchUrl = await browserVpn.connectionPage({
+        extension: vpnLaunch.name, realIp: vpnLaunch.ip, next,
+        onConnected: (ip) => recordBrowserVpnExit(profile.id, ip, launchedTz),
+        checkIp: (ip) => teamProfileOnIp(profile.id, ip)
+      });
+      extraExtensionDirs.push(browserVpn.writeGuard(profile.id, vpnLaunch.ip, launchUrl));
+    }
+    const res = await realBrowser.launchProfile(profile, launchUrl, {
+      expandProxyUsername: (value) => sessionMgr.expandProxyPlaceholders(value, profile),
+      extraExtensionDirs
     });
     if (!res || !res.ok) {
       return {
