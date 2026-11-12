@@ -65,7 +65,7 @@ a{color:#60a5fa}
 Websites stay blocked until the VPN is on, so nothing loads on your real IP.</p>
 <p id=d class=muted></p></div>
 <script>
-var REAL = ${JSON.stringify(s.realIp)}, NEXT = ${JSON.stringify(s.next)}, done = false;
+var REAL = ${JSON.stringify(s.realIp)}, NEXT = ${JSON.stringify(s.next)}, done = false, started = Date.now(), alarmed = false;
 async function tick() {
   if (done) return;
   // The guard decides. Its canary rule always blocks one address, so a canary
@@ -73,6 +73,21 @@ async function tick() {
   // Websites count as open only when the canary is blocked and a site loads.
   var guardReady = false, open = false, ip = "";
   try { await fetch("https://www.gstatic.com/generate_204?ps-guard-canary=" + Date.now(), { mode: "no-cors", cache: "no-store" }); } catch (e) { guardReady = true; }
+  // Rules still not running 10 s in: the guard did not load, so nothing is
+  // blocked. Say so loudly instead of "waiting", and tell the app.
+  if (!guardReady && Date.now() - started > 10000) {
+    if (!alarmed) {
+      alarmed = true;
+      document.body.style.background = "#450a0a";
+      document.getElementById("h").textContent = "Protection is NOT running";
+      document.getElementById("h").className = "warn";
+      document.getElementById("p").textContent = "The VPN Guard did not start, so websites are NOT blocked and could see your real IP. Do not browse in this profile. Close it and click Start again; if this repeats, tell your admin.";
+      document.getElementById("d").textContent = "";
+      fetch("guard-missing", { method: "POST" }).catch(function () {});
+    }
+    setTimeout(tick, 3000);
+    return;
+  }
   if (guardReady) { try { await fetch("https://www.gstatic.com/generate_204?" + Date.now(), { mode: "no-cors", cache: "no-store" }); open = true; } catch (e) {} }
   try { ip = (await (await fetch("https://api.ipify.org/?format=json", { cache: "no-store" })).json()).ip; } catch (e) {}
   // Team IP check: another open profile of this team on the same VPN IP.
@@ -132,6 +147,10 @@ function ensureServer() {
       });
       return;
     }
+    if (req.method === "POST" && action === "guard-missing") {
+      try { if (s.onGuardMissing) s.onGuardMissing(); } catch (_) {}
+      return res.end("ok");
+    }
     if (req.method === "POST" && action === "report") {
       let body = "";
       req.on("data", (c) => { body += c; if (body.length > 10000) req.destroy(); });
@@ -151,10 +170,10 @@ function ensureServer() {
 
 // Returns the URL the profile should open first. onConnected(ip) resolves to
 // { country, city, needsRestart }.
-async function connectionPage({ extension, realIp: ip, next, onConnected, checkIp }) {
+async function connectionPage({ extension, realIp: ip, next, onConnected, checkIp, onGuardMissing }) {
   const port = await ensureServer();
   const token = crypto.randomBytes(12).toString("hex");
-  sessions.set(token, { extension: String(extension).replace(/[<>&"]/g, ""), realIp: ip, next: next || [], onConnected, checkIp });
+  sessions.set(token, { extension: String(extension).replace(/[<>&"]/g, ""), realIp: ip, next: next || [], onConnected, checkIp, onGuardMissing });
   return `http://127.0.0.1:${port}/${token}/`;
 }
 

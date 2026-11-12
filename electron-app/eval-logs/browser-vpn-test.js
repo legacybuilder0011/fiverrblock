@@ -104,6 +104,16 @@ app.whenReady().then(async () => {
   expect("D4 sites once the IP is free", await s.tryOpen(), "loads");
   await stop(s);
 
+  // E: the guard did not load at all -> the page must say so, and tell the app.
+  let reported = false;
+  const pageE = await vpn.connectionPage({ extension: "TestVPN", realIp: real, next: [], onConnected: async () => ({}), onGuardMissing: () => { reported = true; } });
+  s = await launch([testVpn], pageE);
+  await sleep(14000);
+  const connE = s.pages().find((p) => p.url().startsWith("http://127.0.0.1"));
+  expect("E1 page warns when the guard is not running", connE ? await connE.locator("h2").textContent().catch(() => "") : "(no page)", "Protection is NOT running");
+  expect("E2 app was told", reported ? "reported" : "not reported", "reported");
+  await stop(s);
+
   console.log(results.join("\n"));
   relay.close(); app.quit();
 });
