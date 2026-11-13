@@ -108,7 +108,6 @@ app.on("second-instance", () => {
 
 app.whenReady().then(async () => {
   appReady = true;
-  try { session.defaultSession.setWebRTCIPHandlingPolicy("disable_non_proxied_udp"); } catch (err) { logError(err); }
 
   // Protocol handlers are scoped to an Electron session. Profile browser
   // sessions register the same handler when they are configured.
@@ -164,6 +163,11 @@ app.whenReady().then(async () => {
   });
 
   createTray();
+  // Cloud ended the session mid-use: sign back in quietly; ask only if that fails.
+  require("./cloud-sync").onUnexpectedSignOut(() => {
+    // Open windows stay as they are; after sign-in the main window is reused.
+    silentRelogin().then((ok) => { if (!ok) createLoginWindow(); });
+  });
   openLoginOrMain();
 
   // Background auto-update from GitHub Releases (packaged app only).
@@ -180,9 +184,30 @@ function openLoginOrMain() {
   if (session && session.userId && cloudOk) {
     createMainWindow();
     restoreOpenProfiles();
-  } else {
-    createLoginWindow();
+    return;
   }
+  // Session gone (the cloud refused a renewal, often after a dropped
+  // connection): sign back in with the remembered password before asking.
+  silentRelogin().then((ok) => {
+    if (ok) { createMainWindow(); restoreOpenProfiles(); }
+    else createLoginWindow();
+  });
+}
+
+// Signs in with the password saved by "Remember me". false when none is saved,
+// the OS cannot decrypt it, or the cloud refuses it.
+let reloginRunning = null;
+function silentRelogin() {
+  if (reloginRunning) return reloginRunning;
+  reloginRunning = (async () => {
+    const saved = require("./remembered-login").get();
+    if (!saved.email || !saved.password) return false;
+    const r = await authStore.login(saved.email, saved.password);
+    logInfo(`silent re-login ${saved.email.replace(/^(.).*@/, "$1***@")}: ${r.ok ? "ok" : "failed (" + r.error + ")"}`);
+    if (r.ok) { try { await require("./ipc-handlers").postLoginSync(); } catch (_) {} }
+    return Boolean(r.ok);
+  })().finally(() => { reloginRunning = null; });
+  return reloginRunning;
 }
 
 // Prevent the default Windows/Linux behavior of quitting when the last

@@ -283,6 +283,7 @@ try {
   const electronFetch = async (input, init) => {
     const url = typeof input === "string" ? input : (input && input.url) || String(input);
     try {
+      await app.whenReady(); // net.fetch throws "Session can only be received when app is ready" before this
       const res = await net.fetch(input, init);
       if (!res.ok) logLine(`fetch ${init?.method || "GET"} ${url} -> ${res.status}`);
       return res;
@@ -355,8 +356,22 @@ async function login(email, password) {
   }
 }
 
+// Signed out by the cloud, not by the user: a renewal the server refused (the
+// usual cause is a connection lost mid-renewal on a flaky network).
+let userLoggingOut = false;
+const signedOutListeners = [];
+function onUnexpectedSignOut(fn) { signedOutListeners.push(fn); }
+if (supabase) {
+  supabase.auth.onAuthStateChange((event) => {
+    if (event !== "SIGNED_OUT" || userLoggingOut) return;
+    logLine("session ended by the cloud (renewal refused)");
+    for (const fn of signedOutListeners) { try { fn(); } catch (_) {} }
+  });
+}
+
 async function logout() {
-  if (cloudReady()) { try { await supabase.auth.signOut(); } catch (_) {} }
+  userLoggingOut = true;
+  try { if (cloudReady()) await supabase.auth.signOut(); } catch (_) {} finally { userLoggingOut = false; }
   try { fs.unlinkSync(SESSION_FILE); } catch (_) {}
   try { fs.unlinkSync(PROXY_KEY_FILE); } catch (_) {}
 }
@@ -611,7 +626,7 @@ async function fullSync(localProfiles, localProxies) {
 }
 
 module.exports = {
-  register, login, logout, getSession, getCurrentUserId, getAccessToken, refreshAccessToken,
+  register, login, logout, getSession, onUnexpectedSignOut, getCurrentUserId, getAccessToken, refreshAccessToken,
   pullProfiles, pushProfile, pushAllProfiles, deleteProfileRemote,
   pullProxies, pushAllProxies, deleteProxyRemote,
   sealProxySecrets, openProxySecrets, sealBuffer, openBuffer,

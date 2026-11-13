@@ -99,6 +99,16 @@
     }
     .saved-btn:hover { border-color: #60a5fa; }
     .hint { font-size: 11px; color: #475569; margin-top: 14px; text-align: center; }
+    .pw-wrap { position: relative; }
+    .pw-wrap input { padding-right: 40px; }
+    .eye { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: 0;
+      color: #94a3b8; cursor: pointer; font-size: 15px; padding: 4px 6px; line-height: 1; }
+    .eye:hover { color: #f1f5f9; }
+    .row-between { display: flex; justify-content: space-between; align-items: center; margin: -6px 0 14px; font-size: 12px; }
+    .row-between label { display: flex; gap: 6px; align-items: center; margin: 0; text-transform: none; letter-spacing: 0; font-size: 12px; cursor: pointer; }
+    .row-between input[type=checkbox] { width: auto; }
+    .link { background: none; border: 0; color: #60a5fa; cursor: pointer; font-size: 12px; padding: 0; }
+    .link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -130,9 +140,13 @@
       <label>Password</label>
       <input type="password" id="loginPassword" placeholder="Your password" autocomplete="current-password" />
     </div>
+    <div class="row-between">
+      <label><input type="checkbox" id="rememberMe" checked /> Remember me on this computer</label>
+    </div>
     <button class="btn" id="btnLogin" onclick="doLogin()">Sign In</button>
     <p class="hint">Don't have an account? Click "Create Account" above.</p>
   </div>
+
 
   <!-- Register form -->
   <div id="formRegister" style="display:none">
@@ -161,6 +175,38 @@ function showTab(tab) {
   document.getElementById('formRegister').style.display = tab === 'register' ? '' : 'none';
   clearMessages();
 }
+
+// 👁 on every password box: show / hide what was typed.
+document.querySelectorAll('input[type=password]').forEach(function (input) {
+  const wrap = document.createElement('div');
+  wrap.className = 'pw-wrap';
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+  const eye = document.createElement('button');
+  eye.type = 'button';
+  eye.className = 'eye';
+  eye.title = 'Show password';
+  eye.textContent = '👁';
+  eye.onclick = function () {
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    eye.textContent = show ? '🙈' : '👁';
+    eye.title = show ? 'Hide password' : 'Show password';
+  };
+  wrap.appendChild(eye);
+});
+
+// Remembered sign-in: prefill the email; a saved password signs in with an empty box.
+let remembered = { email: '', hasPassword: false };
+window.electronAPI.invoke('AUTH_REMEMBERED', {}).then(function (r) {
+  if (!r || !r.email) return;
+  remembered = r;
+  const email = document.getElementById('loginEmail');
+  if (!email.value) email.value = r.email;
+  if (r.hasPassword) document.getElementById('loginPassword').placeholder = 'Saved on this computer — just click Sign In';
+  document.getElementById('loginPassword').focus();
+}).catch(function () {});
+
 
 function showError(msg) {
   const el = document.getElementById('msgError');
@@ -208,11 +254,12 @@ async function doLogin() {
   clearMessages();
   const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value;
-  if (!email || !password) { showError('Please enter your email and password.'); return; }
+  const usesSaved = !password && remembered.hasPassword && email.toLowerCase() === remembered.email;
+  if (!email || (!password && !usesSaved)) { showError('Please enter your email and password.'); return; }
 
   setLoading('btnLogin', true);
   try {
-    const r = await window.electronAPI.invoke('AUTH_LOGIN', { email, password });
+    const r = await window.electronAPI.invoke('AUTH_LOGIN', { email, password, remember: document.getElementById('rememberMe').checked });
     if (!r.ok) { showError(r.error || 'Login failed.'); return; }
     showSuccess('Signed in! Opening app…');
     setTimeout(async () => {

@@ -1509,16 +1509,33 @@ function registerIpcHandlers() {
 
   ipcMain.handle("AUTH_REGISTER", async (_ev, { email, password } = {}) => {
     const result = await authStore.register(email, password);
+    if (result.ok) require("./remembered-login").remember(email, null); // prefill next time
     // Only sync if no email confirmation is needed (user is immediately active)
     if (result.ok && !result.needsConfirmation) await postLoginSync();
     return result;
   });
 
-  ipcMain.handle("AUTH_LOGIN", async (_ev, { email, password } = {}) => {
-    const result = await authStore.login(email, password);
-    if (result.ok) await postLoginSync();
+  // remember: save the password on this computer (OS-encrypted). An empty
+  // password for the remembered email signs in with the saved one.
+  ipcMain.handle("AUTH_LOGIN", async (_ev, { email, password, remember } = {}) => {
+    const remembered = require("./remembered-login");
+    const saved = remembered.get();
+    const sameEmail = String(email || "").trim().toLowerCase() === saved.email;
+    const pw = password || (sameEmail ? saved.password : "");
+    const result = await authStore.login(email, pw);
+    if (result.ok) {
+      remembered.remember(email, remember === false ? null : (remember || (sameEmail && !password)) ? pw : null);
+      await postLoginSync();
+    }
     return result;
   });
+
+  // Login page: prefill the last email; tell it whether a password is saved.
+  ipcMain.handle("AUTH_REMEMBERED", async () => {
+    const r = require("./remembered-login").get();
+    return { ok: true, email: r.email, hasPassword: Boolean(r.password) };
+  });
+
 
   ipcMain.handle("AUTH_LOGOUT", async () => {
     await authStore.logout();
@@ -4024,4 +4041,4 @@ function tryTestUrl(url, session, username, password) {
   });
 }
 
-module.exports = { registerIpcHandlers, openProfileWindow, detectProxyGeo, captureCurrentNetwork, classifyConnection };
+module.exports = { registerIpcHandlers, openProfileWindow, postLoginSync, detectProxyGeo, captureCurrentNetwork, classifyConnection };

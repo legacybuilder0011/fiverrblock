@@ -339,6 +339,8 @@ function waitForConnectResponse(socket, connectReq, clientSocket, head, upstream
         return;
       }
       socket.on("error", () => { try { clientSocket.destroy(); } catch (_) {} });
+      // The browser can close its side while the proxy is still sending (EPIPE).
+      clientSocket.on("error", () => { try { socket.destroy(); } catch (_) {} });
       resolve({ ok: true });
     };
     const timer = setTimeout(() => {
