@@ -2437,6 +2437,7 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
         extension: vpnLaunch.name, realIp: vpnLaunch.ip, next,
         onConnected: (ip) => recordBrowserVpnExit(profile.id, ip, launchedTz),
         checkIp: (ip) => teamProfileOnIp(profile.id, ip),
+        onGuardState: (g) => logError(`vpn guard profile=${profile.id} vpnOn=${g.vpnOn} control=${g.control} mode=${g.mode} ip=${g.ip ? "set via " + g.via : "none"} ipError=${g.ipError || "-"} shared=${g.sharedWith || "-"} safe=${g.safe}`),
         onGuardMissing: () => {
           logError(`vpn guard not running profile=${profile.id} engine=${profile.engine}`);
           require("./cloud-sync").reportFailure({ kind: "vpn-guard", profile, reason: `VPN Guard did not start (${profile.engine}, ${process.platform})` });

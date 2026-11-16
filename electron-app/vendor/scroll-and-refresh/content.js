@@ -280,6 +280,7 @@
 
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id) return false;
+    if (message.type === 'PING') { respond({ ok: true }); return false; }
     if (message.type === 'MONITOR') {
       const status = pageStatus();
       startMonitor();

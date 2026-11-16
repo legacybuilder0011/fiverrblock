@@ -63,9 +63,25 @@ async function stop(tabId, error = '') {
   await tell(tabId, { type: 'CANCEL' }).catch(() => {});
   return read(tabId);
 }
-async function inject(tabId) {
+async function injectFiles(tabId) {
   const results = await chrome.scripting.executeScript({ target: { tabId }, files: ['motion.js', 'content.js', 'routine-content.js'], injectImmediately: true });
   return results.find((item) => item.frameId === 0)?.documentId;
+}
+// A copy already on the page keeps a fresh one out (its "installed" flag). If
+// that copy stopped answering (it failed to start, or lost its link to the
+// extension), Start failed with "Receiving end does not exist" until the page
+// was reloaded by hand. Check it answers; if not, clear the flags and inject again.
+async function inject(tabId) {
+  let documentId = await injectFiles(tabId);
+  const alive = await tell(tabId, { type: 'PING' }, documentId).then((r) => Boolean(r?.ok), () => false);
+  if (!alive) {
+    await chrome.scripting.executeScript({ target: { tabId }, injectImmediately: true, func: () => {
+      delete globalThis.__scrollRefreshInstalled; delete globalThis.__scrollRefreshRoutines;
+      delete globalThis.__scrollRefreshPage; delete globalThis.__scrollRefreshMotion;
+    } });
+    documentId = await injectFiles(tabId);
+  }
+  return documentId;
 }
 async function arm(tabId, state, documentId) {
   const restore = state.restorePosition;

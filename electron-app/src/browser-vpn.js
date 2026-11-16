@@ -63,9 +63,23 @@ a{color:#60a5fa}
 <div class=box><h2 id=h>Waiting for ${s.extension}…</h2>
 <p id=p class=muted>Click the <b>${s.extension}</b> icon in the toolbar (puzzle piece ▸ pin it), sign in once and connect to a country.
 Websites stay blocked until the VPN is on, so nothing loads on your real IP.</p>
-<p id=d class=muted></p></div>
+<p id=d class=muted></p>
+<p id=g class=muted style="font-size:12px;opacity:.8;margin-top:14px"></p></div>
 <script>
 var REAL = ${JSON.stringify(s.realIp)}, NEXT = ${JSON.stringify(s.next)}, done = false, started = Date.now(), alarmed = false;
+// What the VPN Guard last decided, so a block explains itself.
+async function showGuard() {
+  try {
+    var g = await (await fetch("state", { cache: "no-store" })).json();
+    if (!g || !g.at) return;
+    var parts = [g.vpnOn ? "VPN extension controls the connection ✓" : "VPN extension is not controlling the connection (" + (g.control || "?") + ", " + (g.mode || "?") + ")"];
+    if (g.vpnOn) parts.push(g.ip ? "IP " + g.ip + " via " + g.via : "IP check failed: " + (g.ipError || "no answer"));
+    if (g.realIp) parts.push("that is this PC's own IP");
+    if (g.sharedWith) parts.push("IP in use by " + g.sharedWith);
+    parts.push(g.safe ? "websites allowed" : "websites blocked");
+    document.getElementById("g").textContent = "VPN Guard: " + parts.join(" · ");
+  } catch (e) {}
+}
 async function tick() {
   if (done) return;
   // The guard decides. Its canary rule always blocks one address, so a canary
@@ -91,6 +105,9 @@ async function tick() {
   if (guardReady) { try { await fetch("https://www.gstatic.com/generate_204?" + Date.now(), { mode: "no-cors", cache: "no-store" }); open = true; } catch (e) {} }
   try { ip = (await (await fetch("https://api.ipify.org/?format=json", { cache: "no-store" })).json()).ip; } catch (e) {}
   // Team IP check: another open profile of this team on the same VPN IP.
+  // The guard can use this IP if its own check through the VPN fails.
+  if (ip && ip !== REAL) fetch("page-ip", { method: "POST", body: JSON.stringify({ ip: ip }) }).catch(function () {});
+  showGuard();
   if (ip && ip !== REAL) {
     var a = {};
     try { a = await (await fetch("allowed?ip=" + encodeURIComponent(ip), { cache: "no-store" })).json(); } catch (e) {}
@@ -147,6 +164,32 @@ function ensureServer() {
       });
       return;
     }
+    if (action === "page-ip" || action === "guard-state") {
+      if (req.method !== "POST") {
+        res.setHeader("Content-Type", "application/json"); res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.end(JSON.stringify(s.pageIp || {}));
+      }
+      let body = "";
+      req.on("data", (c) => { body += c; if (body.length > 10000) req.destroy(); });
+      req.on("end", () => {
+        try {
+          const data = JSON.parse(body);
+          if (action === "page-ip") s.pageIp = { ip: String(data.ip || ""), at: Date.now() };
+          else {
+            const changed = JSON.stringify({ ...s.guard, at: 0 }) !== JSON.stringify({ ...data, at: 0 });
+            s.guard = { ...data, at: Date.now() };
+            if (changed && s.onGuardState) s.onGuardState(s.guard);
+          }
+        } catch (_) {}
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.end("ok");
+      });
+      return;
+    }
+    if (action === "state") {
+      res.setHeader("Content-Type", "application/json");
+      return res.end(JSON.stringify(s.guard || {}));
+    }
     if (req.method === "POST" && action === "guard-missing") {
       try { if (s.onGuardMissing) s.onGuardMissing(); } catch (_) {}
       return res.end("ok");
@@ -170,10 +213,10 @@ function ensureServer() {
 
 // Returns the URL the profile should open first. onConnected(ip) resolves to
 // { country, city, needsRestart }.
-async function connectionPage({ extension, realIp: ip, next, onConnected, checkIp, onGuardMissing }) {
+async function connectionPage({ extension, realIp: ip, next, onConnected, checkIp, onGuardMissing, onGuardState }) {
   const port = await ensureServer();
   const token = crypto.randomBytes(12).toString("hex");
-  sessions.set(token, { extension: String(extension).replace(/[<>&"]/g, ""), realIp: ip, next: next || [], onConnected, checkIp, onGuardMissing });
+  sessions.set(token, { extension: String(extension).replace(/[<>&"]/g, ""), realIp: ip, next: next || [], onConnected, checkIp, onGuardMissing, onGuardState });
   return `http://127.0.0.1:${port}/${token}/`;
 }
 

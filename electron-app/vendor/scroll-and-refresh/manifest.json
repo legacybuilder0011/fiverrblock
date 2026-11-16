@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Scroll & Refresh",
-  "version": "1.4.1",
+  "version": "1.4.1.1",
   "description": "Refresh timers and saved routines: select links, navigate, wait, scroll, and refresh with page controls and work protection.",
   "minimum_chrome_version": "120",
   "permissions": ["activeTab", "scripting", "storage", "alarms", "webNavigation"],

@@ -17,7 +17,14 @@ const results = [];
 const expect = (name, got, want) => { results.push(`${got === want ? "PASS" : "FAIL"}  ${name}: ${got}`); };
 
 const relay = http.createServer((req, res) => { res.writeHead(502); res.end(); });
+// AUTH=1: the relay wants a login, like PIA / ExpressVPN servers. The test VPN
+// supplies it through webRequest.onAuthRequired, which only sees requests made by
+// web pages, not by other extensions.
+const AUTH = process.env.AUTH === "1";
 relay.on("connect", (req, sock, head) => {
+  if (AUTH && req.headers["proxy-authorization"] !== "Basic " + Buffer.from("vpnuser:vpnpass").toString("base64")) {
+    sock.end("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"vpn\"\r\n\r\n"); return;
+  }
   const [h, p] = req.url.split(":");
   const up = netSock.connect(Number(p) || 443, h, () => { sock.write("HTTP/1.1 200 OK\r\n\r\n"); up.write(head); up.pipe(sock); sock.pipe(up); });
   up.on("error", () => sock.destroy()); sock.on("error", () => up.destroy());
@@ -27,11 +34,13 @@ relay.on("connect", (req, sock, head) => {
 function testVpnExtension(relayPort) {
   const dir = path.join(udd, "..", path.basename(udd) + "-testvpn");
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "TestVPN", version: "1.0", permissions: ["proxy", "storage"], background: { service_worker: "bg.js" } }));
+  fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "TestVPN", version: "1.0",
+    permissions: ["proxy", "storage", "webRequest", "webRequestAuthProvider"], host_permissions: ["<all_urls>"], background: { service_worker: "bg.js" } }));
   fs.writeFileSync(path.join(dir, "bg.js"), `
 self.vpnOn = () => chrome.storage.local.set({ on: true }).then(() => chrome.proxy.settings.set({ value: { mode: "fixed_servers", rules: { singleProxy: { scheme: "http", host: "127.0.0.1", port: ${relayPort} } } }, scope: "regular" }));
 self.vpnOff = () => chrome.storage.local.set({ on: false }).then(() => chrome.proxy.settings.clear({ scope: "regular" }));
 const apply = async () => { const { on } = await chrome.storage.local.get({ on: true }); return on ? self.vpnOn() : self.vpnOff(); };
+chrome.webRequest.onAuthRequired.addListener((d) => (d.isProxy ? { authCredentials: { username: "vpnuser", password: "vpnpass" } } : {}), { urls: ["<all_urls>"] }, ["blocking"]);
 chrome.runtime.onStartup.addListener(apply); chrome.runtime.onInstalled.addListener(apply); apply();`);
   return dir;
 }
