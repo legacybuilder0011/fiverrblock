@@ -24,8 +24,8 @@ const block = () => chrome.declarativeNetRequest.updateSessionRules({ removeRule
 const allow = () => chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [ALLOW_ID], addRules: [ALLOW] });
 
 // The exit IP, asked through the VPN. Several services, because sites behind
-// Cloudflare often challenge VPN IPs. Last resort: the IP the connection page saw
-// (its requests go through the VPN like the user's browsing does).
+// Cloudflare often challenge VPN IPs. Only answers fetched through the VPN
+// count: the connection page may have seen the real IP before the VPN was up.
 async function exitIp(cfg) {
   const services = [
     ["https://api.ipify.org/?format=json", (t) => JSON.parse(t).ip],
@@ -41,13 +41,27 @@ async function exitIp(cfg) {
       errors.push(new URL(url).host + " " + res.status);
     } catch (e) { errors.push(new URL(url).host + " " + (e.message || e)); }
   }
-  if (cfg.statusUrl) {
-    try {
-      const r = await (await fetch(cfg.statusUrl + "page-ip", { cache: "no-store" })).json();
-      if (r && r.ip && Date.now() - r.at < 120000) return { ip: r.ip, via: "connection page" };
-    } catch (_) {}
-  }
   return { ip: "", error: errors.join("; ") };
+}
+
+// The VPN extension shows CONNECTED and keeps its proxy set, but nothing gets
+// through: its background stopped (popup: "Receiving end does not exist"), so
+// nobody answers the proxy's login and every request fails. Turning it off and
+// on again starts it fresh, as a manual reload in brave://extensions does.
+// At most every 2 minutes, 3 times per browser session.
+async function restartStuckVpn(now) {
+  const st = await chrome.storage.session.get({ badSince: 0, lastRestart: 0, restarts: 0 });
+  const badSince = st.badSince || now;
+  if (!st.badSince) await chrome.storage.session.set({ badSince });
+  if (now - badSince < 20000 || now - st.lastRestart < 120000 || st.restarts >= 3) return "";
+  const self = chrome.runtime.id;
+  const vpns = (await chrome.management.getAll()).filter((e) => e.enabled && e.id !== self && e.type === "extension" && (e.permissions || []).includes("proxy"));
+  if (!vpns.length) return "";
+  await chrome.storage.session.set({ lastRestart: now, restarts: st.restarts + 1, badSince: 0 });
+  for (const e of vpns) {
+    try { await chrome.management.setEnabled(e.id, false); await chrome.management.setEnabled(e.id, true); } catch (_) {}
+  }
+  return vpns.map((e) => e.name).join(", ");
 }
 
 let checking = null;
@@ -70,6 +84,9 @@ async function check() {
     } catch (_) {}
     let ip = "", ipError = "", via = "";
     if (vpnOn) ({ ip, error: ipError, via } = await exitIp(cfg));
+    let restarted = "";
+    if (vpnOn && !ip) restarted = await restartStuckVpn(Date.now()).catch(() => "");
+    else if (ip) await chrome.storage.session.set({ badSince: 0 });
     let safe = vpnOn && Boolean(ip) && ip !== cfg.realIp;
     // Team IP check (Privacy Shield): another open profile of the team on this
     // exact IP. If the app cannot be reached, only the VPN check applies.
@@ -89,7 +106,7 @@ async function check() {
     await chrome.storage.session.set({ ip, safe, sharedWith, at: Date.now() });
     // Shown on the connection page and written to the app log, so a block can be explained.
     if (cfg.statusUrl) {
-      fetch(cfg.statusUrl + "guard-state", { method: "POST", body: JSON.stringify({ vpnOn, control, mode, ip, via, ipError: ipError || "", realIp: ip && ip === cfg.realIp, sharedWith, safe }) }).catch(() => {});
+      fetch(cfg.statusUrl + "guard-state", { method: "POST", body: JSON.stringify({ vpnOn, control, mode, ip, via, ipError: ipError || "", restarted, realIp: ip && ip === cfg.realIp, sharedWith, safe }) }).catch(() => {});
     }
   })().finally(() => { checking = null; });
   return checking;

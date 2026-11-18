@@ -74,6 +74,7 @@ async function showGuard() {
     if (!g || !g.at) return;
     var parts = [g.vpnOn ? "VPN extension controls the connection ✓" : "VPN extension is not controlling the connection (" + (g.control || "?") + ", " + (g.mode || "?") + ")"];
     if (g.vpnOn) parts.push(g.ip ? "IP " + g.ip + " via " + g.via : "IP check failed: " + (g.ipError || "no answer"));
+    if (g.restarted) parts.push(g.restarted + " was not passing traffic, restarted it");
     if (g.realIp) parts.push("that is this PC's own IP");
     if (g.sharedWith) parts.push("IP in use by " + g.sharedWith);
     parts.push(g.safe ? "websites allowed" : "websites blocked");
@@ -105,8 +106,6 @@ async function tick() {
   if (guardReady) { try { await fetch("https://www.gstatic.com/generate_204?" + Date.now(), { mode: "no-cors", cache: "no-store" }); open = true; } catch (e) {} }
   try { ip = (await (await fetch("https://api.ipify.org/?format=json", { cache: "no-store" })).json()).ip; } catch (e) {}
   // Team IP check: another open profile of this team on the same VPN IP.
-  // The guard can use this IP if its own check through the VPN fails.
-  if (ip && ip !== REAL) fetch("page-ip", { method: "POST", body: JSON.stringify({ ip: ip }) }).catch(function () {});
   showGuard();
   if (ip && ip !== REAL) {
     var a = {};
@@ -131,8 +130,13 @@ async function tick() {
   var where = [info.city, info.country].filter(Boolean).join(", ");
   document.getElementById("p").textContent = "Websites see " + ip + (where ? " in " + where : "") + ".";
   if (info.needsRestart) {
-    document.getElementById("d").innerHTML = "<span class=warn>The VPN location changed to " + (info.country || "a new country") +
-      ". Close this profile and click Start again so its time zone and language match.</span>";
+    // The VPN picked a server in another time zone than last time (PIA / Express
+    // "Auto" or "Fastest" changes city on every connect). Explain, don't dead-end.
+    document.getElementById("d").innerHTML = "<span class=warn>Your VPN connected to " + (where || "a new location") +
+      ", a different time zone than last time, so this profile's clock does not match its IP.</span><br><br>" +
+      "<b>To stop this message:</b> in the VPN extension pick one fixed city (not Auto / Fastest / Smart Location), then close this profile and click Start again.<br><br>" +
+      "<button id=go style='padding:8px 14px;border-radius:8px;border:0;background:#334155;color:#e2e8f0;cursor:pointer'>Continue anyway</button>";
+    document.getElementById("go").onclick = function () { if (NEXT.length) location.replace(NEXT[0]); else document.getElementById("d").textContent = "You can browse now."; };
     return;
   }
   if (NEXT.length) {
@@ -164,22 +168,15 @@ function ensureServer() {
       });
       return;
     }
-    if (action === "page-ip" || action === "guard-state") {
-      if (req.method !== "POST") {
-        res.setHeader("Content-Type", "application/json"); res.setHeader("Access-Control-Allow-Origin", "*");
-        return res.end(JSON.stringify(s.pageIp || {}));
-      }
+    if (req.method === "POST" && action === "guard-state") {
       let body = "";
       req.on("data", (c) => { body += c; if (body.length > 10000) req.destroy(); });
       req.on("end", () => {
         try {
           const data = JSON.parse(body);
-          if (action === "page-ip") s.pageIp = { ip: String(data.ip || ""), at: Date.now() };
-          else {
-            const changed = JSON.stringify({ ...s.guard, at: 0 }) !== JSON.stringify({ ...data, at: 0 });
-            s.guard = { ...data, at: Date.now() };
-            if (changed && s.onGuardState) s.onGuardState(s.guard);
-          }
+          const changed = JSON.stringify({ ...s.guard, at: 0 }) !== JSON.stringify({ ...data, at: 0 });
+          s.guard = { ...data, at: Date.now() };
+          if (changed && s.onGuardState) s.onGuardState(s.guard);
         } catch (_) {}
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.end("ok");
