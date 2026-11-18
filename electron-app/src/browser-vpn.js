@@ -40,6 +40,12 @@ function realIp() {
   });
 }
 
+// "1.0.0" -> "1.0.<days>.<2-second slot of the day>": different on every launch, always increasing.
+function launchVersion(base, now = Date.now()) {
+  const [a = 1, b = 0] = String(base).split(".").map((n) => Number(n) || 0);
+  return `${a}.${b}.${Math.floor(now / 86400000) % 65535}.${Math.floor((now % 86400000) / 2000)}`;
+}
+
 // Per-profile copy of vendor/vpn-guard with this PC's real IP and this launch's
 // connection page (the guard asks it whether the exit IP is free for the team).
 function writeGuard(profileId, ip, statusUrl) {
@@ -48,6 +54,11 @@ function writeGuard(profileId, ip, statusUrl) {
   fs.mkdirSync(dest, { recursive: true });
   for (const name of ["background.js", "block.json"]) fs.copyFileSync(path.join(src, name), path.join(dest, name));
   const manifest = JSON.parse(fs.readFileSync(path.join(src, "manifest.json"), "utf8"));
+  // A new version on every launch. Brave/Chrome sometimes lose an extension's
+  // background registration (seen after the app's force-close) while the profile
+  // still records it as installed; they only register it again when the version
+  // changes. Without its background the guard never lifts the block.
+  manifest.version = launchVersion(manifest.version);
   fs.writeFileSync(path.join(dest, "manifest.json"), JSON.stringify(manifest, null, 2));
   fs.writeFileSync(path.join(dest, "config.json"), JSON.stringify({ realIp: ip || "", statusUrl: statusUrl || "" }));
   return dest;
@@ -66,12 +77,22 @@ Websites stay blocked until the VPN is on, so nothing loads on your real IP.</p>
 <p id=d class=muted></p>
 <p id=g class=muted style="font-size:12px;opacity:.8;margin-top:14px"></p></div>
 <script>
-var REAL = ${JSON.stringify(s.realIp)}, NEXT = ${JSON.stringify(s.next)}, done = false, started = Date.now(), alarmed = false;
+var REAL = ${JSON.stringify(s.realIp)}, NEXT = ${JSON.stringify(s.next)}, done = false, started = Date.now(), alarmed = false, silentTold = false;
 // What the VPN Guard last decided, so a block explains itself.
 async function showGuard() {
   try {
     var g = await (await fetch("state", { cache: "no-store" })).json();
-    if (!g || !g.at) return;
+    if (!g || !g.at) {
+      // Its block rules work (websites stay blocked) but its background never
+      // reported, so it can never unblock either. A new Start fixes it.
+      if (Date.now() - started > 25000 && !alarmed) {
+        document.getElementById("h").textContent = "VPN Guard did not start";
+        document.getElementById("h").className = "warn";
+        document.getElementById("p").textContent = "Websites stay blocked, so your real IP is safe, but they cannot open in this window even when the VPN is connected. Close this profile and click Start again.";
+        if (!silentTold) { silentTold = true; fetch("guard-missing?background", { method: "POST" }).catch(function () {}); }
+      }
+      return;
+    }
     var parts = [g.vpnOn ? "VPN extension controls the connection ✓" : "VPN extension is not controlling the connection (" + (g.control || "?") + ", " + (g.mode || "?") + ")"];
     if (g.vpnOn) parts.push(g.ip ? "IP " + g.ip + " via " + g.via : "IP check failed: " + (g.ipError || "no answer"));
     if (g.restarted) parts.push(g.restarted + " was not passing traffic, restarted it");
@@ -187,8 +208,8 @@ function ensureServer() {
       res.setHeader("Content-Type", "application/json");
       return res.end(JSON.stringify(s.guard || {}));
     }
-    if (req.method === "POST" && action === "guard-missing") {
-      try { if (s.onGuardMissing) s.onGuardMissing(); } catch (_) {}
+    if (req.method === "POST" && String(action).startsWith("guard-missing")) {
+      try { if (s.onGuardMissing) s.onGuardMissing(action.includes("background") ? "background" : "rules"); } catch (_) {}
       return res.end("ok");
     }
     if (req.method === "POST" && action === "report") {
@@ -217,4 +238,4 @@ async function connectionPage({ extension, realIp: ip, next, onConnected, checkI
   return `http://127.0.0.1:${port}/${token}/`;
 }
 
-module.exports = { vpnExtensionName, realIp, writeGuard, connectionPage };
+module.exports = { vpnExtensionName, realIp, writeGuard, connectionPage, launchVersion };

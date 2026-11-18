@@ -175,7 +175,8 @@ function sanitizeProxyForSync(entry) {
 
 function getProfiles() {
   const data = readJson(getProfilesFile(), []);
-  return Array.isArray(data) ? data.map(profileForRuntime) : [];
+  // Always creation order: lists saved by older versions were in cloud order.
+  return Array.isArray(data) ? data.map(profileForRuntime).sort(byCreation) : [];
 }
 
 function saveProfiles(profiles) {
@@ -224,9 +225,21 @@ function saveSyncedProfiles(remoteProfiles) {
   const localById = new Map(getProfiles().map((profile) => [profile.id, profile]));
   const merged = (Array.isArray(remoteProfiles) ? remoteProfiles : [])
     .filter((profile) => profile && profile.id)
-    .map((profile) => mergeProfileFromSync(profile, localById.get(profile.id)));
+    .map((profile) => mergeProfileFromSync(profile, localById.get(profile.id)))
+    // The cloud returns them newest-change first; keep creation order instead,
+    // or the list reshuffles after every restart, update and account switch.
+    .sort(byCreation);
   saveProfiles(merged);
   return getProfiles();
+}
+
+// Oldest first (new profiles are added at the end), ties by id.
+function createdTime(profile) {
+  const t = typeof profile.createdAt === "number" ? profile.createdAt : Date.parse(profile.createdAt);
+  return Number.isFinite(t) ? t : 0;
+}
+function byCreation(a, b) {
+  return createdTime(a) - createdTime(b) || String(a.id).localeCompare(String(b.id));
 }
 
 function saveSyncedProxyLibrary(remoteProxies) {

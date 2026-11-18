@@ -204,6 +204,7 @@ window.electronAPI.invoke('AUTH_REMEMBERED', {}).then(function (r) {
   const email = document.getElementById('loginEmail');
   if (!email.value) email.value = r.email;
   if (r.hasPassword) document.getElementById('loginPassword').placeholder = 'Saved on this computer — just click Sign In';
+  if (r.expired && !r.hasPassword) showError('Your saved login for ' + r.email + ' has ended. Enter its password once — tick "Remember me" so this does not happen again.');
   document.getElementById('loginPassword').focus();
 }).catch(function () {});
 

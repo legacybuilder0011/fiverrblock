@@ -362,7 +362,13 @@ let userLoggingOut = false;
 const signedOutListeners = [];
 function onUnexpectedSignOut(fn) { signedOutListeners.push(fn); }
 if (supabase) {
-  supabase.auth.onAuthStateChange((event) => {
+  supabase.auth.onAuthStateChange((event, session) => {
+    // Every renewal replaces the refresh token and the old one stops working.
+    // Keep this account's "Continue as" copy current, or switching back to it
+    // restarts with a dead token and lands on the login page again and again.
+    if (event === "TOKEN_REFRESHED" && session && session.user) {
+      setTimeout(() => { try { saveAccountSlot(session.user.id, session.user.email); } catch (_) {} }, 1000);
+    }
     if (event !== "SIGNED_OUT" || userLoggingOut) return;
     logLine("session ended by the cloud (renewal refused)");
     for (const fn of signedOutListeners) { try { fn(); } catch (_) {} }

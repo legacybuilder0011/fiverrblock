@@ -1519,7 +1519,7 @@ function registerIpcHandlers() {
   // password for the remembered email signs in with the saved one.
   ipcMain.handle("AUTH_LOGIN", async (_ev, { email, password, remember } = {}) => {
     const remembered = require("./remembered-login");
-    const saved = remembered.get();
+    const saved = remembered.get(email);
     const sameEmail = String(email || "").trim().toLowerCase() === saved.email;
     const pw = password || (sameEmail ? saved.password : "");
     const result = await authStore.login(email, pw);
@@ -1532,8 +1532,11 @@ function registerIpcHandlers() {
 
   // Login page: prefill the last email; tell it whether a password is saved.
   ipcMain.handle("AUTH_REMEMBERED", async () => {
-    const r = require("./remembered-login").get();
-    return { ok: true, email: r.email, hasPassword: Boolean(r.password) };
+    // The account whose session just ended (after "Continue as" or at startup)
+    // comes first, so the page asks for that one.
+    const session = authStore.getSession();
+    const r = require("./remembered-login").get(session && session.email);
+    return { ok: true, email: r.email, hasPassword: Boolean(r.password), expired: Boolean(session && session.email && !require("./cloud-sync").getCurrentUserId()) };
   });
 
 
@@ -2438,9 +2441,11 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
         onConnected: (ip) => recordBrowserVpnExit(profile.id, ip, launchedTz),
         checkIp: (ip) => teamProfileOnIp(profile.id, ip),
         onGuardState: (g) => logError(`vpn guard profile=${profile.id} vpnOn=${g.vpnOn} control=${g.control} mode=${g.mode} ip=${g.ip ? "set via " + g.via : "none"} ipError=${g.ipError || "-"} shared=${g.sharedWith || "-"} safe=${g.safe}${g.restarted ? " RESTARTED " + g.restarted : ""}`),
-        onGuardMissing: () => {
-          logError(`vpn guard not running profile=${profile.id} engine=${profile.engine}`);
-          require("./cloud-sync").reportFailure({ kind: "vpn-guard", profile, reason: `VPN Guard did not start (${profile.engine}, ${process.platform})` });
+        onGuardMissing: (what) => {
+          logError(`vpn guard not running (${what}) profile=${profile.id} engine=${profile.engine}`);
+          require("./cloud-sync").reportFailure({ kind: "vpn-guard", profile, reason: what === "background"
+            ? `VPN Guard background did not start; sites stay blocked (${profile.engine}, ${process.platform})`
+            : `VPN Guard did not start (${profile.engine}, ${process.platform})` });
         }
       });
       extraExtensionDirs.push(browserVpn.writeGuard(profile.id, vpnLaunch.ip, launchUrl));

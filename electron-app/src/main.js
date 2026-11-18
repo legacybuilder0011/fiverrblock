@@ -165,6 +165,10 @@ app.whenReady().then(async () => {
   createTray();
   // Cloud ended the session mid-use: sign back in quietly; ask only if that fails.
   require("./cloud-sync").onUnexpectedSignOut(() => {
+    // That account's saved "Continue as" login is dead now: drop it, so the
+    // login page asks for its password instead of looping through it again.
+    const dead = authStore.getSession();
+    if (dead && dead.userId) { try { require("./cloud-sync").dropAccountSlot(dead.userId); } catch (_) {} }
     // Open windows stay as they are; after sign-in the main window is reused.
     silentRelogin().then((ok) => { if (!ok) createLoginWindow(); });
   });
@@ -200,7 +204,9 @@ let reloginRunning = null;
 function silentRelogin() {
   if (reloginRunning) return reloginRunning;
   reloginRunning = (async () => {
-    const saved = require("./remembered-login").get();
+    // The account being opened (after "Continue as" / at startup), else the last email.
+    const current = authStore.getSession();
+    const saved = require("./remembered-login").get(current && current.email);
     if (!saved.email || !saved.password) return false;
     const r = await authStore.login(saved.email, saved.password);
     logInfo(`silent re-login ${saved.email.replace(/^(.).*@/, "$1***@")}: ${r.ok ? "ok" : "failed (" + r.error + ")"}`);
