@@ -21,6 +21,25 @@ const DOWNLOAD_BASE = "https://github.com/legacybuilder0011/fiverrblock/releases
 
 let started = false;
 
+// What the "Update" button in the main window shows: none | available |
+// downloading | ready | installing | error. Sent to every window on change.
+let state = { status: "none" };
+let installNow = null; // set once an update can be installed from the button
+function setState(next) {
+  state = { ...next };
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { if (!w.isDestroyed()) w.webContents.send("MAIN_EVENT", { type: "UPDATE_STATE", ...state }); } catch (_) {}
+  }
+}
+function registerIpc() {
+  const { ipcMain } = require("electron");
+  ipcMain.handle("UPDATE_STATE", async () => state);
+  ipcMain.handle("UPDATE_INSTALL", async () => {
+    if (!installNow) return { ok: false, error: "No update is ready yet." };
+    try { await installNow(); return { ok: true }; } catch (err) { return { ok: false, error: (err && err.message) || String(err) }; }
+  });
+}
+
 // This Mac's zip from latest-mac.yml: the arm64 one on Apple chips, the other on Intel.
 function pickMacZip(files, arch) {
   const zips = (files || []).filter((f) => f && /\.zip$/i.test(f.url || ""));
@@ -106,8 +125,17 @@ function initAutoUpdater(logInfo, logError) {
 
   if (started) return;
   started = true;
+  registerIpc();
 
-  if (!app.isPackaged) { info("skipped (dev / unpackaged)"); return; }
+  if (!app.isPackaged) {
+    info("skipped (dev / unpackaged)");
+    // PS_FAKE_UPDATE=1.2.3 shows the Update button in a dev run (testing only).
+    if (process.env.PS_FAKE_UPDATE) {
+      installNow = async () => { setState({ status: "installing", version: process.env.PS_FAKE_UPDATE }); };
+      setTimeout(() => setState({ status: "ready", version: process.env.PS_FAKE_UPDATE }), 3000);
+    }
+    return;
+  }
 
   let autoUpdater;
   try {
@@ -124,18 +152,25 @@ function initAutoUpdater(logInfo, logError) {
     let told = "";
     autoUpdater.on("update-available", async (i) => {
       const v = (i && i.version) || "";
-      if (!v || told === v) return;
-      told = v;
+      if (!v) return;
       const parent = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed());
+      const install = async () => {
+        setState({ status: "installing", version: v });
+        try { await macSelfUpdate(i, parent, info); } catch (err) { setState({ status: "available", version: v }); throw err; }
+      };
+      installNow = install;
+      if (state.status !== "installing") setState({ status: "available", version: v });
+      if (told === v) return;
+      told = v;
       try {
         const { response } = await dialog.showMessageBox(parent || undefined, {
           type: "info", buttons: ["Update now", "Later"], defaultId: 0, cancelId: 1,
           title: "Update available",
           message: `Privacy Shield v${v} is available.`,
-          detail: "The app downloads the update, closes and reopens on the new version. Open profiles are saved first."
+          detail: "The app downloads the update, closes and reopens on the new version. Open profiles are saved first. You can also install it later with the Update button in the main window."
         });
         if (response !== 0) return;
-        await macSelfUpdate(i, parent, info);
+        await install();
       } catch (err) {
         fail("mac update: " + (err && (err.stack || err.message) || err));
         const { response } = await dialog.showMessageBox(parent || undefined, {
@@ -154,13 +189,31 @@ function initAutoUpdater(logInfo, logError) {
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on("checking-for-update", () => info("checking"));
-  autoUpdater.on("update-available", (i) => info("update available " + (i && i.version)));
+  autoUpdater.on("update-available", (i) => {
+    info("update available " + (i && i.version));
+    if (process.platform !== "darwin" && state.status !== "ready") setState({ status: "downloading", version: i && i.version, percent: 0 });
+  });
   autoUpdater.on("update-not-available", () => info("up to date"));
-  autoUpdater.on("download-progress", (p) => info("downloading " + Math.round(p && p.percent || 0) + "%"));
-  autoUpdater.on("error", (err) => fail("error: " + (err && (err.stack || err.message) || err)));
+  autoUpdater.on("download-progress", (p) => {
+    const percent = Math.round(p && p.percent || 0);
+    info("downloading " + percent + "%");
+    if (state.status === "downloading") setState({ ...state, percent });
+  });
+  autoUpdater.on("error", (err) => {
+    fail("error: " + (err && (err.stack || err.message) || err));
+    if (state.status === "downloading") setState({ status: "error", version: state.version });
+  });
 
   autoUpdater.on("update-downloaded", async (i) => {
     info("downloaded " + (i && i.version));
+    // Close profiles first so their backups finish, then install and reopen.
+    installNow = async () => {
+      setState({ status: "installing", version: i && i.version });
+      try { await require("./real-browser-manager").closeAllAndSettle(); } catch (_) {}
+      try { await require("./camoufox-manager").closeAll(); } catch (_) {}
+      setImmediate(() => { try { autoUpdater.quitAndInstall(); } catch (e) { fail("quitAndInstall: " + (e.message || e)); } });
+    };
+    setState({ status: "ready", version: i && i.version });
     const parent = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed());
     try {
       const { response } = await dialog.showMessageBox(parent || undefined, {
@@ -170,9 +223,9 @@ function initAutoUpdater(logInfo, logError) {
         cancelId: 1,
         title: "Update ready",
         message: `Privacy Shield ${i && i.version ? "v" + i.version : "update"} is ready to install.`,
-        detail: "The update has been downloaded. Restart now to apply it, or it will install automatically the next time you close the app."
+        detail: "The update has been downloaded. Restart now to apply it, use the Update button in the main window later, or it installs the next time you close the app."
       });
-      if (response === 0) setImmediate(() => { try { autoUpdater.quitAndInstall(); } catch (e) { fail("quitAndInstall: " + (e.message || e)); } });
+      if (response === 0) await installNow();
     } catch (_) {
       // Dialog failed — the autoInstallOnAppQuit fallback still applies.
     }
@@ -187,10 +240,10 @@ function initAutoUpdater(logInfo, logError) {
     }
   };
 
-  // First check shortly after launch, then every 6 hours (this is a tray app
-  // that can stay open for days).
+  // First check shortly after launch, then hourly (this is a tray app that can
+  // stay open for days, and the Update button should appear soon after a release).
   setTimeout(check, 8000);
-  setInterval(check, 6 * 60 * 60 * 1000);
+  setInterval(check, 60 * 60 * 1000);
 }
 
 module.exports = { initAutoUpdater };

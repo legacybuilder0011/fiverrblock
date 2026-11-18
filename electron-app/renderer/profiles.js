@@ -3767,3 +3767,38 @@ function editCloudPhoneRecord(phone) {
 // Start
 // =========================================================
 init();
+
+// ── Update button (under "+ New Profile") ────────────────────────────────────
+// Stays visible while an update is available, so nobody has to wait for the
+// pop-up: one click installs it and the app reopens on the new version.
+(function updateButton() {
+  const btn = document.getElementById("btnUpdate");
+  if (!btn) return;
+  let current = { status: "none" };
+  function show(s) {
+    current = s || { status: "none" };
+    const v = current.version ? " v" + current.version : "";
+    const text = {
+      available: "⬆ Update" + v + " available — Install now",
+      downloading: "⬇ Downloading update" + v + "… " + (current.percent || 0) + "%",
+      ready: "⬆ Update" + v + " ready — Install now",
+      installing: "Installing update" + v + "… the app will reopen",
+      error: "Update" + v + " failed to download — it will retry"
+    }[current.status];
+    btn.hidden = !text;
+    if (!text) return;
+    btn.textContent = text;
+    btn.disabled = !["available", "ready"].includes(current.status);
+    btn.classList.toggle("error", current.status === "error");
+  }
+  btn.addEventListener("click", async () => {
+    if (!["available", "ready"].includes(current.status)) return;
+    if (!confirm("Install the update now?\n\nOpen profiles are closed and saved first, then Privacy Shield restarts on the new version.")) return;
+    btn.disabled = true;
+    btn.textContent = "Installing update… the app will reopen";
+    const r = await window.electronAPI.invoke("UPDATE_INSTALL", {}).catch((e) => ({ ok: false, error: String(e) }));
+    if (r && r.ok === false) { alert("The update could not be installed: " + (r.error || "unknown error")); show(current); }
+  });
+  window.electronAPI.onMainEvent((e) => { if (e && e.type === "UPDATE_STATE") show(e); });
+  window.electronAPI.invoke("UPDATE_STATE", {}).then(show).catch(() => {});
+})();

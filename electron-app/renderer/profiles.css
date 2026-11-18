@@ -548,6 +548,13 @@ html, body {
   color: #fff;
 }
 .pm-btn.primary:hover { background: var(--accent-h); }
+/* "Update available — Install now" under + New Profile */
+.pm-update-row { padding: 0 14px; }
+.pm-update-row:has(.pm-update:not([hidden])) { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.pm-btn.pm-update { width: 100%; background: #16a34a; border-color: #16a34a; color: #fff; font-weight: 600; white-space: normal; line-height: 1.3; }
+.pm-btn.pm-update:hover:not(:disabled) { background: #15803d; }
+.pm-btn.pm-update:disabled { background: #334155; border-color: #334155; color: #cbd5e1; cursor: default; }
+.pm-btn.pm-update.error { background: #b45309; border-color: #b45309; }
 .pm-btn.danger {
   background: transparent;
   border-color: var(--red);

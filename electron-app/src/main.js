@@ -54,7 +54,13 @@ let appReady = false;
 // UDP or its video and mouse fall back to a slow TCP connection.
 app.commandLine.appendSwitch("enable-features", "WebRtcHideLocalIpsWithMdns");
 app.setName("Privacy Shield Browser");
-if (process.platform === "win32") app.setAppUserModelId("com.privacyshield.browser");
+// Must equal build.appId: the installer's shortcut carries that ID, and Windows
+// takes the taskbar icon from the shortcut with the same ID. A different ID
+// left the taskbar showing whatever icon it last saw for it (Electron's, after
+// a test run). Test runs (unpackaged) get their own ID so they cannot touch it.
+if (process.platform === "win32") app.setAppUserModelId(app.isPackaged ? "com.privacyshield.app" : "com.privacyshield.app.dev");
+// Our logo on every app window, whatever Windows has cached.
+const APP_ICON = path.join(__dirname, "..", "icons", process.platform === "win32" ? "icon.ico" : "icon512.png");
 
 process.on("uncaughtException", (err) => {
   logError(err);
@@ -244,6 +250,7 @@ function createLoginWindow() {
     return;
   }
   loginWindow = new BrowserWindow({
+    icon: APP_ICON,
     width: 440,
     height: 660,
     resizable: false,
@@ -268,6 +275,7 @@ function createMainWindow() {
     return;
   }
   mainWindow = new BrowserWindow({
+    icon: APP_ICON,
     width: 1200,
     height: 800,
     minWidth: 900,
