@@ -700,9 +700,11 @@ async function launchProfileOnce(profile, customUrl = "", options = {}) {
   // engine already noises canvas/audio/webgl-pixels/navigator/timezone/platform per
   // seed, so the extension only layered the WebGL renderer STRING + geolocation
   // (geolocation is blocked by prefs anyway) — not worth losing Google/Gmail over.
-  // So the patched engine no longer loads it. real-brave, whose JS spoof depends on
-  // the extension, still gets it (use patched-chromium for Google accounts).
-  if (cfg && cfg.enabled !== false && engineSupportsExtensionSpoof(engine) && !patched) {
+  // The extension has since learned to stay off Google sign-in pages and their
+  // subframes (verified on Brave), so patched-chromium loads it again in a slim
+  // mode for what the engine cannot spoof: screen, touch, WebGPU and the chosen
+  // GPU string (page and workers). Everything else stays native C++.
+  if (cfg && cfg.enabled !== false && engineSupportsExtensionSpoof(engine)) {
     const fpDir = fpExtension.writeExtension(profile.id, cfg, fingerprintExtDir(profile.id, engine), { gpuGeoOnly: patched, realBrowser: !patched });
     if (fpDir) extraExtDirs.push(fpDir);
   }

@@ -3842,7 +3842,11 @@ async function runVpnWatchTick() {
       // No network reachable = VPN killswitch cut everything, or link is down.
       // Close so nothing resumes on a naked connection when it comes back.
       if (vpnWatchFailStreak >= VPN_WATCH_FAIL_LIMIT) {
-        killWatchedProfiles(ids, "Your internet/VPN connection dropped — no network is reachable. Profile closed to prevent a leak. Reconnect your VPN and start it again.");
+        // Direct profiles run on this PC's own internet on purpose: a short drop
+        // (e.g. Starlink losing signal) cannot leak anything, and closing the
+        // browser broke a survey mid-way. Only VPN-bound profiles are closed.
+        const vpnBound = ids.filter((id) => (profileNetworkMeta.get(id) || {}).mode !== "direct");
+        killWatchedProfiles(vpnBound, "Your internet/VPN connection dropped — no network is reachable. Profile closed to prevent a leak. Reconnect your VPN and start it again.");
         vpnWatchFailStreak = 0;
       }
       return;

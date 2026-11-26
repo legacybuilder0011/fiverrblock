@@ -200,6 +200,10 @@ const SPOOF_BODY = String.raw`"use strict";
   // ── Canvas (per-seed LSB / text-metric noise) ─────────────────────────────
   if (CFG.blockCanvas !== false) {
     try {
+      // toDataURL/toBlob must copy and restore the REAL pixels. Using the noised
+      // getImageData below wrote noise back into the canvas, so every read gave a
+      // different result (reading twice and comparing exposes a spoofer).
+      var realGetImageData = CanvasRenderingContext2D.prototype.getImageData;
       var applyLsb = function (data) {
         for (var i = 0; i < data.length; i += 4) {
           if (stableNoise(i) < 0.01) data[i] ^= 1;
@@ -207,38 +211,28 @@ const SPOOF_BODY = String.raw`"use strict";
           if (stableNoise(i + 2) < 0.01) data[i + 2] ^= 1;
         }
       };
+      // Noise goes onto a scratch copy; the page's canvas is never written to.
+      // (Writing back and "restoring" drifted semi-transparent pixels on every
+      // read through premultiplied-alpha rounding.)
+      var noisedCopy = function (canvas) {
+        var ctx = canvas.getContext("2d");
+        if (!ctx || !canvas.width || !canvas.height) return null;
+        var img = realGetImageData.call(ctx, 0, 0, canvas.width, canvas.height);
+        applyLsb(img.data);
+        var copy = document.createElement("canvas");
+        copy.width = canvas.width; copy.height = canvas.height;
+        copy.getContext("2d").putImageData(img, 0, 0);
+        return copy;
+      };
       wrap(HTMLCanvasElement.prototype, "toDataURL", function (orig) {
         return function () {
-          try {
-            var ctx = this.getContext("2d");
-            if (ctx && this.width && this.height) {
-              var w = this.width, h = this.height;
-              var img = ctx.getImageData(0, 0, w, h);
-              var backup = new Uint8ClampedArray(img.data);
-              applyLsb(img.data); ctx.putImageData(img, 0, 0);
-              var r = orig.apply(this, arguments);
-              var restore = ctx.createImageData(w, h); restore.data.set(backup); ctx.putImageData(restore, 0, 0);
-              return r;
-            }
-          } catch (_) {}
+          try { var c = noisedCopy(this); if (c) return orig.apply(c, arguments); } catch (_) {}
           return orig.apply(this, arguments);
         };
       });
       wrap(HTMLCanvasElement.prototype, "toBlob", function (orig) {
-        return function (cb) {
-          var rest = Array.prototype.slice.call(arguments, 1);
-          try {
-            var ctx = this.getContext("2d");
-            if (ctx && this.width && this.height) {
-              var w = this.width, h = this.height;
-              var img = ctx.getImageData(0, 0, w, h);
-              var backup = new Uint8ClampedArray(img.data);
-              applyLsb(img.data); ctx.putImageData(img, 0, 0);
-              var r = orig.apply(this, [cb].concat(rest));
-              var restore = ctx.createImageData(w, h); restore.data.set(backup); ctx.putImageData(restore, 0, 0);
-              return r;
-            }
-          } catch (_) {}
+        return function () {
+          try { var c = noisedCopy(this); if (c) return orig.apply(c, arguments); } catch (_) {}
           return orig.apply(this, arguments);
         };
       });
@@ -298,10 +292,18 @@ const SPOOF_BODY = String.raw`"use strict";
   if (CFG.blockAudio !== false) {
     try {
       if (typeof AudioBuffer !== "undefined") {
+        // getChannelData returns the same array every call: noise it only once,
+        // or each read drifts further and two reads disagree.
+        var noisedChannels = new WeakSet();
         wrap(AudioBuffer.prototype, "getChannelData", function (orig) {
           return function () {
             var data = orig.apply(this, arguments);
-            try { for (var i = 0; i < data.length; i += 500) data[i] = data[i] + (stableNoise(i) - 0.5) * 1e-7; } catch (_) {}
+            try {
+              if (!noisedChannels.has(data)) {
+                noisedChannels.add(data);
+                for (var i = 0; i < data.length; i += 500) data[i] = data[i] + (stableNoise(i) - 0.5) * 1e-7;
+              }
+            } catch (_) {}
             return data;
           };
         });
@@ -379,7 +381,11 @@ const SPOOF_BODY = String.raw`"use strict";
       dm: typeof CFG.deviceMemory === "number" ? CFG.deviceMemory : 0,
       platform: CFG.platform || "",
       langs: Array.isArray(CFG.languages) ? CFG.languages : [],
-      lang: CFG.language || ""
+      lang: CFG.language || "",
+      // OffscreenCanvas WebGL in a worker showed the real graphics card.
+      glV: CFG.blockWebGL !== false ? (CFG._gpuVendor || "") : "",
+      glR: CFG.blockWebGL !== false ? (CFG._gpuRenderer || "") : "",
+      noGpu: CFG.webgpu === false
     };
     var workerPrelude = function (W, base) {
       try {
@@ -393,6 +399,18 @@ const SPOOF_BODY = String.raw`"use strict";
         if (W.dm) ro("deviceMemory", W.dm);
         if (W.platform) ro("platform", W.platform);
         if (W.langs.length) { ro("languages", Object.freeze(W.langs.slice())); if (W.lang) ro("language", W.lang); }
+        if (W.noGpu) { try { delete np.gpu; } catch (e) {} }
+        if (W.glV || W.glR) {
+          [self.WebGLRenderingContext, self.WebGL2RenderingContext].forEach(function (C) {
+            if (!C) return;
+            var gp = C.prototype.getParameter;
+            C.prototype.getParameter = hide(function getParameter(p) {
+              if ((p === 0x9245 || p === 0x1F00) && W.glV) return p === 0x1F00 ? "Google Inc. (" + W.glV.replace(/^Google Inc\. \(|\)$/g, "") + ")" : W.glV;
+              if ((p === 0x9246 || p === 0x1F01) && W.glR) return W.glR;
+              return gp.apply(this, arguments);
+            }, "getParameter");
+          });
+        }
         if (W.tz) {
           var D = Intl.DateTimeFormat, TZ = W.tz;
           var off = function (d) {
@@ -428,7 +446,7 @@ const SPOOF_BODY = String.raw`"use strict";
       } catch (e) {}
     };
     var OrigWorker = window.Worker;
-    if (typeof OrigWorker === "function" && (W.tz || W.hc || W.dm || W.platform || W.langs.length)) {
+    if (typeof OrigWorker === "function" && (W.tz || W.hc || W.dm || W.platform || W.langs.length || W.glV || W.glR || W.noGpu)) {
       var PRE = "(" + natToString.call(workerPrelude) + ")(" + JSON.stringify(W) + ",";
       // A CSP without blob: in worker-src would make our blob worker fail
       // asynchronously (too late to fall back), so read the page's policy once.
@@ -480,6 +498,13 @@ const SPOOF_BODY = String.raw`"use strict";
       window.Worker = Worker2;
     }
   } catch (_) {}
+
+  // ── WebGPU "Off": its adapter info names the real graphics-card family
+  // (e.g. intel gen-9), contradicting the profile's WebGL card. Remove the API,
+  // like a browser without WebGPU, rather than answer with real hardware.
+  if (CFG.webgpu === false) {
+    try { delete Navigator.prototype.gpu; } catch (_) {}
+  }
 
   // ── Geolocation (return the profile's coordinates; never the real ones) ───
   if (CFG.spoofGeo !== false && CFG.geo && (CFG.geo.latitude || CFG.geo.longitude)) {
@@ -535,7 +560,13 @@ function extensionConfig(cfg, opts = {}) {
       blockWebGL: true,     // JS handles the WebGL renderer STRING
       _gpuVendor: cfg._gpuVendor || "",
       _gpuRenderer: cfg._gpuRenderer || "",
-      // timezone/navigator/screen intentionally omitted → those overrides self-skip
+      // The engine has no working switch for these, so it showed this PC's real
+      // screen, a touchscreen and the real WebGPU card on every Patched profile.
+      screen: cfg.screen || null,
+      devicePixelRatio: Number(cfg._devicePixelRatio) || 0,
+      _maxTouchPoints: typeof cfg._maxTouchPoints === "number" ? cfg._maxTouchPoints : 0,
+      webgpu: cfg._webgpu === true,
+      // timezone/cores/languages/platform omitted → the engine handles them natively
       spoofGeo: cfg.spoofGeo !== false,
       geo: cfg.geo || null
     };
@@ -564,6 +595,7 @@ function extensionConfig(cfg, opts = {}) {
     _gpuRenderer: cfg._gpuRenderer || "",
     timezone: cfg.timezone || "",
     localeOffsetMinutes: typeof cfg.localeOffsetMinutes === "number" ? cfg.localeOffsetMinutes : 0,
+    webgpu: cfg._webgpu === true,
     spoofGeo: cfg.spoofGeo !== false,
     geo: cfg.geo || null
   };
