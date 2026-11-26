@@ -26,8 +26,11 @@ const PART_SIZE = 45 * 1048576;
 const PARTS_MAGIC = Buffer.from("PSPARTS1");
 // "File busy" (browser still exiting) and dropped connections were most failures.
 const RETRY_WAITS = [3000, 10000, 30000, 60000];
+// Never "Service Worker/ScriptCache": it holds every extension's background
+// script, and without it Brave silently drops the extension's registration (the
+// VPN extension and VPN Guard then never run again).
 const SKIP_IN_DEFAULT = new Set(["Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
-  "JumpListIconsMostVisited", "JumpListIconsRecentClosed", "Service Worker/CacheStorage", "Service Worker/ScriptCache"]);
+  "JumpListIconsMostVisited", "JumpListIconsRecentClosed", "Service Worker/CacheStorage"]);
 
 const pending = new Map(); // profileId -> promise of the running backup
 

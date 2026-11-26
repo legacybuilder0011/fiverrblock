@@ -93,6 +93,7 @@ function grade(r, { profile, config, myIp, lan, others }) {
   const ipErr = !r.ip || String(r.ip).startsWith("ERR");
   if (ipErr) add("Website can reach the internet", false, "The profile could not load a website. The proxy may be down. " + (r.ip || ""));
   else if (mode === "proxy" || mode === "extension") add("Your real IP is hidden", r.ip !== myIp, r.ip !== myIp ? `Websites see ${r.ip}.` : "Websites see this PC's real IP. Do not log in.");
+  else if (mode === "direct") add("Network", null, `Direct mode: websites see this PC's own internet (${r.ip}).`);
   else add("Network", null, `VPN mode: websites see ${r.ip}. Make sure that is your VPN, not your home internet.`);
 
   if (!ipErr) {

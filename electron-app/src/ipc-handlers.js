@@ -2322,7 +2322,8 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
 
     // A profile is "VPN-bound" if it was explicitly put in VPN mode, or its
     // anchor was a VPN/datacenter exit.
-    const requiresVpn = networkMode === "vpn" || (anchor && anchor.isVpn === true);
+    // Direct = the user picked their own internet, so never demand a VPN.
+    const requiresVpn = networkMode === "vpn";
 
     // No-VPN guard: a VPN-bound profile must NOT open on the user's real ISP.
     // Hard-block when the live connection looks like a consumer ISP
@@ -2442,7 +2443,21 @@ async function openProfileWindow(profileId, customUrl, options = {}) {
         checkIp: (ip) => teamProfileOnIp(profile.id, ip),
         onGuardState: (g) => logError(`vpn guard profile=${profile.id} vpnOn=${g.vpnOn} control=${g.control} mode=${g.mode} ip=${g.ip ? "set via " + g.via : "none"} ipError=${g.ipError || "-"} shared=${g.sharedWith || "-"} safe=${g.safe}${g.restarted ? " RESTARTED " + g.restarted : ""}`),
         onGuardMissing: (what) => {
-          logError(`vpn guard not running (${what}) profile=${profile.id} engine=${profile.engine}`);
+          logError(`vpn guard not running (${what}) profile=${profile.id} engine=${profile.engine}${options.guardRetried ? "" : " - reopening the browser once"}`);
+          // Live finding: some Brave starts run no extension background at all
+          // (neither the guard nor the VPN's own login handler), and a plain
+          // close + reopen with the same flags brings them all up. Do that once.
+          if (what === "background" && !options.guardRetried) {
+            setTimeout(async () => {
+              try {
+                await realBrowser.closeProfile(profile.id);
+                await new Promise((r) => setTimeout(r, 2000));
+                const again = await openProfileWindow(profile.id, customUrl, { ...options, guardRetried: true });
+                logError(`vpn guard reopen profile=${profile.id} ok=${Boolean(again && again.ok)} ${(again && again.error) || ""}`);
+              } catch (err) { logError(`vpn guard reopen failed profile=${profile.id}: ${err.message || err}`); }
+            }, 0);
+            return;
+          }
           require("./cloud-sync").reportFailure({ kind: "vpn-guard", profile, reason: what === "background"
             ? `VPN Guard background did not start; sites stay blocked (${profile.engine}, ${process.platform})`
             : `VPN Guard did not start (${profile.engine}, ${process.platform})` });
@@ -3672,7 +3687,7 @@ const placeText = (n) => [n && n.city, n && n.state, n && (n.country || n.countr
 function vpnGate(profile, current) {
   const type = classifyConnection(current);
   const anchor = profileAnchor(profile);
-  const requiresVpn = networkModeOf(profile) === "vpn" || (anchor && anchor.isVpn === true);
+  const requiresVpn = networkModeOf(profile) === "vpn";
   if (requiresVpn && type !== "datacenter" && (type === "residential" || type === "mobile")) {
     return { ok: false, reason: "No VPN connected — this PC is on its normal internet" };
   }

@@ -112,6 +112,23 @@ async function check() {
   return checking;
 }
 
+// Older app versions deleted Brave's "Service Worker/ScriptCache" on every close,
+// which silently unregistered every extension's background (the VPN's login
+// handler included) while Brave still listed them as installed, so they never
+// ran again. Switching each extension off and on once per browser session makes
+// Brave register it afresh. This guard gets a new version every launch, so it is
+// always registered itself.
+async function reviveExtensions() {
+  if ((await chrome.storage.session.get("revived")).revived) return;
+  await chrome.storage.session.set({ revived: true });
+  for (const e of await chrome.management.getAll()) {
+    // "Profile Runtime" = the fingerprint extension: no background to revive, and
+    // switching it off even briefly could let a page load unspoofed.
+    if (e.id === chrome.runtime.id || !e.enabled || e.type !== "extension" || e.name === "Profile Runtime") continue;
+    try { await chrome.management.setEnabled(e.id, false); await chrome.management.setEnabled(e.id, true); } catch (_) {}
+  }
+}
+
 // Fast checks for the first two minutes (VPN connecting), then every 30 s.
 function start() {
   chrome.alarms.create("vpn-check", { periodInMinutes: 0.5 });
@@ -127,4 +144,4 @@ chrome.alarms.onAlarm.addListener((a) => { if (a.name === "vpn-check") check(); 
 chrome.alarms.get("vpn-check").then((a) => { if (!a) chrome.alarms.create("vpn-check", { periodInMinutes: 0.5 }); });
 // Block first, then re-check: a VPN switching off must never leave a gap.
 chrome.proxy.settings.onChange.addListener(() => { block().then(() => setTimeout(check, 1500)); });
-check();
+reviveExtensions().catch(() => {}).finally(check);

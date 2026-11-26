@@ -357,12 +357,129 @@ const SPOOF_BODY = String.raw`"use strict";
             var hh = String(Math.floor(abs / 60)).padStart(2, "0"); var mm = String(abs % 60).padStart(2, "0");
             var base = new OrigDTF("en-US", { timeZone: TZ, weekday: "short", year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
             var p = {}; base.formatToParts(this).forEach(function (x) { p[x.type] = x.value; });
-            return p.weekday + " " + p.month + " " + p.day + " " + p.year + " " + p.hour + ":" + p.minute + ":" + p.second + " GMT" + sign + hh + mm;
+            var zn = ""; try { new OrigDTF("en-US", { timeZone: TZ, timeZoneName: "long" }).formatToParts(this).forEach(function (x) { if (x.type === "timeZoneName") zn = " (" + x.value + ")"; }); } catch (_) {}
+            return p.weekday + " " + p.month + " " + p.day + " " + p.year + " " + p.hour + ":" + p.minute + ":" + p.second + " GMT" + sign + hh + mm + zn;
           } catch (_) { return orig.apply(this, arguments); }
         };
       });
     } catch (_) {}
   }
+
+  // ── Workers ───────────────────────────────────────────────────────────────
+  // Content scripts never run inside a Worker, so a page that reads the timezone
+  // or cores there saw the real PC (Africa/Lagos next to America/Chicago on the
+  // page = a classic bot-detection mismatch). Start every dedicated Worker from a
+  // blob that applies the same values, then loads the page's own script.
+  // ponytail: SharedWorker/ServiceWorker and workers spawned inside workers stay
+  // native (a blob URL would break SharedWorker sharing; SW must be same-origin).
+  try {
+    var W = {
+      tz: CFG.timezone || "",
+      hc: typeof CFG.hardwareConcurrency === "number" ? CFG.hardwareConcurrency : 0,
+      dm: typeof CFG.deviceMemory === "number" ? CFG.deviceMemory : 0,
+      platform: CFG.platform || "",
+      langs: Array.isArray(CFG.languages) ? CFG.languages : [],
+      lang: CFG.language || ""
+    };
+    var workerPrelude = function (W, base) {
+      try {
+        var ts = Function.prototype.toString, fake = new WeakSet();
+        var nts = function toString() { return fake.has(this) ? "function " + (this.__pn || this.name) + "() { [native code] }" : ts.call(this); };
+        fake.add(nts); Function.prototype.toString = nts;
+        var hide = function (fn, nm) { fake.add(fn); try { Object.defineProperty(fn, "__pn", { value: nm }); } catch (e) {} return fn; };
+        var np = Object.getPrototypeOf(navigator);
+        var ro = function (p, v) { try { Object.defineProperty(np, p, { get: hide(function () { return v; }, "get " + p), configurable: true, enumerable: true }); } catch (e) {} };
+        if (W.hc) ro("hardwareConcurrency", W.hc);
+        if (W.dm) ro("deviceMemory", W.dm);
+        if (W.platform) ro("platform", W.platform);
+        if (W.langs.length) { ro("languages", Object.freeze(W.langs.slice())); if (W.lang) ro("language", W.lang); }
+        if (W.tz) {
+          var D = Intl.DateTimeFormat, TZ = W.tz;
+          var off = function (d) {
+            var p = {}; new D("en-US", { timeZone: TZ, hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(d).forEach(function (x) { p[x.type] = x.value; });
+            return -Math.round((Date.UTC(+p.year, p.month - 1, +p.day, p.hour === "24" ? 0 : +p.hour, +p.minute, +p.second) - d.getTime()) / 60000);
+          };
+          var gto = Date.prototype.getTimezoneOffset;
+          Date.prototype.getTimezoneOffset = hide(function getTimezoneOffset() { try { return off(this); } catch (e) { return gto.call(this); } }, "getTimezoneOffset");
+          var P = function DateTimeFormat(l, o) { o = o || {}; if (!o.timeZone) o = Object.assign({}, o, { timeZone: TZ }); return new D(l, o); };
+          P.prototype = D.prototype; P.supportedLocalesOf = D.supportedLocalesOf.bind(D);
+          Intl.DateTimeFormat = hide(P, "DateTimeFormat");
+          var ro2 = D.prototype.resolvedOptions;
+          D.prototype.resolvedOptions = hide(function resolvedOptions() { var r = ro2.apply(this, arguments); r.timeZone = TZ; return r; }, "resolvedOptions");
+          var dts = Date.prototype.toString;
+          Date.prototype.toString = hide(function toString() {
+            try {
+              var o = off(this), a = Math.abs(o), p = {};
+              new D("en-US", { timeZone: TZ, weekday: "short", year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).formatToParts(this).forEach(function (x) { p[x.type] = x.value; });
+              var zn = ""; new D("en-US", { timeZone: TZ, timeZoneName: "long" }).formatToParts(this).forEach(function (x) { if (x.type === "timeZoneName") zn = " (" + x.value + ")"; });
+              return p.weekday + " " + p.month + " " + p.day + " " + p.year + " " + p.hour + ":" + p.minute + ":" + p.second + " GMT" + (o <= 0 ? "+" : "-") + String(Math.floor(a / 60)).padStart(2, "0") + String(a % 60).padStart(2, "0") + zn;
+            } catch (e) { return dts.call(this); }
+          }, "toString");
+        }
+        // The worker now lives at a blob: URL; keep the page script's relative
+        // importScripts()/fetch() resolving against its real address.
+        if (base && typeof importScripts === "function") {
+          var abs = function (u) { try { return typeof u === "string" ? new URL(u, base).href : u; } catch (e) { return u; } };
+          var imp = importScripts;
+          self.importScripts = hide(function importScripts() { return imp.apply(self, Array.prototype.map.call(arguments, abs)); }, "importScripts");
+          var f = self.fetch;
+          if (f) self.fetch = hide(function fetch(u, o) { return f.call(self, abs(u), o); }, "fetch");
+        }
+      } catch (e) {}
+    };
+    var OrigWorker = window.Worker;
+    if (typeof OrigWorker === "function" && (W.tz || W.hc || W.dm || W.platform || W.langs.length)) {
+      var PRE = "(" + natToString.call(workerPrelude) + ")(" + JSON.stringify(W) + ",";
+      // A CSP without blob: in worker-src would make our blob worker fail
+      // asynchronously (too late to fall back), so read the page's policy once.
+      var blobOk = null;
+      var blobWorkersAllowed = function () {
+        if (blobOk !== null) return blobOk;
+        var pols = [];
+        try { document.querySelectorAll("meta[http-equiv]").forEach(function (m) { if (/^content-security-policy$/i.test(m.httpEquiv)) pols.push(m.content); }); } catch (_) {}
+        try {
+          var href = /^https?:/.test(location.href) ? location.href : parent.location.href;
+          var x = new XMLHttpRequest(); x.open("HEAD", href, false); x.send();
+          var h = x.getResponseHeader("content-security-policy");
+          if (h) pols.push(h);
+        } catch (_) {}
+        blobOk = pols.every(function (p) {
+          var d = {};
+          String(p).split(/[;,]/).forEach(function (part) { var t = part.trim().split(/\s+/); if (t[0]) d[t[0].toLowerCase()] = t.slice(1).join(" "); });
+          var v = d["worker-src"] != null ? d["worker-src"] : d["child-src"] != null ? d["child-src"] : d["script-src"] != null ? d["script-src"] : d["default-src"];
+          return v == null || /(^|\s)blob:/.test(v);
+        });
+        return blobOk;
+      };
+      var Worker2 = function Worker(url) {
+        var opts = arguments[1];
+        if (!new.target) return OrigWorker.apply(this, arguments);   // native TypeError
+        if (!blobWorkersAllowed()) return new OrigWorker(url, opts);
+        try {
+          var u = new URL(String(url), location.href).href;
+          var mod = opts && opts.type === "module";
+          var code;
+          if (/^(blob|data):/.test(u)) {
+            // Pages often revoke a blob URL right after new Worker(), before the
+            // worker could import it — so copy the source in now.
+            var x = new XMLHttpRequest(); x.open("GET", u, false); x.send();
+            if (x.status && x.status !== 200) throw new Error("read");
+            // Module code: static imports run before anything else in the file, so
+            // load the copy with import() after the prelude instead of appending it.
+            code = PRE + '"");\n' + (mod ? "import(" + JSON.stringify(URL.createObjectURL(new Blob([x.responseText], { type: "text/javascript" }))) + ");" : x.responseText);
+          } else {
+            code = PRE + JSON.stringify(mod ? "" : u) + ");\n" + (mod ? "import(" + JSON.stringify(u) + ");" : "importScripts(" + JSON.stringify(u) + ");");
+          }
+          return new OrigWorker(URL.createObjectURL(new Blob([code], { type: "text/javascript" })), opts);
+        } catch (_) {
+          return new OrigWorker(url, opts);   // e.g. CSP forbids blob: workers
+        }
+      };
+      Worker2.prototype = OrigWorker.prototype;
+      cloak(Worker2, "Worker");
+      window.Worker = Worker2;
+    }
+  } catch (_) {}
 
   // ── Geolocation (return the profile's coordinates; never the real ones) ───
   if (CFG.spoofGeo !== false && CFG.geo && (CFG.geo.latitude || CFG.geo.longitude)) {
